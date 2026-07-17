@@ -1,0 +1,4 @@
+*node_modules/
+app/dist/
+app/release/
+frontend/dist/
