@@ -1,0 +1,53 @@
+name: General feedback
+description: Tried Modelforge and have thoughts? Tell me what worked, what didn't, and what confused you — this is the easiest way to help shape where it goes next.
+title: "[Feedback] "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        No pressure to be thorough — even "the model dropdown was confusing" is genuinely useful. Fill in whatever applies.
+
+  - type: textarea
+    id: what-you-tried
+    attributes:
+      label: What did you try?
+      description: Basic chat, Agent mode, a specific provider, attachments, projects — whatever you actually used.
+      placeholder: e.g. "Installed on Windows, chatted with a local Llama model, then tried Agent mode on a small folder."
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-worked
+    attributes:
+      label: What worked well?
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-didnt
+    attributes:
+      label: What was confusing, broken, or missing?
+      description: Screenshots, error messages, or the "Copy diagnostic info" output from Settings are all welcome here.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Linux
+        - Built from source
+    validations:
+      required: false
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else?
+    validations:
+      required: false

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Discussions (general feedback & questions)
+    url: https://github.com/voidstackloop/modelforge/discussions
+    about: Prefer a more casual back-and-forth instead of a formal issue? Start a thread here.
