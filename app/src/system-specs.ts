@@ -22,6 +22,11 @@ export interface ModelCatalogEntry {
     label: string;
     minRAMGB: number;
     description: string;
+    // Whether this model has reliable tool/function-calling support — the
+    // thing that actually matters for Agent mode. A model can be a great
+    // general chat model and still be a poor fit for agentic tool use if it
+    // frequently drops or mangles tool calls.
+    supportsTools: boolean;
 }
 
 export interface RecommendedModel extends ModelCatalogEntry {
@@ -38,16 +43,24 @@ export interface ModelRecommendations {
     models: RecommendedModel[];
 }
 
+// Model tags are Ollama library names as of this app's last update — Ollama's
+// lineup changes often, so verify a tag still exists (`ollama pull <name>`)
+// if a pull ever fails; the search box above also lets you pull any exact
+// tag directly regardless of what's curated here.
 export const MODEL_CATALOG: ModelCatalogEntry[] = [
-    { name: "llama3.2:1b", label: "Llama 3.2 1B", minRAMGB: 2, description: "Fastest option, good for quick replies on low-end hardware." },
-    { name: "llama3.2:3b", label: "Llama 3.2 3B", minRAMGB: 4, description: "Good balance of speed and quality for everyday chat." },
-    { name: "phi3.5", label: "Phi-3.5 Mini 3.8B", minRAMGB: 5, description: "Strong reasoning for its size, runs well on modest hardware." },
-    { name: "mistral:7b", label: "Mistral 7B", minRAMGB: 8, description: "Solid general-purpose model with fast responses." },
-    { name: "llama3.1:8b", label: "Llama 3.1 8B", minRAMGB: 8, description: "Meta's flagship mid-size model, great all-rounder." },
-    { name: "gemma2:9b", label: "Gemma 2 9B", minRAMGB: 10, description: "Google's efficient high-quality model." },
-    { name: "qwen2.5:14b", label: "Qwen 2.5 14B", minRAMGB: 16, description: "Strong coding and multilingual ability." },
-    { name: "qwen2.5:32b", label: "Qwen 2.5 32B", minRAMGB: 32, description: "High quality, needs a beefy machine." },
-    { name: "llama3.1:70b", label: "Llama 3.1 70B", minRAMGB: 48, description: "Near top-tier quality, requires a workstation-class PC." },
+    { name: "llama3.2:1b", label: "Llama 3.2 1B", minRAMGB: 2, description: "Fastest option, good for quick replies on low-end hardware.", supportsTools: false },
+    { name: "llama3.2:3b", label: "Llama 3.2 3B", minRAMGB: 4, description: "Good balance of speed and quality for everyday chat.", supportsTools: true },
+    { name: "qwen3:4b", label: "Qwen3 4B", minRAMGB: 5, description: "Reliable tool-calling in a small footprint — a good Agent mode pick on modest hardware.", supportsTools: true },
+    { name: "phi3.5", label: "Phi-3.5 Mini 3.8B", minRAMGB: 5, description: "Strong reasoning for its size, runs well on modest hardware.", supportsTools: false },
+    { name: "llama3.1:8b", label: "Llama 3.1 8B", minRAMGB: 8, description: "Meta's flagship mid-size model — great all-rounder with solid tool support.", supportsTools: true },
+    { name: "qwen3:8b", label: "Qwen3 8B", minRAMGB: 8, description: "Among the most reliable open models for tool/function calling at this size — recommended for Agent mode.", supportsTools: true },
+    { name: "mistral-nemo", label: "Mistral Nemo 12B", minRAMGB: 10, description: "Solid general-purpose model with dependable tool calling.", supportsTools: true },
+    { name: "gemma2:9b", label: "Gemma 2 9B", minRAMGB: 10, description: "Google's efficient high-quality model for general chat.", supportsTools: false },
+    { name: "qwen2.5-coder:14b", label: "Qwen 2.5 Coder 14B", minRAMGB: 16, description: "Strong coding ability with tool calling — a good Agent mode pick for dev workflows.", supportsTools: true },
+    { name: "devstral-small", label: "Devstral Small 24B", minRAMGB: 24, description: "Trained specifically for agentic coding — built for exactly this app's Agent mode.", supportsTools: true },
+    { name: "qwen3:30b-a3b", label: "Qwen3 30B-A3B", minRAMGB: 24, description: "Mixture-of-experts model with strong tool-calling reliability at a manageable memory footprint.", supportsTools: true },
+    { name: "command-r-plus", label: "Command R+", minRAMGB: 64, description: "Enterprise-grade tool use and retrieval, needs a workstation-class machine.", supportsTools: true },
+    { name: "llama3.1:70b", label: "Llama 3.1 70B", minRAMGB: 48, description: "Near top-tier quality, requires a workstation-class PC.", supportsTools: true },
 ];
 
 function execFileP(cmd: string, args: string[]): Promise<string | null> {

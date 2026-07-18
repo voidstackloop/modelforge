@@ -14,17 +14,27 @@ export interface MessageImage {
   data: string;
 }
 
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface ChatMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
   usage?: UsageInfo;
   images?: MessageImage[];
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
+  toolName?: string;
 }
 
 export interface ChatChunk {
   message?: { role: string; content: string };
   done: boolean;
   usage?: UsageInfo;
+  toolCalls?: ToolCall[];
 }
 
 export interface PullProgress {
@@ -58,6 +68,7 @@ export interface RecommendedModel {
   fits: boolean;
   runsOnGpu: boolean;
   recommended: boolean;
+  supportsTools: boolean;
 }
 
 export interface ModelRecommendations {
@@ -112,6 +123,8 @@ export interface ChatSession {
   params?: ChatOptions | null;
   projectId?: string | null;
   systemPrompt?: string | null;
+  agentMode?: boolean;
+  agentWorkspace?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -187,7 +200,8 @@ export interface ElectronApi {
       model: string,
       messages: ChatMessage[],
       options: ChatOptions,
-      onToken: (chunk: ChatChunk) => void
+      onToken: (chunk: ChatChunk) => void,
+      agentMode?: boolean
     ) => { requestId: string; promise: Promise<{ done: boolean; error?: string; aborted?: boolean }> };
     cancel: (requestId: string) => Promise<void>;
   };
@@ -205,7 +219,12 @@ export interface ElectronApi {
     create: (model: string | null, projectId?: string | null) => Promise<ChatSession>;
     update: (
       id: string,
-      partial: Partial<Pick<ChatSession, "title" | "model" | "messages" | "params" | "projectId" | "systemPrompt">>
+      partial: Partial<
+        Pick<
+          ChatSession,
+          "title" | "model" | "messages" | "params" | "projectId" | "systemPrompt" | "agentMode" | "agentWorkspace"
+        >
+      >
     ) => Promise<ChatSession | null>;
     delete: (id: string) => Promise<void>;
     clearAll: () => Promise<void>;
@@ -255,6 +274,14 @@ export interface ElectronApi {
   rag: {
     indexFiles: (files: AttachedFile[]) => Promise<IndexFilesResult>;
     query: (indexId: string, query: string, topK?: number) => Promise<RagChunk[]>;
+  };
+  agent: {
+    pickWorkspace: () => Promise<string | null>;
+    executeTool: (
+      workspaceRoot: string,
+      name: string,
+      args: Record<string, unknown>
+    ) => Promise<{ result?: unknown; error?: string }>;
   };
 }
 

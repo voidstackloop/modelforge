@@ -10,6 +10,7 @@ import * as fileReader from "./file-reader";
 import * as secretsStore from "./secrets-store";
 import * as dataTransfer from "./data-transfer";
 import * as rag from "./rag";
+import * as agentTools from "./agent-tools";
 import type { AttachedFile } from "./file-reader";
 import * as openaiProvider from "./providers/openai";
 import * as anthropicProvider from "./providers/anthropic";
@@ -175,21 +176,24 @@ function registerIpcHandlers(): void {
                 model,
                 messages,
                 options,
+                agentMode,
             }: {
                 requestId: string;
                 provider: ProviderId;
                 model: string;
                 messages: ChatMessage[];
                 options?: ChatOptions;
+                agentMode?: boolean;
             }
         ) => {
             const channel = `chat:chunk:${requestId}`;
             const onToken = (chunk: ChatChunk) => event.sender.send(channel, chunk);
             const controller = new AbortController();
             activeChatRequests.set(requestId, controller);
+            const tools = agentMode ? agentTools.AGENT_TOOLS : undefined;
             try {
                 if (provider === "ollama") {
-                    await ollama.chat(model, messages, options, onToken, controller.signal);
+                    await ollama.chat(model, messages, options, onToken, controller.signal, tools);
                 } else {
                     const secretKey = PROVIDER_SECRET_KEYS[provider];
                     const apiKey = secretsStore.getSecret(secretKey);
@@ -197,7 +201,7 @@ function registerIpcHandlers(): void {
                         throw new Error(`No API key set for ${provider}. Add one in Settings.`);
                     }
                     const providerFn = provider === "openai" ? openaiProvider.chat : anthropicProvider.chat;
-                    await providerFn(apiKey, model, messages, options, onToken, controller.signal);
+                    await providerFn(apiKey, model, messages, options, onToken, controller.signal, tools);
                 }
                 return { done: true };
             } catch (err) {
@@ -301,6 +305,31 @@ function registerIpcHandlers(): void {
         "rag:query",
         (_event: IpcMainInvokeEvent, { indexId, query, topK }: { indexId: string; query: string; topK?: number }) =>
             rag.query(indexId, query, topK)
+    );
+
+    ipcMain.handle("agent:pickWorkspace", async () => {
+        const result = mainWindow
+            ? await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] })
+            : await dialog.showOpenDialog({ properties: ["openDirectory"] });
+        return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+    });
+
+    ipcMain.handle(
+        "tools:execute",
+        async (
+            _event: IpcMainInvokeEvent,
+            { workspaceRoot, name, args }: { workspaceRoot: string; name: string; args: Record<string, unknown> }
+        ) => {
+            requireString(workspaceRoot, "workspace root");
+            requireString(name, "tool name");
+            try {
+                return { result: await agentTools.executeTool(workspaceRoot, name, args ?? {}) };
+            } catch (err) {
+                const error = err as Error;
+                logger.error(`Tool execution failed (tool=${name}): ${error.message}`);
+                return { error: error.message };
+            }
+        }
     );
 }
 

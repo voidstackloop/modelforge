@@ -3,6 +3,11 @@ import type { PullProgress } from "./ollama-manager";
 import type { AttachedFile, MediaAttachment } from "./file-reader";
 import type { ChatMessage, ChatChunk, ChatOptions, ProviderId } from "./providers/types";
 
+interface ToolExecuteResult {
+    result?: unknown;
+    error?: string;
+}
+
 function randomId(): string {
     return Math.random().toString(36).slice(2);
 }
@@ -32,14 +37,15 @@ contextBridge.exposeInMainWorld("api", {
             model: string,
             messages: ChatMessage[],
             options: ChatOptions,
-            onToken: (chunk: ChatChunk) => void
+            onToken: (chunk: ChatChunk) => void,
+            agentMode?: boolean
         ) => {
             const requestId = randomId();
             const channel = `chat:chunk:${requestId}`;
             const listener = (_event: unknown, chunk: ChatChunk) => onToken(chunk);
             ipcRenderer.on(channel, listener);
             const promise = ipcRenderer
-                .invoke("chat:send", { requestId, provider, model, messages, options })
+                .invoke("chat:send", { requestId, provider, model, messages, options, agentMode })
                 .finally(() => ipcRenderer.removeListener(channel, listener));
             return { requestId, promise };
         },
@@ -119,5 +125,11 @@ contextBridge.exposeInMainWorld("api", {
         indexFiles: (files: AttachedFile[]) => ipcRenderer.invoke("rag:indexFiles", files),
         query: (indexId: string, query: string, topK?: number) =>
             ipcRenderer.invoke("rag:query", { indexId, query, topK }),
+    },
+
+    agent: {
+        pickWorkspace: (): Promise<string | null> => ipcRenderer.invoke("agent:pickWorkspace"),
+        executeTool: (workspaceRoot: string, name: string, args: Record<string, unknown>): Promise<ToolExecuteResult> =>
+            ipcRenderer.invoke("tools:execute", { workspaceRoot, name, args }),
     },
 });

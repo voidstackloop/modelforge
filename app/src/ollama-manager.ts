@@ -1,6 +1,7 @@
 import { spawn, ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { logger } from "./logger";
-import type { ChatMessage, ChatChunk, ChatOptions } from "./providers/types";
+import type { ChatMessage, ChatChunk, ChatOptions, ToolDefinition } from "./providers/types";
 
 const DEFAULT_HOST = "http://127.0.0.1:11434";
 let HOST = DEFAULT_HOST;
@@ -187,12 +188,20 @@ export async function pullModel(name: string, onProgress: (chunk: PullProgress) 
     await streamNdjson<PullProgress>(res, onProgress);
 }
 
+function toOllamaTools(tools: ToolDefinition[]): unknown[] {
+    return tools.map((t) => ({
+        type: "function",
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
+}
+
 export async function chat(
     model: string,
     messages: ChatMessage[],
     options: ChatOptions | undefined,
     onToken: (chunk: ChatChunk) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    tools?: ToolDefinition[]
 ): Promise<void> {
     // Ollama wants images as a sibling `images: string[]` (raw base64, no
     // data-URI prefix and no mimeType) field on each message.
@@ -200,6 +209,9 @@ export async function chat(
         role: m.role,
         content: m.content,
         ...(m.images && m.images.length > 0 ? { images: m.images.map((i) => i.data) } : {}),
+        ...(m.toolCalls && m.toolCalls.length > 0
+            ? { tool_calls: m.toolCalls.map((tc) => ({ function: { name: tc.name, arguments: tc.arguments } })) }
+            : {}),
     }));
 
     let res: Response;
@@ -211,6 +223,7 @@ export async function chat(
                 model,
                 messages: ollamaMessages,
                 stream: true,
+                ...(tools && tools.length > 0 ? { tools: toOllamaTools(tools) } : {}),
                 options: {
                     temperature: options?.temperature ?? 0.7,
                     top_p: options?.topP,
@@ -228,16 +241,27 @@ export async function chat(
     }
     if (!res.ok || !res.body) throw new Error(await describeError(res, "Chat request failed"));
 
-    await streamNdjson<
-        ChatChunk & { prompt_eval_count?: number; eval_count?: number }
-    >(res, (raw) => {
+    type OllamaChunk = ChatChunk & {
+        prompt_eval_count?: number;
+        eval_count?: number;
+        message?: { role: string; content: string; tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }> };
+    };
+
+    await streamNdjson<OllamaChunk>(res, (raw) => {
+        const toolCalls = raw.message?.tool_calls?.map((tc) => ({
+            id: randomUUID(),
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+        }));
+
         if (raw.done && (raw.prompt_eval_count !== undefined || raw.eval_count !== undefined)) {
             onToken({
                 ...raw,
                 usage: { promptTokens: raw.prompt_eval_count, completionTokens: raw.eval_count },
+                ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
             });
         } else {
-            onToken(raw);
+            onToken({ ...raw, ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}) });
         }
     });
 }

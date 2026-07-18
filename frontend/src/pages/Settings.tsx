@@ -436,6 +436,11 @@ export default function Settings() {
                                                       <div className="flex flex-wrap items-center gap-1.5">
                                                           <span className="text-sm font-medium">{m.label}</span>
                                                           {m.recommended && <Badge>Recommended for your PC</Badge>}
+                                                          {m.supportsTools && (
+                                                              <Badge variant="secondary" title="Reliable tool/function calling — a good fit for Agent mode">
+                                                                  🔧 Tool calling
+                                                              </Badge>
+                                                          )}
                                                           {m.runsOnGpu && <Badge variant="secondary">Runs on GPU</Badge>}
                                                           {!m.fits && <Badge variant="secondary">May be too large</Badge>}
                                                       </div>

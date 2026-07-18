@@ -19,6 +19,7 @@ import {
     Database,
     Loader2,
     Image as ImageIcon,
+    Bot,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -56,6 +57,7 @@ import type {
     ProviderId,
     ChatOptions,
     UsageInfo,
+    ToolCall,
 } from "@/types/electron";
 
 type Attachment = AttachedFile & { folder?: string };
@@ -72,6 +74,14 @@ const CUSTOM_SENTINEL = "__custom__";
 // every file's full content into the prompt (which would blow out context on
 // smaller models and waste tokens on larger ones).
 const RAG_THRESHOLD_CHARS = 20_000;
+// Read-only tools are safe to let the model call repeatedly without a fresh
+// click each time — write_file and run_command always require explicit
+// per-call approval since they have real, potentially irreversible effects.
+const READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "search_files"]);
+// Caps how many automatic tool-result -> model-continuation round trips can
+// happen for a single user turn, so a model that keeps calling tools without
+// ever producing a final answer can't loop indefinitely.
+const AGENT_MAX_STEPS = 25;
 
 function buildMessageContent(text: string, attachments: Attachment[], ragContent = "") {
     const fileBlocks = attachments
@@ -117,28 +127,57 @@ const MessageBubble = memo(function MessageBubble({
     onEdit,
     onRegenerate,
 }: MessageBubbleProps) {
+    const { t } = useI18n();
+
+    if (m.role === "tool") {
+        return (
+            <div className="flex flex-col items-start">
+                <div className="max-w-[85%] rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-xs text-muted-foreground">
+                    <div className="mb-1 font-sans font-medium text-foreground">
+                        🔧 {m.toolName} {t.toolResult}
+                    </div>
+                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap">{m.content}</pre>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className={cn("group flex flex-col", m.role === "user" ? "items-end" : "items-start")}>
-            <div
-                className={cn(
-                    "max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-                    m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
-                )}
-            >
-                {m.images && m.images.length > 0 && (
-                    <div className="mb-2 flex flex-wrap gap-1.5">
-                        {m.images.map((img, imgIdx) => (
-                            <img
-                                key={imgIdx}
-                                src={`data:${img.mimeType};base64,${img.data}`}
-                                alt="attachment"
-                                className="h-20 w-20 rounded-lg object-cover"
-                            />
-                        ))}
-                    </div>
-                )}
-                {m.content ? <Markdown content={m.content} /> : isStreaming && isLastAssistant ? "…" : ""}
-            </div>
+            {m.toolCalls && m.toolCalls.length > 0 && (
+                <div className="mb-1 flex max-w-[75%] flex-col gap-1">
+                    {m.toolCalls.map((tc) => (
+                        <div
+                            key={tc.id}
+                            className="rounded-lg border border-border bg-muted/50 px-3 py-1.5 font-mono text-xs text-muted-foreground"
+                        >
+                            🔧 {tc.name}({Object.entries(tc.arguments).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", ")})
+                        </div>
+                    ))}
+                </div>
+            )}
+            {(m.content || (isStreaming && isLastAssistant) || !m.toolCalls?.length) && (
+                <div
+                    className={cn(
+                        "max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+                        m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+                    )}
+                >
+                    {m.images && m.images.length > 0 && (
+                        <div className="mb-2 flex flex-wrap gap-1.5">
+                            {m.images.map((img, imgIdx) => (
+                                <img
+                                    key={imgIdx}
+                                    src={`data:${img.mimeType};base64,${img.data}`}
+                                    alt="attachment"
+                                    className="h-20 w-20 rounded-lg object-cover"
+                                />
+                            ))}
+                        </div>
+                    )}
+                    {m.content ? <Markdown content={m.content} /> : isStreaming && isLastAssistant ? "…" : ""}
+                </div>
+            )}
             <div className="mt-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 <button
                     onClick={() => onCopy(m.content, i)}
@@ -218,6 +257,11 @@ export default function Chat() {
     const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
     const [params, setParams] = useState<ChatOptions>({});
     const [sessionSystemPrompt, setSessionSystemPrompt] = useState<string | null>(null);
+    const [agentMode, setAgentMode] = useState(false);
+    const [agentWorkspace, setAgentWorkspace] = useState<string | null>(null);
+    const [pendingToolCalls, setPendingToolCalls] = useState<ToolCall[]>([]);
+    const [agentStepCount, setAgentStepCount] = useState(0);
+    const [autoApprovedTools, setAutoApprovedTools] = useState<Set<string>>(new Set());
     const [newPresetName, setNewPresetName] = useState("");
     const [autoScroll, setAutoScroll] = useState(true);
     const [showScrollButton, setShowScrollButton] = useState(false);
@@ -252,6 +296,11 @@ export default function Chat() {
             if (session.model) setModel(session.model);
             setParams(session.params ?? {});
             setSessionSystemPrompt(session.systemPrompt ?? null);
+            setAgentMode(session.agentMode ?? false);
+            setAgentWorkspace(session.agentWorkspace ?? null);
+            setPendingToolCalls([]);
+            setAgentStepCount(0);
+            setAutoApprovedTools(new Set());
             setAutoScroll(true);
             setShowScrollButton(false);
         });
@@ -325,6 +374,31 @@ export default function Chat() {
     function resetParams() {
         setParams({});
         if (sessionId) window.api.sessions.update(sessionId, { params: {} });
+    }
+
+    async function toggleAgentMode() {
+        if (!sessionId) return;
+        if (!agentMode && !agentWorkspace) {
+            // Turning agent mode on for the first time in this chat: require a
+            // workspace folder up front rather than letting tool calls fail later.
+            const folder = await window.api.agent.pickWorkspace();
+            if (!folder) return;
+            setAgentWorkspace(folder);
+            setAgentMode(true);
+            window.api.sessions.update(sessionId, { agentMode: true, agentWorkspace: folder });
+            return;
+        }
+        const next = !agentMode;
+        setAgentMode(next);
+        window.api.sessions.update(sessionId, { agentMode: next });
+    }
+
+    async function changeAgentWorkspace() {
+        if (!sessionId) return;
+        const folder = await window.api.agent.pickWorkspace();
+        if (!folder) return;
+        setAgentWorkspace(folder);
+        window.api.sessions.update(sessionId, { agentWorkspace: folder });
     }
 
     function confirmCustomModel() {
@@ -463,7 +537,7 @@ export default function Chat() {
             effectiveOptions(),
             (chunk) => {
                 const piece = chunk.message?.content ?? "";
-                if (!piece && !chunk.usage) return;
+                if (!piece && !chunk.usage && !chunk.toolCalls) return;
                 setMessages((m) => {
                     const next = [...m];
                     const last = next[next.length - 1];
@@ -476,10 +550,12 @@ export default function Chat() {
                                   completionTokens: chunk.usage.completionTokens ?? last.usage?.completionTokens,
                               }
                             : last.usage,
+                        toolCalls: chunk.toolCalls ? [...(last.toolCalls ?? []), ...chunk.toolCalls] : last.toolCalls,
                     };
                     return next;
                 });
-            }
+            },
+            agentMode && !!agentWorkspace
         );
         setActiveRequestId(requestId);
         const result = await promise;
@@ -496,6 +572,15 @@ export default function Chat() {
         setIsStreaming(false);
         window.api.app.setBusy(false);
         setMessages((finalMessages) => {
+            const last = finalMessages[finalMessages.length - 1];
+            if (!result.error && last?.role === "assistant" && last.toolCalls && last.toolCalls.length > 0) {
+                setPendingToolCalls(last.toolCalls);
+                // Tools the user already trusted this session skip the
+                // confirmation card and resolve themselves immediately.
+                for (const call of last.toolCalls) {
+                    if (autoApprovedTools.has(call.name)) respondToToolCall(call, true);
+                }
+            }
             window.api.sessions
                 .update(sessionId, {
                     messages: finalMessages,
@@ -505,6 +590,60 @@ export default function Chat() {
                 })
                 .then(() => refresh());
             return finalMessages;
+        });
+    }
+
+    // Runs after every tool call from one assistant turn has been approved or
+    // denied — feeds the tool results back to the model so it can continue
+    // (e.g. read a file, then act on what it found) without the user having
+    // to prompt again.
+    function continueAfterTools(updatedMessages: ChatMessage[]) {
+        if (agentStepCount >= AGENT_MAX_STEPS) {
+            setMessages((m) => [
+                ...m,
+                {
+                    role: "assistant",
+                    content: `⚠️ Reached the agent step limit (${AGENT_MAX_STEPS}) for this turn. Send another message to let it continue.`,
+                },
+            ]);
+            return;
+        }
+        setAgentStepCount((c) => c + 1);
+        const history: ChatMessage[] = [...buildSystemMessages(), ...updatedMessages];
+        runCompletion(history, updatedMessages, { isFirstMessage: false, titleSource: "" });
+    }
+
+    function alwaysAllowTool(call: ToolCall) {
+        setAutoApprovedTools((prev) => new Set(prev).add(call.name));
+        respondToToolCall(call, true);
+    }
+
+    async function respondToToolCall(call: ToolCall, approve: boolean) {
+        let resultText: string;
+        if (!approve) {
+            resultText = "The user denied this tool call.";
+        } else if (!agentWorkspace) {
+            resultText = "Error: no workspace folder is set for this chat.";
+        } else {
+            const res = await window.api.agent.executeTool(agentWorkspace, call.name, call.arguments);
+            resultText = res.error
+                ? `Error: ${res.error}`
+                : typeof res.result === "string"
+                  ? res.result
+                  : JSON.stringify(res.result, null, 2);
+        }
+
+        setPendingToolCalls((prev) => {
+            const remaining = prev.filter((c) => c.id !== call.id);
+            setMessages((m) => {
+                const next: ChatMessage[] = [
+                    ...m,
+                    { role: "tool", content: resultText, toolCallId: call.id, toolName: call.name },
+                ];
+                if (remaining.length === 0) continueAfterTools(next);
+                return next;
+            });
+            return remaining;
         });
     }
 
@@ -558,7 +697,7 @@ export default function Chat() {
         const parsed = parseModelRef(model);
         const hasAnything =
             text || attachments.length > 0 || ragFolders.length > 0 || imageAttachments.length > 0;
-        if (!hasAnything || !parsed || isStreaming || !sessionId) {
+        if (!hasAnything || !parsed || isStreaming || !sessionId || pendingToolCalls.length > 0) {
             return;
         }
 
@@ -578,11 +717,12 @@ export default function Chat() {
         setAttachments([]);
         setRagFolders([]);
         setImageAttachments([]);
+        setAgentStepCount(0);
         await runCompletion(history, baseMessages, { isFirstMessage, titleSource });
     }
 
     async function handleRegenerate() {
-        if (isStreaming || messages.length === 0) return;
+        if (isStreaming || messages.length === 0 || pendingToolCalls.length > 0) return;
         const lastIsAssistant = messages[messages.length - 1].role === "assistant";
         const baseMessages = lastIsAssistant ? messages.slice(0, -1) : messages;
         if (baseMessages.length === 0 || baseMessages[baseMessages.length - 1].role !== "user") return;
@@ -592,7 +732,7 @@ export default function Chat() {
     }
 
     function handleEditUserMessage(index: number) {
-        if (isStreaming) return;
+        if (isStreaming || pendingToolCalls.length > 0) return;
         const msg = messages[index];
         if (msg.role !== "user") return;
         setInput(msg.content);
@@ -704,6 +844,29 @@ export default function Chat() {
 
                 {models.length === 0 && (
                     <span className="text-xs text-muted-foreground">{t.noOllamaModelsInstalled}</span>
+                )}
+
+                <Button
+                    size="sm"
+                    variant={agentMode ? "default" : "outline"}
+                    onClick={toggleAgentMode}
+                    className="gap-1.5"
+                    aria-pressed={agentMode}
+                    title={agentWorkspace ? `Workspace: ${agentWorkspace}` : t.agentModeTooltip}
+                >
+                    <Bot className="size-3.5" />
+                    {t.agentMode}
+                    {agentMode && agentWorkspace ? ` · ${agentWorkspace.split(/[\\/]/).pop()}` : ""}
+                </Button>
+                {agentMode && (
+                    <Button size="sm" variant="ghost" onClick={changeAgentWorkspace} className="text-xs text-muted-foreground">
+                        {t.changeFolder}
+                    </Button>
+                )}
+                {agentStepCount > 0 && (
+                    <span className="text-xs text-muted-foreground" title={t.agentStepTooltip}>
+                        {t.agentStep} {agentStepCount}/{AGENT_MAX_STEPS}
+                    </span>
                 )}
 
                 {sessionCost > 0 && (
@@ -915,6 +1078,38 @@ export default function Chat() {
                             onEdit={handleEditUserMessage}
                             onRegenerate={handleRegenerate}
                         />
+                    ))}
+                    {pendingToolCalls.map((call) => (
+                        <div
+                            key={call.id}
+                            className="flex max-w-[85%] flex-col gap-2 self-start rounded-lg border border-border bg-muted/50 p-3 text-sm"
+                        >
+                            <div className="font-mono text-xs text-muted-foreground">
+                                🔧 <span className="font-medium text-foreground">{call.name}</span>(
+                                {Object.entries(call.arguments)
+                                    .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+                                    .join(", ")}
+                                )
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Button size="sm" onClick={() => respondToToolCall(call, true)} className="gap-1.5">
+                                    <Check className="size-3.5" /> {t.allow}
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => respondToToolCall(call, false)} className="gap-1.5">
+                                    <X className="size-3.5" /> {t.deny}
+                                </Button>
+                                {READ_ONLY_TOOLS.has(call.name) && (
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => alwaysAllowTool(call)}
+                                        className="text-xs text-muted-foreground"
+                                    >
+                                        {t.alwaysAllowThisSession}
+                                    </Button>
+                                )}
+                            </div>
+                        </div>
                     ))}
                     <div ref={bottomRef} />
                 </div>

@@ -15,6 +15,15 @@ export interface Dictionary {
     attachFiles: string;
     attachProjectFolder: string;
     noOllamaModelsInstalled: string;
+    agentMode: string;
+    agentModeTooltip: string;
+    changeFolder: string;
+    allow: string;
+    deny: string;
+    toolResult: string;
+    alwaysAllowThisSession: string;
+    agentStep: string;
+    agentStepTooltip: string;
     ollamaServer: string;
     serverAddress: string;
     serverAddressHelp: string;
@@ -89,6 +98,15 @@ export const en: Dictionary = {
     attachFiles: "Attach files",
     attachProjectFolder: "Attach project folder",
     noOllamaModelsInstalled: "No Ollama models installed — go to Settings to install one.",
+    agentMode: "Agent",
+    agentModeTooltip: "Agent mode: gives the model file tools (read/write/list/search) and shell command execution, scoped to a folder you choose. Every tool call needs your approval.",
+    changeFolder: "Change folder",
+    allow: "Allow",
+    deny: "Deny",
+    toolResult: "result",
+    alwaysAllowThisSession: "Always allow this session",
+    agentStep: "Agent step",
+    agentStepTooltip: "How many automatic tool-result → model-continuation round trips have happened for this turn.",
     ollamaServer: "Ollama server",
     serverAddress: "Server address",
     serverAddressHelp:
@@ -165,6 +183,15 @@ export const tr: Dictionary = {
     attachFiles: "Dosya ekle",
     attachProjectFolder: "Proje klasörü ekle",
     noOllamaModelsInstalled: "Yüklü Ollama modeli yok — birini yüklemek için Ayarlar'a gidin.",
+    agentMode: "Ajan",
+    agentModeTooltip: "Ajan modu: modele seçtiğiniz bir klasörle sınırlı dosya araçları (okuma/yazma/listeleme/arama) ve kabuk komutu çalıştırma verir. Her araç çağrısı onayınızı gerektirir.",
+    changeFolder: "Klasörü değiştir",
+    allow: "İzin ver",
+    deny: "Reddet",
+    toolResult: "sonucu",
+    alwaysAllowThisSession: "Bu oturumda her zaman izin ver",
+    agentStep: "Ajan adımı",
+    agentStepTooltip: "Bu tur için kaç otomatik araç sonucu → model devamı gidiş-dönüşü gerçekleşti.",
     ollamaServer: "Ollama sunucusu",
     serverAddress: "Sunucu adresi",
     serverAddressHelp:

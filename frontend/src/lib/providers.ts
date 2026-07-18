@@ -14,6 +14,9 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = {
 // Curated as of this app's last update — model lineups change often, so the
 // model picker also lets you type a custom model ID directly.
 export const OPENAI_MODELS: CuratedModel[] = [
+    { id: "gpt-5", label: "GPT-5" },
+    { id: "gpt-5-mini", label: "GPT-5 mini" },
+    { id: "gpt-5-nano", label: "GPT-5 nano" },
     { id: "gpt-4o", label: "GPT-4o" },
     { id: "gpt-4o-mini", label: "GPT-4o mini" },
     { id: "gpt-4.1", label: "GPT-4.1" },

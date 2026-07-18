@@ -8,17 +8,41 @@ export interface MessageImage {
     data: string;
 }
 
+export interface ToolParameterSchema {
+    type: "object";
+    properties: Record<string, { type: string; description: string }>;
+    required?: string[];
+}
+
+export interface ToolDefinition {
+    name: string;
+    description: string;
+    parameters: ToolParameterSchema;
+}
+
+export interface ToolCall {
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+}
+
 export interface ChatMessage {
-    role: "system" | "user" | "assistant";
+    role: "system" | "user" | "assistant" | "tool";
     content: string;
     usage?: UsageInfo;
     images?: MessageImage[];
+    // Present on an assistant message that requested one or more tool calls.
+    toolCalls?: ToolCall[];
+    // Present on a "tool" role message: which call this is the result of.
+    toolCallId?: string;
+    toolName?: string;
 }
 
 export interface ChatChunk {
     message?: { role: string; content: string };
     done: boolean;
     usage?: UsageInfo;
+    toolCalls?: ToolCall[];
 }
 
 export type ProviderId = "ollama" | "openai" | "anthropic";
@@ -40,5 +64,6 @@ export type ChatFn = (
     messages: ChatMessage[],
     options: ChatOptions | undefined,
     onToken: (chunk: ChatChunk) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    tools?: ToolDefinition[]
 ) => Promise<void>;
