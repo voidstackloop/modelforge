@@ -72,7 +72,7 @@ If steps 2–3 work, the core app is functioning correctly — everything else l
 
 ## Building from source
 
-Requires [Node.js](https://nodejs.org) 20+.
+Requires [Node.js](https://nodejs.org) 22+.
 
 ```sh
 git clone https://github.com/SysTechSalihY/modelforge.git
