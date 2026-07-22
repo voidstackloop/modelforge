@@ -9,6 +9,7 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = {
     ollama: "Ollama (local)",
     openai: "ChatGPT",
     anthropic: "Claude",
+    llamacpp: "llama.cpp (local)",
 };
 
 // Curated as of this app's last update — model lineups change often, so the
@@ -40,6 +41,6 @@ export function parseModelRef(ref: string): { provider: ProviderId; modelId: str
     const sepIndex = ref.indexOf(":");
     if (sepIndex === -1) return null;
     const provider = ref.slice(0, sepIndex) as ProviderId;
-    if (provider !== "ollama" && provider !== "openai" && provider !== "anthropic") return null;
+    if (provider !== "ollama" && provider !== "openai" && provider !== "anthropic" && provider !== "llamacpp") return null;
     return { provider, modelId: ref.slice(sepIndex + 1) };
 }

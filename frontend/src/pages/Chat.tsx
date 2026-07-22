@@ -76,6 +76,7 @@ import type {
     ToolCall,
     PromptPreset,
     ProjectScripts,
+    LocalGgufModel,
 } from "@/types/electron";
 
 type Attachment = AttachedFile & { folder?: string };
@@ -334,7 +335,7 @@ const MessageBubble = memo(function MessageBubble({
 function formatUsage(usage: UsageInfo, provider: ProviderId | undefined, modelId: string | undefined): string {
     const total = (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
     const tokenLabel = `${total.toLocaleString()} tokens`;
-    if (provider === "ollama") return `${tokenLabel} · local`;
+    if (provider === "ollama" || provider === "llamacpp") return `${tokenLabel} · local`;
     const cost = modelId ? estimateCost(modelId, usage.promptTokens, usage.completionTokens) : null;
     return cost !== null ? `${tokenLabel} · ~${formatCost(cost)}` : tokenLabel;
 }
@@ -346,6 +347,7 @@ export default function Chat() {
     const { t } = useI18n();
 
     const [models, setModels] = useState<OllamaModel[]>([]);
+    const [llamaCppModels, setLlamaCppModels] = useState<LocalGgufModel[]>([]);
     const [model, setModel] = useState<string>("");
     const [pendingCustomProvider, setPendingCustomProvider] = useState<ProviderId | null>(null);
     const [customModelInput, setCustomModelInput] = useState("");
@@ -409,6 +411,7 @@ export default function Chat() {
         if (!hasApi) return;
         window.api.settings.get().then(setSettings);
         window.api.ollama.listModels().then(setModels);
+        window.api.llamacpp.listModels().then(setLlamaCppModels);
     }, [hasApi]);
 
     useEffect(() => {
@@ -1129,7 +1132,7 @@ export default function Chat() {
     const currentProject = getCurrentProject();
 
     const sessionCost =
-        parsedModel && parsedModel.provider !== "ollama"
+        parsedModel && parsedModel.provider !== "ollama" && parsedModel.provider !== "llamacpp"
             ? messages.reduce((sum, m) => {
                   if (m.role !== "assistant" || !m.usage) return sum;
                   const cost = estimateCost(parsedModel.modelId, m.usage.promptTokens, m.usage.completionTokens);
@@ -1159,6 +1162,16 @@ export default function Chat() {
                                 </SelectItem>
                             ))}
                         </SelectGroup>
+                        {llamaCppModels.length > 0 && (
+                            <SelectGroup>
+                                <SelectLabel>llama.cpp (local)</SelectLabel>
+                                {llamaCppModels.map((m) => (
+                                    <SelectItem key={m.name} value={formatModelRef("llamacpp", m.name)}>
+                                        {m.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectGroup>
+                        )}
                         <SelectGroup>
                             <SelectLabel>ChatGPT</SelectLabel>
                             {OPENAI_MODELS.map((m) => (

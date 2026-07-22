@@ -17,6 +17,8 @@ import {
     History,
     Plug,
     Plus,
+    ChevronDown,
+    ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +46,10 @@ import type {
     PromptVersion,
     McpServerConfig,
     McpServerStatus,
+    LocalGgufModel,
+    LlamaCppGpuBackend,
+    HfModelSummary,
+    HfGgufFile,
 } from "@/types/electron";
 import { EXTRA_MODELS } from "@/lib/model-catalog";
 import { OPENAI_MODELS, ANTHROPIC_MODELS, formatModelRef } from "@/lib/providers";
@@ -130,6 +136,18 @@ export default function Settings() {
     const [mcpDraftCommand, setMcpDraftCommand] = useState("");
     const [mcpDraftUrl, setMcpDraftUrl] = useState("");
 
+    const [llamaCppModels, setLlamaCppModels] = useState<LocalGgufModel[]>([]);
+    const [llamaCppGpuBackends, setLlamaCppGpuBackends] = useState<string[]>([]);
+    const [changingLlamaCppDir, setChangingLlamaCppDir] = useState(false);
+
+    const [hfResults, setHfResults] = useState<HfModelSummary[]>([]);
+    const [hfSearching, setHfSearching] = useState(false);
+    const [hfError, setHfError] = useState<string | null>(null);
+    const [hfExpandedId, setHfExpandedId] = useState<string | null>(null);
+    const [hfFiles, setHfFiles] = useState<HfGgufFile[]>([]);
+    const [hfFilesLoading, setHfFilesLoading] = useState(false);
+    const [hfDownloading, setHfDownloading] = useState<Record<string, number>>({});
+
     async function refreshInstalled() {
         const list = await window.api.ollama.listModels();
         setInstalled(list);
@@ -157,7 +175,81 @@ export default function Settings() {
         window.api.data.getUserDataPath().then(setUserDataPath);
         refreshInstalled();
         window.api.mcp.status().then(setMcpStatuses);
+        window.api.llamacpp.listModels().then(setLlamaCppModels);
+        window.api.llamacpp.getAvailableGpuBackends().then(setLlamaCppGpuBackends);
     }, []);
+
+    // Debounced real Hugging Face Hub search — fires a bit after typing stops
+    // rather than on every keystroke, since it's a network call.
+    useEffect(() => {
+        const query = search.trim();
+        if (!hasApi || !query || /^https?:\/\//i.test(query) || /^hf\.co\//i.test(query)) {
+            // Intentional: clears stale results when the search box empties or
+            // looks like a direct tag/URL paste rather than a search query.
+            // eslint-disable-next-line react-hooks/set-state-in-effect
+            setHfResults([]);
+            setHfError(null);
+            return;
+        }
+        setHfSearching(true);
+        const timer = setTimeout(async () => {
+            const res = await window.api.huggingface.search(query);
+            setHfResults(res.results ?? []);
+            setHfError(res.error ?? null);
+            setHfSearching(false);
+        }, 400);
+        return () => clearTimeout(timer);
+    }, [hasApi, search]);
+
+    async function toggleHfExpanded(modelId: string) {
+        if (hfExpandedId === modelId) {
+            setHfExpandedId(null);
+            return;
+        }
+        setHfExpandedId(modelId);
+        setHfFilesLoading(true);
+        const res = await window.api.huggingface.listFiles(modelId);
+        setHfFiles(res.files ?? []);
+        setHfFilesLoading(false);
+    }
+
+    async function downloadForLlamaCpp(modelId: string, filename: string) {
+        const key = `${modelId}/${filename}`;
+        setHfDownloading((d) => ({ ...d, [key]: 0 }));
+        const res = await window.api.huggingface.downloadFile(modelId, filename, (progress) => {
+            if (progress.totalBytes) {
+                setHfDownloading((d) => ({ ...d, [key]: Math.round((progress.receivedBytes / progress.totalBytes!) * 100) }));
+            }
+        });
+        setHfDownloading((d) => {
+            const next = { ...d };
+            delete next[key];
+            return next;
+        });
+        if (!res.error) window.api.llamacpp.listModels().then(setLlamaCppModels);
+    }
+
+    async function deleteLlamaCppModel(name: string) {
+        await window.api.llamacpp.deleteModel(name);
+        window.api.llamacpp.listModels().then(setLlamaCppModels);
+    }
+
+    async function changeLlamaCppGpuBackend(backend: LlamaCppGpuBackend) {
+        await window.api.llamacpp.setGpuBackend(backend);
+        const updated = await window.api.settings.get();
+        setSettings(updated);
+    }
+
+    async function chooseLlamaCppModelsDir() {
+        setChangingLlamaCppDir(true);
+        const dir = await window.api.llamacpp.pickModelsDir();
+        if (dir) {
+            const updated = await window.api.settings.get();
+            setSettings(updated);
+            window.api.llamacpp.listModels().then(setLlamaCppModels);
+        }
+        setChangingLlamaCppDir(false);
+    }
 
     async function handleExportAll() {
         await window.api.data.exportAll();
@@ -552,6 +644,64 @@ export default function Settings() {
                                 {modelsDirStatus && <p className="text-xs text-muted-foreground">{modelsDirStatus}</p>}
                             </SettingsRow>
                         </SettingsSection>
+
+                        {settings && (
+                            <SettingsSection title={t.llamaCppSection} description={t.llamaCppHint}>
+                                <SettingsRow label={t.gpuBackend} description={t.gpuBackendHint} stacked>
+                                    <Select
+                                        value={settings.llamaCppGpuBackend ?? "auto"}
+                                        onValueChange={(v) => changeLlamaCppGpuBackend(v as LlamaCppGpuBackend)}
+                                    >
+                                        <SelectTrigger size="sm" className="w-48">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="auto">{t.gpuBackendAuto}</SelectItem>
+                                            {llamaCppGpuBackends.includes("vulkan") && <SelectItem value="vulkan">Vulkan</SelectItem>}
+                                            {llamaCppGpuBackends.includes("cuda") && <SelectItem value="cuda">CUDA</SelectItem>}
+                                            {llamaCppGpuBackends.includes("metal") && <SelectItem value="metal">Metal</SelectItem>}
+                                            <SelectItem value="cpu">{t.gpuBackendCpu}</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </SettingsRow>
+                                <SettingsRow label={t.modelsDir} stacked>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="truncate rounded border border-border bg-muted px-2 py-1 font-mono text-xs">
+                                            {settings.llamaCppModelsDir ?? t.modelsDirDefault}
+                                        </span>
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            disabled={changingLlamaCppDir}
+                                            onClick={chooseLlamaCppModelsDir}
+                                            className="gap-1.5"
+                                        >
+                                            {changingLlamaCppDir ? (
+                                                <Loader2 className="size-3.5 animate-spin" />
+                                            ) : (
+                                                <FolderOpen className="size-3.5" />
+                                            )}
+                                            {t.chooseFolder}
+                                        </Button>
+                                    </div>
+                                </SettingsRow>
+                                {llamaCppModels.map((m) => (
+                                    <SettingsRow key={m.name} label={m.name} description={formatBytes(m.sizeBytes)}>
+                                        <Button
+                                            size="icon"
+                                            variant="ghost"
+                                            onClick={() => deleteLlamaCppModel(m.name)}
+                                            aria-label={`Delete ${m.name}`}
+                                        >
+                                            <Trash2 className="text-destructive" />
+                                        </Button>
+                                    </SettingsRow>
+                                ))}
+                                {llamaCppModels.length === 0 && (
+                                    <p className="p-4 text-xs text-muted-foreground">{t.llamaCppNoModels}</p>
+                                )}
+                            </SettingsSection>
+                        )}
 
                         <SettingsSection title={t.appearance}>
                             <SettingsRow label={t.colorMode}>
@@ -1029,6 +1179,82 @@ export default function Settings() {
                                 );
                             })()}
                         </SettingsSection>
+
+                        {search.trim() && (
+                            <SettingsSection title={t.huggingFaceResults} description={t.huggingFaceResultsHint}>
+                                {hfSearching && (
+                                    <div className="flex items-center justify-center p-4">
+                                        <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                                    </div>
+                                )}
+                                {hfError && <p className="p-4 text-xs text-destructive">{hfError}</p>}
+                                {!hfSearching && !hfError && hfResults.length === 0 && (
+                                    <p className="p-4 text-xs text-muted-foreground">{t.noHuggingFaceResults}</p>
+                                )}
+                                {hfResults.map((r) => (
+                                    <div key={r.id} className="border-b border-border last:border-b-0">
+                                        <button
+                                            onClick={() => toggleHfExpanded(r.id)}
+                                            className="flex w-full items-center justify-between gap-2 p-4 text-left hover:bg-muted/50"
+                                        >
+                                            <div className="min-w-0">
+                                                <p className="truncate text-sm font-medium">{r.id}</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {r.downloads.toLocaleString()} {t.downloads} · {r.likes.toLocaleString()} {t.likes}
+                                                </p>
+                                            </div>
+                                            {hfExpandedId === r.id ? (
+                                                <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+                                            ) : (
+                                                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                                            )}
+                                        </button>
+                                        {hfExpandedId === r.id && (
+                                            <div className="flex flex-col gap-1.5 px-4 pb-4">
+                                                {hfFilesLoading ? (
+                                                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                                                ) : hfFiles.length === 0 ? (
+                                                    <p className="text-xs text-muted-foreground">{t.noGgufFiles}</p>
+                                                ) : (
+                                                    hfFiles.map((f) => {
+                                                        const key = `${r.id}/${f.path}`;
+                                                        const progress = hfDownloading[key];
+                                                        const ggufTag = `hf.co/${r.id}`;
+                                                        return (
+                                                            <div
+                                                                key={f.path}
+                                                                className="flex items-center justify-between gap-2 rounded-md border border-border p-2 text-xs"
+                                                            >
+                                                                <div className="min-w-0">
+                                                                    <p className="truncate font-mono">{f.path}</p>
+                                                                    {f.sizeBytes !== null && (
+                                                                        <p className="text-muted-foreground">{formatBytes(f.sizeBytes)}</p>
+                                                                    )}
+                                                                    {progress !== undefined && <Progress value={progress} className="mt-1 h-1" />}
+                                                                </div>
+                                                                <div className="flex shrink-0 gap-1.5">
+                                                                    <Button size="sm" variant="outline" onClick={() => pullModel(ggufTag)}>
+                                                                        {t.pullWithOllama}
+                                                                    </Button>
+                                                                    <Button
+                                                                        size="sm"
+                                                                        variant="outline"
+                                                                        disabled={progress !== undefined}
+                                                                        onClick={() => downloadForLlamaCpp(r.id, f.path)}
+                                                                    >
+                                                                        {t.downloadForLlamaCpp}
+                                                                    </Button>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </SettingsSection>
+                        )}
 
                         {otherInstalled.length > 0 && (
                             <SettingsSection title={t.otherInstalledModels}>

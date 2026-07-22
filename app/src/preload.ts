@@ -5,6 +5,7 @@ import type { ChatMessage, ChatChunk, ChatOptions, ProviderId } from "./provider
 import type { McpServerConfig, McpServerStatus } from "./mcp-client";
 import type { RollbackResult, ProjectScripts } from "./agent-tools";
 import type { PromptPreset } from "./settings-store";
+import type { LocalGgufModel, GpuBackend } from "./llamacpp-manager";
 
 interface ToolExecuteResult {
     result?: unknown;
@@ -30,6 +31,26 @@ interface FigmaFetchResult {
 
 interface OcrResult {
     text?: string;
+    error?: string;
+}
+
+interface HfSearchResult {
+    results?: { id: string; downloads: number; likes: number; tags: string[] }[];
+    error?: string;
+}
+
+interface HfListFilesResult {
+    files?: { path: string; sizeBytes: number | null }[];
+    error?: string;
+}
+
+interface HfDownloadProgress {
+    receivedBytes: number;
+    totalBytes: number | null;
+}
+
+interface HfDownloadResult {
+    path?: string;
     error?: string;
 }
 
@@ -61,6 +82,14 @@ contextBridge.exposeInMainWorld("api", {
                 .invoke("ollama:pull", { requestId, name })
                 .finally(() => ipcRenderer.removeListener(channel, listener));
         },
+    },
+
+    llamacpp: {
+        listModels: (): Promise<LocalGgufModel[]> => ipcRenderer.invoke("llamacpp:listModels"),
+        deleteModel: (name: string): Promise<void> => ipcRenderer.invoke("llamacpp:deleteModel", name),
+        getAvailableGpuBackends: (): Promise<string[]> => ipcRenderer.invoke("llamacpp:getAvailableGpuBackends"),
+        setGpuBackend: (backend: GpuBackend): Promise<void> => ipcRenderer.invoke("llamacpp:setGpuBackend", backend),
+        pickModelsDir: (): Promise<string | null> => ipcRenderer.invoke("llamacpp:pickModelsDir"),
     },
 
     chat: {
@@ -195,5 +224,23 @@ contextBridge.exposeInMainWorld("api", {
 
     ocr: {
         recognize: (imageBase64: string): Promise<OcrResult> => ipcRenderer.invoke("ocr:recognize", imageBase64),
+    },
+
+    huggingface: {
+        search: (query: string): Promise<HfSearchResult> => ipcRenderer.invoke("hf:search", query),
+        listFiles: (modelId: string): Promise<HfListFilesResult> => ipcRenderer.invoke("hf:listFiles", modelId),
+        downloadFile: (
+            modelId: string,
+            filename: string,
+            onProgress: (progress: HfDownloadProgress) => void
+        ): Promise<HfDownloadResult> => {
+            const requestId = randomId();
+            const channel = `hf:downloadProgress:${requestId}`;
+            const listener = (_event: unknown, progress: HfDownloadProgress) => onProgress(progress);
+            ipcRenderer.on(channel, listener);
+            return ipcRenderer
+                .invoke("hf:downloadFile", { requestId, modelId, filename })
+                .finally(() => ipcRenderer.removeListener(channel, listener));
+        },
     },
 });

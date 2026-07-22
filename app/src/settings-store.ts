@@ -52,6 +52,11 @@ export interface AppSettings {
     // handles, discovered tools) lives in mcp-client.ts and is rebuilt on
     // launch / reconnect, never serialized.
     mcpServers?: McpServerConfig[];
+    // Where downloaded GGUF files for the llama.cpp backend are stored.
+    // Separate from `modelsDir` (which configures Ollama's own OLLAMA_MODELS
+    // directory) since the two backends use incompatible on-disk layouts.
+    llamaCppModelsDir?: string;
+    llamaCppGpuBackend?: "auto" | "vulkan" | "cuda" | "metal" | "cpu";
 }
 
 const DEFAULTS: AppSettings = {

@@ -50,7 +50,7 @@ export interface ChatChunk {
     toolCalls?: ToolCall[];
 }
 
-export type ProviderId = "ollama" | "openai" | "anthropic";
+export type ProviderId = "ollama" | "openai" | "anthropic" | "llamacpp";
 
 export interface ChatOptions {
     temperature?: number;

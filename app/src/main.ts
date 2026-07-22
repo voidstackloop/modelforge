@@ -16,6 +16,8 @@ import * as agentTools from "./agent-tools";
 import * as mcpClient from "./mcp-client";
 import * as figma from "./figma";
 import * as ocr from "./ocr";
+import * as huggingface from "./huggingface";
+import * as llamacpp from "./llamacpp-manager";
 import type { McpServerConfig } from "./mcp-client";
 import type { AttachedFile } from "./file-reader";
 import * as openaiProvider from "./providers/openai";
@@ -24,7 +26,7 @@ import { setupMenu } from "./menu";
 import { setupAutoUpdater, checkForUpdatesManually } from "./updater";
 import type { ChatMessage, ChatChunk, ChatOptions, ProviderId } from "./providers/types";
 
-const PROVIDER_SECRET_KEYS: Record<Exclude<ProviderId, "ollama">, string> = {
+const PROVIDER_SECRET_KEYS: Record<Exclude<ProviderId, "ollama" | "llamacpp">, string> = {
     openai: "openai_api_key",
     anthropic: "anthropic_api_key",
 };
@@ -44,6 +46,13 @@ function requireString(value: unknown, label: string): string {
         throw new Error(`Invalid ${label}: expected a non-empty string`);
     }
     return value;
+}
+
+function getLlamaCppModelsDir(): string {
+    const configured = settingsStore.getSettings().llamaCppModelsDir;
+    const dir = configured || path.join(app.getPath("userData"), "llamacpp-models");
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
 }
 
 // Without these, an unexpected error anywhere in the main process (a bad file
@@ -186,6 +195,24 @@ function registerIpcHandlers(): void {
         ollama.deleteModel(requireString(name, "model name"))
     );
 
+    ipcMain.handle("llamacpp:listModels", () => llamacpp.listModels(getLlamaCppModelsDir()));
+    ipcMain.handle("llamacpp:deleteModel", (_event: IpcMainInvokeEvent, name: string) => {
+        llamacpp.deleteModel(getLlamaCppModelsDir(), requireString(name, "model name"));
+    });
+    ipcMain.handle("llamacpp:getAvailableGpuBackends", () => llamacpp.getAvailableGpuBackends());
+    ipcMain.handle("llamacpp:setGpuBackend", (_event: IpcMainInvokeEvent, backend: llamacpp.GpuBackend) => {
+        llamacpp.setGpuBackend(backend);
+        settingsStore.saveSettings({ llamaCppGpuBackend: backend });
+    });
+    ipcMain.handle("llamacpp:pickModelsDir", async () => {
+        const result = mainWindow
+            ? await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "createDirectory"] })
+            : await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
+        if (result.canceled || result.filePaths.length === 0) return null;
+        settingsStore.saveSettings({ llamaCppModelsDir: result.filePaths[0] });
+        return result.filePaths[0];
+    });
+
     ipcMain.handle(
         "ollama:pull",
         async (event: IpcMainInvokeEvent, { requestId, name }: { requestId: string; name: string }) => {
@@ -228,6 +255,9 @@ function registerIpcHandlers(): void {
             try {
                 if (provider === "ollama") {
                     await ollama.chat(model, messages, options, onToken, controller.signal, tools);
+                } else if (provider === "llamacpp") {
+                    const modelPath = path.join(getLlamaCppModelsDir(), model);
+                    await llamacpp.chat(modelPath, messages, options, onToken, controller.signal, tools);
                 } else {
                     const secretKey = PROVIDER_SECRET_KEYS[provider];
                     const apiKey = secretsStore.getSecret(secretKey);
@@ -368,6 +398,48 @@ function registerIpcHandlers(): void {
             rag.query(indexId, query, topK)
     );
 
+    ipcMain.handle("hf:search", async (_event: IpcMainInvokeEvent, query: string) => {
+        try {
+            return { results: await huggingface.searchGgufModels(String(query ?? "")) };
+        } catch (err) {
+            return { error: (err as Error).message };
+        }
+    });
+
+    ipcMain.handle("hf:listFiles", async (_event: IpcMainInvokeEvent, modelId: string) => {
+        requireString(modelId, "model id");
+        try {
+            return { files: await huggingface.listGgufFiles(modelId) };
+        } catch (err) {
+            return { error: (err as Error).message };
+        }
+    });
+
+    ipcMain.handle(
+        "hf:downloadFile",
+        async (
+            event: IpcMainInvokeEvent,
+            { requestId, modelId, filename }: { requestId: string; modelId: string; filename: string }
+        ) => {
+            requireString(modelId, "model id");
+            requireString(filename, "filename");
+            const dir = getLlamaCppModelsDir();
+            const destPath = path.join(dir, filename.replace(/[/\\]/g, "_"));
+            const channel = `hf:downloadProgress:${requestId}`;
+            try {
+                await huggingface.downloadGgufFile(modelId, filename, destPath, (progress) =>
+                    event.sender.send(channel, progress)
+                );
+                return { path: destPath };
+            } catch (err) {
+                const error = err as Error;
+                logger.error(`Hugging Face download failed (${modelId}/${filename}): ${error.message}`);
+                fs.rmSync(destPath, { force: true });
+                return { error: error.message };
+            }
+        }
+    );
+
     ipcMain.handle("ocr:recognize", async (_event: IpcMainInvokeEvent, imageBase64: string) => {
         requireString(imageBase64, "image data");
         try {
@@ -505,6 +577,7 @@ app.whenReady().then(async () => {
     ollama.setHost(settingsStore.getSettings().ollamaHost);
     ollama.setModelsDir(settingsStore.getSettings().modelsDir);
     await ollama.start();
+    llamacpp.setGpuBackend(settingsStore.getSettings().llamaCppGpuBackend ?? "auto");
     setupAutoUpdater(() => mainWindow);
     void connectEnabledMcpServers();
 

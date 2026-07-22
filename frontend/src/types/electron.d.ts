@@ -147,6 +147,23 @@ export interface OcrResult {
   error?: string;
 }
 
+export interface HfModelSummary {
+  id: string;
+  downloads: number;
+  likes: number;
+  tags: string[];
+}
+
+export interface HfGgufFile {
+  path: string;
+  sizeBytes: number | null;
+}
+
+export interface HfDownloadProgress {
+  receivedBytes: number;
+  totalBytes: number | null;
+}
+
 export interface AppSettings {
   defaultModel: string | null;
   ollamaHost: string;
@@ -169,6 +186,8 @@ export interface AppSettings {
   ttsAutoRead?: boolean;
   mcpServers?: McpServerConfig[];
   modelsDir?: string;
+  llamaCppModelsDir?: string;
+  llamaCppGpuBackend?: "auto" | "vulkan" | "cuda" | "metal" | "cpu";
 }
 
 export interface ChatOptions {
@@ -253,7 +272,15 @@ export interface ImageAttachment {
 
 export type MediaAttachment = TextAttachment | ImageAttachment;
 
-export type ProviderId = "ollama" | "openai" | "anthropic";
+export type ProviderId = "ollama" | "openai" | "anthropic" | "llamacpp";
+
+export interface LocalGgufModel {
+  name: string;
+  path: string;
+  sizeBytes: number;
+}
+
+export type LlamaCppGpuBackend = "auto" | "vulkan" | "cuda" | "metal" | "cpu";
 
 export interface RagChunk {
   text: string;
@@ -276,6 +303,13 @@ export interface ElectronApi {
     pickModelsDir: () => Promise<string | null>;
     setModelsDir: (dir: string | null) => Promise<RestartResult>;
     pullModel: (name: string, onProgress: (chunk: PullProgress) => void) => Promise<{ done: boolean; error?: string }>;
+  };
+  llamacpp: {
+    listModels: () => Promise<LocalGgufModel[]>;
+    deleteModel: (name: string) => Promise<void>;
+    getAvailableGpuBackends: () => Promise<string[]>;
+    setGpuBackend: (backend: LlamaCppGpuBackend) => Promise<void>;
+    pickModelsDir: () => Promise<string | null>;
   };
   chat: {
     send: (
@@ -398,6 +432,15 @@ export interface ElectronApi {
   };
   ocr: {
     recognize: (imageBase64: string) => Promise<OcrResult>;
+  };
+  huggingface: {
+    search: (query: string) => Promise<{ results?: HfModelSummary[]; error?: string }>;
+    listFiles: (modelId: string) => Promise<{ files?: HfGgufFile[]; error?: string }>;
+    downloadFile: (
+      modelId: string,
+      filename: string,
+      onProgress: (progress: HfDownloadProgress) => void
+    ) => Promise<{ path?: string; error?: string }>;
   };
 }
 

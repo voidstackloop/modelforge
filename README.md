@@ -27,7 +27,8 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 ## Features
 
 **Chat & providers**
-- Local Ollama models, OpenAI, and Anthropic in one interface, with token-by-token streaming.
+- Local Ollama models, OpenAI, Anthropic, **and llama.cpp** in one interface, with token-by-token streaming.
+- **llama.cpp backend** — run GGUF models directly via [node-llama-cpp](https://github.com/withcatai/node-llama-cpp) instead of Ollama, with **Vulkan**, CUDA, or Metal GPU acceleration (auto-detected, selectable in Settings). Useful for Vulkan acceleration or models Ollama doesn't package. This is an *additional* backend, not a replacement — Ollama is still fully supported side by side. Agent mode tool-calling isn't wired up for this backend yet (a clear error explains this if you try); everything else (streaming, GPU offload, all the generation parameters) works the same as any other provider. Model weights load once and stay warm across messages, but each turn currently re-evaluates the full conversation from scratch rather than reusing a cache across turns — correct, but slower on long conversations than it could be.
 - Vision support — attach images (or extract frames from a video) for models that can see them. When an image is attached, an **"Analyze as..."** menu fills the composer with a ready-made prompt for common diagram/wireframe tasks — describe the UI, convert it to a Mermaid diagram, generate React + Tailwind code from it, list its components, or review it for usability/accessibility issues.
 - Live token usage and estimated cost per message and per session (Ollama is free/local; cloud providers show a running estimate).
 
@@ -54,7 +55,7 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 **Models & hardware**
 - Model recommendations based on your actual hardware — RAM and VRAM are detected and summed **across all GPUs**, not just the first one, so multi-GPU machines get accurate suggestions.
 - **GPU offload control** — set how many model layers Ollama offloads to GPU (`num_gpu`) per chat, per project, or as a global default; leave it blank to let Ollama decide automatically.
-- **Pull models directly from Hugging Face** — paste any GGUF model's Hugging Face URL (or `hf.co/user/repo`) into the model search box alongside the curated catalog and Ollama's own library.
+- **Real Hugging Face search** — typing in the model search box queries the actual Hugging Face Hub API (not just "paste an exact URL"), showing real repos ranked by downloads/likes; expand one to see its actual GGUF files with real file sizes, then either pull it via Ollama or download it directly for the llama.cpp backend. Pasting an exact `hf.co/user/repo` tag or a full URL still works too, for Ollama's own pull mechanism.
 - Models with reliable tool/function-calling support are flagged with a 🔧 badge, so picking a good Agent mode model doesn't require guesswork.
 - **Custom model storage location** — Settings → Ollama Server → "Model storage location" lets you point downloaded models at any folder (e.g. a larger or faster drive) instead of Ollama's default location. If this app started Ollama, it restarts it automatically with the new location; if Ollama is running outside the app, you're told to restart it yourself.
 

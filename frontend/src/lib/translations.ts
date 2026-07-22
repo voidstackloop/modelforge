@@ -147,6 +147,21 @@ export interface Dictionary {
     pinnedMessages: string;
     you: string;
     assistant: string;
+    llamaCppSection: string;
+    llamaCppHint: string;
+    gpuBackend: string;
+    gpuBackendHint: string;
+    gpuBackendAuto: string;
+    gpuBackendCpu: string;
+    llamaCppNoModels: string;
+    huggingFaceResults: string;
+    huggingFaceResultsHint: string;
+    noHuggingFaceResults: string;
+    downloads: string;
+    likes: string;
+    noGgufFiles: string;
+    pullWithOllama: string;
+    downloadForLlamaCpp: string;
     resetToDefault: string;
     usingCustomPrompt: string;
     dataManagement: string;
@@ -332,6 +347,21 @@ export const en: Dictionary = {
     pinnedMessages: "Pinned",
     you: "You",
     assistant: "Assistant",
+    llamaCppSection: "llama.cpp (local)",
+    llamaCppHint: "Run GGUF models directly via llama.cpp instead of Ollama — useful for Vulkan GPU acceleration or models Ollama doesn't package. Agent mode tool-calling isn't supported on this backend yet.",
+    gpuBackend: "GPU backend",
+    gpuBackendHint: "Only backends detected on this machine are shown as selectable, besides Auto and CPU.",
+    gpuBackendAuto: "Auto-detect",
+    gpuBackendCpu: "CPU only",
+    llamaCppNoModels: "No GGUF models downloaded yet — search Hugging Face below and choose \"Download for llama.cpp\".",
+    huggingFaceResults: "Hugging Face results",
+    huggingFaceResultsHint: "Real search results from huggingface.co — expand a model to see its GGUF files.",
+    noHuggingFaceResults: "No matching models found on Hugging Face.",
+    downloads: "downloads",
+    likes: "likes",
+    noGgufFiles: "No GGUF files found in this repo.",
+    pullWithOllama: "Pull with Ollama",
+    downloadForLlamaCpp: "Download for llama.cpp",
     resetToDefault: "Reset to default",
     usingCustomPrompt: "Custom prompt for this chat",
     dataManagement: "Data management",
@@ -525,6 +555,21 @@ export const tr: Dictionary = {
     pinnedMessages: "Sabitlenenler",
     you: "Siz",
     assistant: "Asistan",
+    llamaCppSection: "llama.cpp (yerel)",
+    llamaCppHint: "GGUF modellerini Ollama yerine doğrudan llama.cpp ile çalıştırın — Vulkan GPU hızlandırma veya Ollama'nın paketlemediği modeller için kullanışlı. Agent modu araç çağırma bu backend'de henüz desteklenmiyor.",
+    gpuBackend: "GPU backend'i",
+    gpuBackendHint: "Otomatik ve CPU dışında yalnızca bu makinede tespit edilen backend'ler seçilebilir olarak gösterilir.",
+    gpuBackendAuto: "Otomatik algıla",
+    gpuBackendCpu: "Yalnızca CPU",
+    llamaCppNoModels: "Henüz indirilmiş GGUF modeli yok — aşağıdan Hugging Face'te arayın ve \"llama.cpp için indir\"i seçin.",
+    huggingFaceResults: "Hugging Face sonuçları",
+    huggingFaceResultsHint: "huggingface.co'dan gerçek arama sonuçları — GGUF dosyalarını görmek için bir modeli genişletin.",
+    noHuggingFaceResults: "Hugging Face'te eşleşen model bulunamadı.",
+    downloads: "indirme",
+    likes: "beğeni",
+    noGgufFiles: "Bu depoda GGUF dosyası bulunamadı.",
+    pullWithOllama: "Ollama ile indir",
+    downloadForLlamaCpp: "llama.cpp için indir",
     resetToDefault: "Varsayılana dön",
     usingCustomPrompt: "Bu sohbet için özel istem",
     dataManagement: "Veri yönetimi",
