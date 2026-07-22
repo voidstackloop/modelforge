@@ -15,6 +15,8 @@ import {
     RefreshCw,
     Pencil,
     History,
+    Plug,
+    Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +35,16 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
-import type { AppSettings, ModelRecommendations, OllamaModel, SystemSpecs, PromptPreset, PromptVersion } from "@/types/electron";
+import type {
+    AppSettings,
+    ModelRecommendations,
+    OllamaModel,
+    SystemSpecs,
+    PromptPreset,
+    PromptVersion,
+    McpServerConfig,
+    McpServerStatus,
+} from "@/types/electron";
 import { EXTRA_MODELS } from "@/lib/model-catalog";
 import { OPENAI_MODELS, ANTHROPIC_MODELS, formatModelRef } from "@/lib/providers";
 import { useSessions } from "@/lib/sessions-context";
@@ -106,6 +117,14 @@ export default function Settings() {
     const { refresh: refreshSessions } = useSessions();
     const activePullCount = useRef(0);
 
+    const [mcpStatuses, setMcpStatuses] = useState<Record<string, McpServerStatus>>({});
+    const [mcpConnecting, setMcpConnecting] = useState<Record<string, boolean>>({});
+    const [showAddMcp, setShowAddMcp] = useState(false);
+    const [mcpDraftName, setMcpDraftName] = useState("");
+    const [mcpDraftTransport, setMcpDraftTransport] = useState<"stdio" | "http">("stdio");
+    const [mcpDraftCommand, setMcpDraftCommand] = useState("");
+    const [mcpDraftUrl, setMcpDraftUrl] = useState("");
+
     async function refreshInstalled() {
         const list = await window.api.ollama.listModels();
         setInstalled(list);
@@ -131,6 +150,7 @@ export default function Settings() {
         window.api.app.getVersion().then(setAppVersion);
         window.api.data.getUserDataPath().then(setUserDataPath);
         refreshInstalled();
+        window.api.mcp.status().then(setMcpStatuses);
     }, []);
 
     async function handleExportAll() {
@@ -235,6 +255,61 @@ export default function Settings() {
         const merged = { ...settings, ...partial };
         setSettings(merged);
         await window.api.settings.save(partial);
+    }
+
+    async function connectMcpServer(server: McpServerConfig) {
+        setMcpConnecting((c) => ({ ...c, [server.id]: true }));
+        const res = await window.api.mcp.connect(server);
+        setMcpStatuses((s) => ({
+            ...s,
+            [server.id]: res.error
+                ? { connected: false, toolCount: 0, error: res.error }
+                : { connected: true, toolCount: res.tools?.length ?? 0 },
+        }));
+        setMcpConnecting((c) => ({ ...c, [server.id]: false }));
+    }
+
+    async function disconnectMcpServer(id: string) {
+        await window.api.mcp.disconnect(id);
+        setMcpStatuses((s) => ({ ...s, [id]: { connected: false, toolCount: 0 } }));
+    }
+
+    async function addMcpServer() {
+        if (!settings) return;
+        const name = mcpDraftName.trim();
+        if (!name) return;
+        const server: McpServerConfig =
+            mcpDraftTransport === "stdio"
+                ? {
+                      id: crypto.randomUUID(),
+                      name,
+                      transport: "stdio",
+                      enabled: true,
+                      command: mcpDraftCommand.trim().split(/\s+/)[0] ?? "",
+                      args: mcpDraftCommand.trim().split(/\s+/).slice(1),
+                  }
+                : { id: crypto.randomUUID(), name, transport: "http", enabled: true, url: mcpDraftUrl.trim() };
+        const updated = await window.api.settings.save({ mcpServers: [...(settings.mcpServers ?? []), server] });
+        setSettings(updated);
+        setMcpDraftName("");
+        setMcpDraftCommand("");
+        setMcpDraftUrl("");
+        setShowAddMcp(false);
+        connectMcpServer(server);
+    }
+
+    async function removeMcpServer(id: string) {
+        if (!settings) return;
+        await window.api.mcp.disconnect(id);
+        const updated = await window.api.settings.save({
+            mcpServers: (settings.mcpServers ?? []).filter((s) => s.id !== id),
+        });
+        setSettings(updated);
+        setMcpStatuses((s) => {
+            const next = { ...s };
+            delete next[id];
+            return next;
+        });
     }
 
     const MAX_PRESET_VERSIONS = 10;
@@ -466,6 +541,125 @@ export default function Settings() {
                                             {t.ttsVoiceTest}
                                         </Button>
                                     </div>
+                                </SettingsRow>
+                            </SettingsSection>
+                        )}
+
+                        {settings && (
+                            <SettingsSection title={t.mcpServersSection} description={t.mcpServersHint}>
+                                {(settings.mcpServers ?? []).map((server) => {
+                                    const status = mcpStatuses[server.id];
+                                    const connecting = mcpConnecting[server.id];
+                                    return (
+                                        <SettingsRow
+                                            key={server.id}
+                                            label={server.name}
+                                            description={
+                                                server.transport === "stdio"
+                                                    ? `stdio · ${server.command} ${(server.args ?? []).join(" ")}`.trim()
+                                                    : `http · ${server.url}`
+                                            }
+                                            stacked
+                                        >
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Badge variant={status?.connected ? "default" : "secondary"}>
+                                                    {status?.connected
+                                                        ? `${t.mcpConnected} · ${status.toolCount} ${t.mcpToolCount}`
+                                                        : t.mcpNotConnected}
+                                                </Badge>
+                                                {status?.error && (
+                                                    <span className="text-xs text-destructive">{status.error}</span>
+                                                )}
+                                                {status?.connected ? (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() => disconnectMcpServer(server.id)}
+                                                    >
+                                                        {t.mcpDisconnect}
+                                                    </Button>
+                                                ) : (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        disabled={connecting}
+                                                        onClick={() => connectMcpServer(server)}
+                                                    >
+                                                        {connecting ? (
+                                                            <Loader2 className="size-3.5 animate-spin" />
+                                                        ) : (
+                                                            <Plug className="size-3.5" />
+                                                        )}
+                                                        {connecting ? t.mcpConnecting : t.mcpConnect}
+                                                    </Button>
+                                                )}
+                                                <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={() => removeMcpServer(server.id)}
+                                                    aria-label={`${t.mcpRemove} ${server.name}`}
+                                                >
+                                                    <Trash2 className="size-3.5 text-destructive" />
+                                                </Button>
+                                            </div>
+                                        </SettingsRow>
+                                    );
+                                })}
+                                <SettingsRow stacked>
+                                    {showAddMcp ? (
+                                        <div className="flex flex-col gap-2">
+                                            <Input
+                                                value={mcpDraftName}
+                                                onChange={(e) => setMcpDraftName(e.target.value)}
+                                                placeholder={t.mcpServerName}
+                                                className="h-8 text-xs"
+                                            />
+                                            <Select
+                                                value={mcpDraftTransport}
+                                                onValueChange={(v) => setMcpDraftTransport(v as "stdio" | "http")}
+                                            >
+                                                <SelectTrigger size="sm" className="w-36">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="stdio">stdio</SelectItem>
+                                                    <SelectItem value="http">HTTP</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                            {mcpDraftTransport === "stdio" ? (
+                                                <Input
+                                                    value={mcpDraftCommand}
+                                                    onChange={(e) => setMcpDraftCommand(e.target.value)}
+                                                    placeholder={t.mcpCommandHint}
+                                                    className="h-8 text-xs"
+                                                />
+                                            ) : (
+                                                <Input
+                                                    value={mcpDraftUrl}
+                                                    onChange={(e) => setMcpDraftUrl(e.target.value)}
+                                                    placeholder={t.mcpUrlHint}
+                                                    className="h-8 text-xs"
+                                                />
+                                            )}
+                                            <div className="flex gap-2">
+                                                <Button size="sm" onClick={addMcpServer} className="gap-1.5">
+                                                    <Plus className="size-3.5" /> {t.mcpAdd}
+                                                </Button>
+                                                <Button size="sm" variant="outline" onClick={() => setShowAddMcp(false)}>
+                                                    {t.cancel}
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => setShowAddMcp(true)}
+                                            className="w-fit gap-1.5"
+                                        >
+                                            <Plus className="size-3.5" /> {t.addMcpServer}
+                                        </Button>
+                                    )}
                                 </SettingsRow>
                             </SettingsSection>
                         )}

@@ -137,6 +137,18 @@ Click **Agent** in the chat toolbar and pick a folder — that becomes the model
 - A per-turn step limit (25 tool-result → model-continuation round trips) stops a model from looping indefinitely without producing a final answer.
 - The trust list for "always allow" is in-memory only — closing and reopening a chat resets it.
 
+**Preview & Rollback:**
+- A pending `write_file` call shows a real **line-by-line diff** against the file's current content (or a "new file" badge if it doesn't exist yet) instead of a raw argument dump, so you can see exactly what would change before clicking Allow.
+- **Undo last edit** reverts the most recent applied `write_file` — restoring the previous content, or deleting the file if the edit created it. Undo history is per-workspace, capped at the last 20 writes, and lives only in memory for the running session (not a durable version history).
+
+**Quick actions:** if the workspace has `test`/`lint`/`format` scripts in its `package.json`, **Run Tests**, **Lint**, and **Format** buttons appear in the toolbar — they run the corresponding `npm` script directly (reusing the same sandboxing as `run_command`) and drop the output into the chat, without going through the model.
+
+**MCP (Model Context Protocol) servers:** add external MCP servers in Settings to give Agent mode extra tools — anything from a database query tool to a browser-automation server. Two transports are supported:
+- **stdio** — launches a local command (e.g. `npx -y @modelcontextprotocol/server-filesystem /some/path`) and speaks JSON-RPC over its stdin/stdout.
+- **HTTP** — connects to a remote MCP server's "Streamable HTTP" endpoint.
+
+Enabled servers reconnect automatically on launch; each server's tools appear in Agent mode's tool list prefixed with the server's name, going through the exact same Allow/Deny approval flow as built-in tools. (SSE and plain WebSocket transports aren't implemented — SSE is the legacy MCP HTTP transport, now superseded by Streamable HTTP, and WebSocket isn't part of the MCP spec itself.)
+
 **Model choice matters.** Agent mode works with whatever model you point it at, but only actually produces tool calls if that model was trained for function/tool calling — a model without that training will just chat normally and never call a tool. The Settings model browser flags models with reliable tool-calling support with a 🔧 **Tool calling** badge (e.g. the Qwen3 family, Llama 3.1+, Mistral Nemo, Qwen2.5-Coder, Devstral).
 
 ## Building from source

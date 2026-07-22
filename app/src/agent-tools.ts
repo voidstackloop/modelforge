@@ -98,11 +98,63 @@ export function readFile(workspaceRoot: string, relativePath: string): string {
         : content;
 }
 
+interface WriteBackup {
+    relativePath: string;
+    // null means the file didn't exist before this write — rollback deletes it.
+    previousContent: string | null;
+}
+
+// Undo history is kept in memory only, per workspace, capped so a long agent
+// session doesn't grow this unboundedly. It's intentionally session-scoped
+// (not written to disk) — Rollback is a quick "oops" safety net for the
+// current run, not a durable version history.
+const MAX_BACKUPS_PER_WORKSPACE = 20;
+const writeBackups = new Map<string, WriteBackup[]>();
+
+function normalizeWorkspaceKey(workspaceRoot: string): string {
+    return path.resolve(workspaceRoot);
+}
+
+function recordBackup(workspaceRoot: string, relativePath: string, previousContent: string | null): void {
+    const key = normalizeWorkspaceKey(workspaceRoot);
+    const stack = writeBackups.get(key) ?? [];
+    stack.push({ relativePath, previousContent });
+    while (stack.length > MAX_BACKUPS_PER_WORKSPACE) stack.shift();
+    writeBackups.set(key, stack);
+}
+
 export function writeFile(workspaceRoot: string, relativePath: string, content: string): { bytesWritten: number } {
     const target = resolveSafePath(workspaceRoot, relativePath);
+    let previousContent: string | null = null;
+    try {
+        previousContent = fs.readFileSync(target, "utf-8");
+    } catch {
+        previousContent = null; // file doesn't exist yet — this write creates it
+    }
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, content);
+    recordBackup(workspaceRoot, relativePath, previousContent);
     return { bytesWritten: Buffer.byteLength(content) };
+}
+
+export interface RollbackResult {
+    path: string;
+    restoredContent: boolean; // true = previous content restored, false = newly-created file was deleted
+}
+
+export function rollbackLastWrite(workspaceRoot: string): RollbackResult | null {
+    const key = normalizeWorkspaceKey(workspaceRoot);
+    const stack = writeBackups.get(key);
+    const backup = stack?.pop();
+    if (!backup) return null;
+    const target = resolveSafePath(workspaceRoot, backup.relativePath);
+    if (backup.previousContent === null) {
+        fs.rmSync(target, { force: true });
+        return { path: backup.relativePath, restoredContent: false };
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, backup.previousContent);
+    return { path: backup.relativePath, restoredContent: true };
 }
 
 export function listDir(workspaceRoot: string, relativePath: string): string[] {
@@ -230,6 +282,31 @@ export async function runCommand(workspaceRoot: string, command: string, relativ
         }
         return formatCommandResult(e.stdout ?? "", e.stderr ?? e.message, e.code ?? null);
     }
+}
+
+export interface ProjectScripts {
+    test?: string;
+    lint?: string;
+    format?: string;
+}
+
+// Backs the Test/Lint/Format quick-action buttons — only npm-style
+// package.json scripts are recognized, which covers the JS/TS projects this
+// app's Agent mode is primarily used against.
+export function detectProjectScripts(workspaceRoot: string): ProjectScripts {
+    const pkgPath = resolveSafePath(workspaceRoot, "package.json");
+    let scripts: Record<string, string> = {};
+    try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { scripts?: Record<string, string> };
+        scripts = pkg.scripts ?? {};
+    } catch {
+        return {};
+    }
+    return {
+        test: scripts.test ? "npm test" : undefined,
+        lint: scripts.lint ? "npm run lint" : undefined,
+        format: scripts.format ? "npm run format" : undefined,
+    };
 }
 
 export async function executeTool(workspaceRoot: string, name: string, args: Record<string, unknown>): Promise<unknown> {

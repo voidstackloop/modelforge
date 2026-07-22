@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { app } from "electron";
 import { readJson, writeJson } from "./json-store";
+import type { McpServerConfig } from "./mcp-client";
 
 export interface PromptVersion {
     prompt: string;
@@ -43,6 +44,11 @@ export interface AppSettings {
     // responses should be read aloud automatically as they finish.
     ttsVoiceURI?: string;
     ttsAutoRead?: boolean;
+    // MCP (Model Context Protocol) servers the user has configured. Only
+    // configuration is persisted here — live connection state (process
+    // handles, discovered tools) lives in mcp-client.ts and is rebuilt on
+    // launch / reconnect, never serialized.
+    mcpServers?: McpServerConfig[];
 }
 
 const DEFAULTS: AppSettings = {

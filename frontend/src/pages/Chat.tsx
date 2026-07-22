@@ -22,6 +22,10 @@ import {
     Bot,
     Volume2,
     Mic,
+    Undo2,
+    FlaskConical,
+    Wand2,
+    Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -52,6 +56,7 @@ import { estimateCost, formatCost } from "@/lib/pricing";
 import { extractVariables, fillTemplate } from "@/lib/prompt-templates";
 import { PromptVariableDialog } from "@/components/prompt-variable-dialog";
 import { speakText, stopSpeaking } from "@/lib/tts";
+import { computeLineDiff } from "@/lib/diff";
 import type {
     ChatMessage,
     OllamaModel,
@@ -64,6 +69,7 @@ import type {
     UsageInfo,
     ToolCall,
     PromptPreset,
+    ProjectScripts,
 } from "@/types/electron";
 
 type Attachment = AttachedFile & { folder?: string };
@@ -298,6 +304,10 @@ export default function Chat() {
     const [pendingVariablePreset, setPendingVariablePreset] = useState<PromptPreset | null>(null);
     const [agentStepCount, setAgentStepCount] = useState(0);
     const [autoApprovedTools, setAutoApprovedTools] = useState<Set<string>>(new Set());
+    const [projectScripts, setProjectScripts] = useState<ProjectScripts>({});
+    const [quickActionRunning, setQuickActionRunning] = useState(false);
+    const [undoMessage, setUndoMessage] = useState<string | null>(null);
+    const [writeDiffPreviews, setWriteDiffPreviews] = useState<Record<string, { oldContent: string | null }>>({});
     const [newPresetName, setNewPresetName] = useState("");
     const [autoScroll, setAutoScroll] = useState(true);
     const [showScrollButton, setShowScrollButton] = useState(false);
@@ -325,6 +335,35 @@ export default function Chat() {
     }, [hasApi]);
 
     useEffect(() => {
+        if (!hasApi || !agentWorkspace) {
+            // Intentional: resets state derived from a prop/param change (workspace
+            // cleared), not state computed from the render itself.
+            // eslint-disable-next-line react-hooks/set-state-in-effect
+            setProjectScripts({});
+            return;
+        }
+        window.api.agent.detectScripts(agentWorkspace).then(setProjectScripts);
+    }, [hasApi, agentWorkspace]);
+
+    // Fetch the pre-edit content of any newly-pending write_file calls so the
+    // approval card can show a real diff instead of a raw JSON blob.
+    useEffect(() => {
+        if (!agentWorkspace) return;
+        const writes = pendingToolCalls.filter((c) => c.name === "write_file" && !(c.id in writeDiffPreviews));
+        if (writes.length === 0) return;
+        (async () => {
+            for (const call of writes) {
+                const filePath = String(call.arguments.path ?? "");
+                const res = await window.api.agent.executeTool(agentWorkspace, "read_file", { path: filePath });
+                setWriteDiffPreviews((prev) => ({
+                    ...prev,
+                    [call.id]: { oldContent: res.error ? null : String(res.result ?? "") },
+                }));
+            }
+        })();
+    }, [agentWorkspace, pendingToolCalls, writeDiffPreviews]);
+
+    useEffect(() => {
         if (!hasApi || !sessionId) return;
         window.api.sessions.get(sessionId).then((session) => {
             if (!session) return;
@@ -337,6 +376,8 @@ export default function Chat() {
             setPendingToolCalls([]);
             setAgentStepCount(0);
             setAutoApprovedTools(new Set());
+            setWriteDiffPreviews({});
+            setUndoMessage(null);
             setAutoScroll(true);
             setShowScrollButton(false);
         });
@@ -435,6 +476,36 @@ export default function Chat() {
         if (!folder) return;
         setAgentWorkspace(folder);
         window.api.sessions.update(sessionId, { agentWorkspace: folder });
+    }
+
+    async function undoLastEdit() {
+        if (!agentWorkspace) return;
+        const result = await window.api.agent.rollbackLastWrite(agentWorkspace);
+        setUndoMessage(
+            result
+                ? `${result.restoredContent ? t.restoredFile : t.deletedNewFile} ${result.path}`
+                : t.nothingToUndo
+        );
+        setTimeout(() => setUndoMessage(null), 4000);
+    }
+
+    // Quick actions run a fixed, already-known-safe command directly (bypassing
+    // the model/approval loop entirely, since the user themselves chose to run
+    // it) and drop the result into the chat as a tool-style message for context.
+    async function runQuickAction(command: string) {
+        if (!agentWorkspace || quickActionRunning) return;
+        setQuickActionRunning(true);
+        const res = await window.api.agent.executeTool(agentWorkspace, "run_command", { command });
+        const resultText = res.error ? `Error: ${res.error}` : String(res.result ?? "");
+        setMessages((m) => {
+            const next: ChatMessage[] = [
+                ...m,
+                { role: "tool", content: resultText, toolCallId: crypto.randomUUID(), toolName: "run_command" },
+            ];
+            if (sessionId) window.api.sessions.update(sessionId, { messages: next });
+            return next;
+        });
+        setQuickActionRunning(false);
     }
 
     function confirmCustomModel() {
@@ -984,6 +1055,55 @@ export default function Chat() {
                         {t.agentStep} {agentStepCount}/{AGENT_MAX_STEPS}
                     </span>
                 )}
+                {agentMode && agentWorkspace && (
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={undoLastEdit}
+                        className="gap-1.5 text-xs text-muted-foreground"
+                        title={t.undoLastEdit}
+                    >
+                        <Undo2 className="size-3.5" />
+                        {t.undoLastEdit}
+                    </Button>
+                )}
+                {agentMode && agentWorkspace && projectScripts.test && (
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={quickActionRunning}
+                        onClick={() => runQuickAction(projectScripts.test!)}
+                        className="gap-1.5 text-xs text-muted-foreground"
+                    >
+                        <FlaskConical className="size-3.5" />
+                        {t.runTests}
+                    </Button>
+                )}
+                {agentMode && agentWorkspace && projectScripts.lint && (
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={quickActionRunning}
+                        onClick={() => runQuickAction(projectScripts.lint!)}
+                        className="gap-1.5 text-xs text-muted-foreground"
+                    >
+                        <Wrench className="size-3.5" />
+                        {t.runLint}
+                    </Button>
+                )}
+                {agentMode && agentWorkspace && projectScripts.format && (
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={quickActionRunning}
+                        onClick={() => runQuickAction(projectScripts.format!)}
+                        className="gap-1.5 text-xs text-muted-foreground"
+                    >
+                        <Wand2 className="size-3.5" />
+                        {t.runFormat}
+                    </Button>
+                )}
+                {undoMessage && <span className="text-xs text-muted-foreground">{undoMessage}</span>}
 
                 {sessionCost > 0 && (
                     <span className="ml-auto text-xs text-muted-foreground" title="Estimated session cost">
@@ -1282,38 +1402,91 @@ export default function Chat() {
                             onToggleSpeak={toggleSpeak}
                         />
                     ))}
-                    {pendingToolCalls.map((call) => (
-                        <div
-                            key={call.id}
-                            className="flex max-w-[85%] flex-col gap-2 self-start rounded-lg border border-border bg-muted/50 p-3 text-sm"
-                        >
-                            <div className="font-mono text-xs text-muted-foreground">
-                                🔧 <span className="font-medium text-foreground">{call.name}</span>(
-                                {Object.entries(call.arguments)
-                                    .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
-                                    .join(", ")}
-                                )
-                            </div>
-                            <div className="flex flex-wrap items-center gap-2">
-                                <Button size="sm" onClick={() => respondToToolCall(call, true)} className="gap-1.5">
-                                    <Check className="size-3.5" /> {t.allow}
-                                </Button>
-                                <Button size="sm" variant="outline" onClick={() => respondToToolCall(call, false)} className="gap-1.5">
-                                    <X className="size-3.5" /> {t.deny}
-                                </Button>
-                                {READ_ONLY_TOOLS.has(call.name) && (
+                    {pendingToolCalls.map((call) => {
+                        const isWrite = call.name === "write_file";
+                        const preview = writeDiffPreviews[call.id];
+                        const newContent = String(call.arguments.content ?? "");
+                        const diffLines =
+                            isWrite && preview ? computeLineDiff(preview.oldContent ?? "", newContent) : null;
+                        const MAX_RENDERED_LINES = 400;
+                        return (
+                            <div
+                                key={call.id}
+                                className="flex max-w-[85%] flex-col gap-2 self-start rounded-lg border border-border bg-muted/50 p-3 text-sm"
+                            >
+                                {isWrite ? (
+                                    <div className="flex flex-col gap-1.5">
+                                        <div className="font-mono text-xs text-muted-foreground">
+                                            🔧 <span className="font-medium text-foreground">write_file</span>{" "}
+                                            {String(call.arguments.path ?? "")}
+                                            {preview?.oldContent === null && (
+                                                <span className="ml-1.5 rounded bg-primary/15 px-1 text-primary">
+                                                    {t.newFile}
+                                                </span>
+                                            )}
+                                        </div>
+                                        {diffLines ? (
+                                            <pre className="max-h-64 overflow-auto rounded border border-border bg-background p-2 font-mono text-xs">
+                                                {diffLines.slice(0, MAX_RENDERED_LINES).map((line, idx) => (
+                                                    <div
+                                                        key={idx}
+                                                        className={cn(
+                                                            "whitespace-pre-wrap",
+                                                            line.type === "add" &&
+                                                                "bg-green-500/15 text-green-700 dark:text-green-400",
+                                                            line.type === "remove" &&
+                                                                "bg-red-500/15 text-red-700 dark:text-red-400"
+                                                        )}
+                                                    >
+                                                        {line.type === "add" ? "+ " : line.type === "remove" ? "- " : "  "}
+                                                        {line.text}
+                                                    </div>
+                                                ))}
+                                                {diffLines.length > MAX_RENDERED_LINES && (
+                                                    <div className="text-muted-foreground">
+                                                        … {diffLines.length - MAX_RENDERED_LINES} more lines
+                                                    </div>
+                                                )}
+                                            </pre>
+                                        ) : (
+                                            <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div className="font-mono text-xs text-muted-foreground">
+                                        🔧 <span className="font-medium text-foreground">{call.name}</span>(
+                                        {Object.entries(call.arguments)
+                                            .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+                                            .join(", ")}
+                                        )
+                                    </div>
+                                )}
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Button size="sm" onClick={() => respondToToolCall(call, true)} className="gap-1.5">
+                                        <Check className="size-3.5" /> {t.allow}
+                                    </Button>
                                     <Button
                                         size="sm"
-                                        variant="ghost"
-                                        onClick={() => alwaysAllowTool(call)}
-                                        className="text-xs text-muted-foreground"
+                                        variant="outline"
+                                        onClick={() => respondToToolCall(call, false)}
+                                        className="gap-1.5"
                                     >
-                                        {t.alwaysAllowThisSession}
+                                        <X className="size-3.5" /> {t.deny}
                                     </Button>
-                                )}
+                                    {READ_ONLY_TOOLS.has(call.name) && (
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => alwaysAllowTool(call)}
+                                            className="text-xs text-muted-foreground"
+                                        >
+                                            {t.alwaysAllowThisSession}
+                                        </Button>
+                                    )}
+                                </div>
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                     <div ref={bottomRef} />
                 </div>
             </ScrollArea>

@@ -2,9 +2,16 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { PullProgress } from "./ollama-manager";
 import type { AttachedFile, MediaAttachment } from "./file-reader";
 import type { ChatMessage, ChatChunk, ChatOptions, ProviderId } from "./providers/types";
+import type { McpServerConfig, McpServerStatus } from "./mcp-client";
+import type { RollbackResult, ProjectScripts } from "./agent-tools";
 
 interface ToolExecuteResult {
     result?: unknown;
+    error?: string;
+}
+
+interface McpConnectResult {
+    tools?: { name: string; description?: string; inputSchema?: Record<string, unknown> }[];
     error?: string;
 }
 
@@ -137,5 +144,15 @@ contextBridge.exposeInMainWorld("api", {
         pickWorkspace: (): Promise<string | null> => ipcRenderer.invoke("agent:pickWorkspace"),
         executeTool: (workspaceRoot: string, name: string, args: Record<string, unknown>): Promise<ToolExecuteResult> =>
             ipcRenderer.invoke("tools:execute", { workspaceRoot, name, args }),
+        rollbackLastWrite: (workspaceRoot: string): Promise<RollbackResult | null> =>
+            ipcRenderer.invoke("agent:rollbackLastWrite", workspaceRoot),
+        detectScripts: (workspaceRoot: string): Promise<ProjectScripts> =>
+            ipcRenderer.invoke("agent:detectScripts", workspaceRoot),
+    },
+
+    mcp: {
+        connect: (config: McpServerConfig): Promise<McpConnectResult> => ipcRenderer.invoke("mcp:connect", config),
+        disconnect: (id: string): Promise<void> => ipcRenderer.invoke("mcp:disconnect", id),
+        status: (): Promise<Record<string, McpServerStatus>> => ipcRenderer.invoke("mcp:status"),
     },
 });

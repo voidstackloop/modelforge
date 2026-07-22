@@ -91,6 +91,29 @@ export interface Dictionary {
     ttsVoiceTest: string;
     enabled: string;
     disabled: string;
+    mcpServersSection: string;
+    mcpServersHint: string;
+    addMcpServer: string;
+    mcpServerName: string;
+    mcpTransport: string;
+    mcpCommandHint: string;
+    mcpUrlHint: string;
+    mcpConnect: string;
+    mcpConnecting: string;
+    mcpDisconnect: string;
+    mcpRemove: string;
+    mcpConnected: string;
+    mcpNotConnected: string;
+    mcpToolCount: string;
+    mcpAdd: string;
+    undoLastEdit: string;
+    nothingToUndo: string;
+    restoredFile: string;
+    deletedNewFile: string;
+    runTests: string;
+    runLint: string;
+    runFormat: string;
+    newFile: string;
     resetToDefault: string;
     usingCustomPrompt: string;
     dataManagement: string;
@@ -220,6 +243,29 @@ export const en: Dictionary = {
     ttsVoiceTest: "Test",
     enabled: "Enabled",
     disabled: "Disabled",
+    mcpServersSection: "MCP servers",
+    mcpServersHint: "Connect external Model Context Protocol servers to give Agent mode more tools (e.g. a database, a ticket tracker, a browser). stdio launches a local command; HTTP connects to a remote MCP server URL.",
+    addMcpServer: "Add server",
+    mcpServerName: "Name",
+    mcpTransport: "Transport",
+    mcpCommandHint: "Command (e.g. npx -y @modelcontextprotocol/server-filesystem /path)",
+    mcpUrlHint: "Server URL (e.g. https://example.com/mcp)",
+    mcpConnect: "Connect",
+    mcpConnecting: "Connecting...",
+    mcpDisconnect: "Disconnect",
+    mcpRemove: "Remove",
+    mcpConnected: "Connected",
+    mcpNotConnected: "Not connected",
+    mcpToolCount: "tools",
+    mcpAdd: "Add",
+    undoLastEdit: "Undo last edit",
+    nothingToUndo: "Nothing to undo.",
+    restoredFile: "Restored previous content of",
+    deletedNewFile: "Removed newly-created file",
+    runTests: "Run tests",
+    runLint: "Lint",
+    runFormat: "Format",
+    newFile: "New file",
     resetToDefault: "Reset to default",
     usingCustomPrompt: "Custom prompt for this chat",
     dataManagement: "Data management",
@@ -357,6 +403,29 @@ export const tr: Dictionary = {
     ttsVoiceTest: "Test et",
     enabled: "Etkin",
     disabled: "Kapalı",
+    mcpServersSection: "MCP sunucuları",
+    mcpServersHint: "Agent moduna daha fazla araç kazandırmak için harici Model Context Protocol sunucularına bağlanın (ör. bir veritabanı, bir destek sistemi, bir tarayıcı). stdio yerel bir komut başlatır; HTTP uzak bir MCP sunucu adresine bağlanır.",
+    addMcpServer: "Sunucu ekle",
+    mcpServerName: "Ad",
+    mcpTransport: "Bağlantı türü",
+    mcpCommandHint: "Komut (ör. npx -y @modelcontextprotocol/server-filesystem /yol)",
+    mcpUrlHint: "Sunucu adresi (ör. https://example.com/mcp)",
+    mcpConnect: "Bağlan",
+    mcpConnecting: "Bağlanıyor...",
+    mcpDisconnect: "Bağlantıyı kes",
+    mcpRemove: "Kaldır",
+    mcpConnected: "Bağlı",
+    mcpNotConnected: "Bağlı değil",
+    mcpToolCount: "araç",
+    mcpAdd: "Ekle",
+    undoLastEdit: "Son düzenlemeyi geri al",
+    nothingToUndo: "Geri alınacak bir şey yok.",
+    restoredFile: "Önceki içerik geri yüklendi:",
+    deletedNewFile: "Yeni oluşturulan dosya kaldırıldı:",
+    runTests: "Testleri çalıştır",
+    runLint: "Lint",
+    runFormat: "Biçimlendir",
+    newFile: "Yeni dosya",
     resetToDefault: "Varsayılana dön",
     usingCustomPrompt: "Bu sohbet için özel istem",
     dataManagement: "Veri yönetimi",

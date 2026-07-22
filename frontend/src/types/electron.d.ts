@@ -95,6 +95,35 @@ export interface PromptPreset {
   updatedAt?: string;
 }
 
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  transport: "stdio" | "http";
+  enabled: boolean;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+export interface McpServerStatus {
+  connected: boolean;
+  toolCount: number;
+  error?: string;
+}
+
+export interface RollbackResult {
+  path: string;
+  restoredContent: boolean;
+}
+
+export interface ProjectScripts {
+  test?: string;
+  lint?: string;
+  format?: string;
+}
+
 export interface AppSettings {
   defaultModel: string | null;
   ollamaHost: string;
@@ -115,6 +144,7 @@ export interface AppSettings {
   language: "en" | "tr";
   ttsVoiceURI?: string;
   ttsAutoRead?: boolean;
+  mcpServers?: McpServerConfig[];
 }
 
 export interface ChatOptions {
@@ -308,6 +338,15 @@ export interface ElectronApi {
       name: string,
       args: Record<string, unknown>
     ) => Promise<{ result?: unknown; error?: string }>;
+    rollbackLastWrite: (workspaceRoot: string) => Promise<RollbackResult | null>;
+    detectScripts: (workspaceRoot: string) => Promise<ProjectScripts>;
+  };
+  mcp: {
+    connect: (
+      config: McpServerConfig
+    ) => Promise<{ tools?: { name: string; description?: string; inputSchema?: Record<string, unknown> }[]; error?: string }>;
+    disconnect: (id: string) => Promise<void>;
+    status: () => Promise<Record<string, McpServerStatus>>;
   };
 }
 

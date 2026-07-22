@@ -2,7 +2,16 @@ import { describe, it, expect, beforeEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { readFile, writeFile, listDir, searchFiles, executeTool, runCommand } from "./agent-tools";
+import {
+    readFile,
+    writeFile,
+    listDir,
+    searchFiles,
+    executeTool,
+    runCommand,
+    rollbackLastWrite,
+    detectProjectScripts,
+} from "./agent-tools";
 
 describe("agent-tools", () => {
     let workspace: string;
@@ -68,6 +77,61 @@ describe("agent-tools", () => {
             writeFile(workspace, "x.txt", "first");
             writeFile(workspace, "x.txt", "second");
             expect(fs.readFileSync(path.join(workspace, "x.txt"), "utf-8")).toBe("second");
+        });
+    });
+
+    describe("rollbackLastWrite", () => {
+        it("returns null when there is nothing to roll back", () => {
+            expect(rollbackLastWrite(workspace)).toBeNull();
+        });
+
+        it("restores the previous content of an overwritten file", () => {
+            writeFile(workspace, "x.txt", "first");
+            writeFile(workspace, "x.txt", "second");
+            const result = rollbackLastWrite(workspace);
+            expect(result).toEqual({ path: "x.txt", restoredContent: true });
+            expect(fs.readFileSync(path.join(workspace, "x.txt"), "utf-8")).toBe("first");
+        });
+
+        it("deletes a file that was newly created by the last write", () => {
+            writeFile(workspace, "new.txt", "content");
+            const result = rollbackLastWrite(workspace);
+            expect(result).toEqual({ path: "new.txt", restoredContent: false });
+            expect(fs.existsSync(path.join(workspace, "new.txt"))).toBe(false);
+        });
+
+        it("only rolls back one write at a time, most recent first", () => {
+            writeFile(workspace, "a.txt", "a1");
+            writeFile(workspace, "b.txt", "b1");
+            rollbackLastWrite(workspace);
+            expect(fs.existsSync(path.join(workspace, "b.txt"))).toBe(false);
+            expect(fs.readFileSync(path.join(workspace, "a.txt"), "utf-8")).toBe("a1");
+        });
+    });
+
+    describe("detectProjectScripts", () => {
+        it("returns an empty object when there is no package.json", () => {
+            expect(detectProjectScripts(workspace)).toEqual({});
+        });
+
+        it("only reports scripts that are actually defined", () => {
+            fs.writeFileSync(
+                path.join(workspace, "package.json"),
+                JSON.stringify({ scripts: { test: "vitest", build: "tsc" } })
+            );
+            expect(detectProjectScripts(workspace)).toEqual({ test: "npm test", lint: undefined, format: undefined });
+        });
+
+        it("reports test, lint, and format scripts together when all are present", () => {
+            fs.writeFileSync(
+                path.join(workspace, "package.json"),
+                JSON.stringify({ scripts: { test: "vitest", lint: "eslint .", format: "prettier --write ." } })
+            );
+            expect(detectProjectScripts(workspace)).toEqual({
+                test: "npm test",
+                lint: "npm run lint",
+                format: "npm run format",
+            });
         });
     });
 

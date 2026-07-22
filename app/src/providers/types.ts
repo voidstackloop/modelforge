@@ -10,7 +10,10 @@ export interface MessageImage {
 
 export interface ToolParameterSchema {
     type: "object";
-    properties: Record<string, { type: string; description: string }>;
+    // MCP servers can supply arbitrary nested JSON Schema for their tools'
+    // inputs, so this can't be narrowed further than `unknown` — providers
+    // only ever pass it through opaquely to the model API, never inspect it.
+    properties: Record<string, unknown>;
     required?: string[];
 }
 

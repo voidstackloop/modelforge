@@ -11,6 +11,8 @@ import * as secretsStore from "./secrets-store";
 import * as dataTransfer from "./data-transfer";
 import * as rag from "./rag";
 import * as agentTools from "./agent-tools";
+import * as mcpClient from "./mcp-client";
+import type { McpServerConfig } from "./mcp-client";
 import type { AttachedFile } from "./file-reader";
 import * as openaiProvider from "./providers/openai";
 import * as anthropicProvider from "./providers/anthropic";
@@ -190,7 +192,7 @@ function registerIpcHandlers(): void {
             const onToken = (chunk: ChatChunk) => event.sender.send(channel, chunk);
             const controller = new AbortController();
             activeChatRequests.set(requestId, controller);
-            const tools = agentMode ? agentTools.AGENT_TOOLS : undefined;
+            const tools = agentMode ? [...agentTools.AGENT_TOOLS, ...mcpClient.getConnectedTools()] : undefined;
             try {
                 if (provider === "ollama") {
                     await ollama.chat(model, messages, options, onToken, controller.signal, tools);
@@ -345,7 +347,10 @@ function registerIpcHandlers(): void {
             requireString(workspaceRoot, "workspace root");
             requireString(name, "tool name");
             try {
-                return { result: await agentTools.executeTool(workspaceRoot, name, args ?? {}) };
+                const result = mcpClient.isMcpTool(name)
+                    ? await mcpClient.callMcpTool(name, args ?? {})
+                    : await agentTools.executeTool(workspaceRoot, name, args ?? {});
+                return { result };
             } catch (err) {
                 const error = err as Error;
                 logger.error(`Tool execution failed (tool=${name}): ${error.message}`);
@@ -353,6 +358,49 @@ function registerIpcHandlers(): void {
             }
         }
     );
+
+    ipcMain.handle("agent:rollbackLastWrite", (_event: IpcMainInvokeEvent, workspaceRoot: string) => {
+        requireString(workspaceRoot, "workspace root");
+        return agentTools.rollbackLastWrite(workspaceRoot);
+    });
+
+    ipcMain.handle("agent:detectScripts", (_event: IpcMainInvokeEvent, workspaceRoot: string) => {
+        requireString(workspaceRoot, "workspace root");
+        return agentTools.detectProjectScripts(workspaceRoot);
+    });
+
+    ipcMain.handle("mcp:connect", async (_event: IpcMainInvokeEvent, config: McpServerConfig) => {
+        try {
+            const { tools } = await mcpClient.connectServer(config);
+            return { tools };
+        } catch (err) {
+            const error = err as Error;
+            logger.error(`MCP connect failed (server=${config?.name}): ${error.message}`);
+            return { error: error.message };
+        }
+    });
+
+    ipcMain.handle("mcp:disconnect", (_event: IpcMainInvokeEvent, id: string) => {
+        requireString(id, "server id");
+        mcpClient.disconnectServer(id);
+    });
+
+    ipcMain.handle("mcp:status", () => mcpClient.getServerStatuses());
+}
+
+// Best-effort: connect every enabled MCP server on launch so its tools are
+// available in Agent mode without the user having to manually reconnect each
+// session. A server that fails to start (bad command, unreachable URL) just
+// logs and stays disconnected — it doesn't block app startup.
+async function connectEnabledMcpServers(): Promise<void> {
+    const servers = settingsStore.getSettings().mcpServers ?? [];
+    for (const server of servers.filter((s) => s.enabled)) {
+        try {
+            await mcpClient.connectServer(server);
+        } catch (err) {
+            logger.error(`MCP server "${server.name}" failed to connect on launch: ${(err as Error).message}`);
+        }
+    }
 }
 
 app.whenReady().then(async () => {
@@ -362,6 +410,7 @@ app.whenReady().then(async () => {
     ollama.setHost(settingsStore.getSettings().ollamaHost);
     await ollama.start();
     setupAutoUpdater(() => mainWindow);
+    void connectEnabledMcpServers();
 
     app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -370,6 +419,7 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
     ollama.stop();
+    mcpClient.disconnectAll();
     if (process.platform !== "darwin") app.quit();
 });
 
