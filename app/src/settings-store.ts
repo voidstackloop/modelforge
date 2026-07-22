@@ -38,6 +38,11 @@ export interface AppSettings {
     promptPresets: PromptPreset[];
     theme: "light" | "dark" | "system";
     language: "en" | "tr";
+    // Text-to-speech: which browser/OS voice to use (voiceURI from
+    // speechSynthesis.getVoices(), chosen client-side) and whether assistant
+    // responses should be read aloud automatically as they finish.
+    ttsVoiceURI?: string;
+    ttsAutoRead?: boolean;
 }
 
 const DEFAULTS: AppSettings = {

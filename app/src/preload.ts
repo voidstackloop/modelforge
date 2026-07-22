@@ -85,6 +85,11 @@ contextBridge.exposeInMainWorld("api", {
         set: (key: string, value: string) => ipcRenderer.invoke("secrets:set", { key, value }),
     },
 
+    audio: {
+        transcribe: (audioBase64: string, mimeType: string): Promise<{ text?: string; error?: string }> =>
+            ipcRenderer.invoke("audio:transcribe", { audioBase64, mimeType }),
+    },
+
     app: {
         setBusy: (busy: boolean) => ipcRenderer.invoke("app:setBusy", busy),
         getVersion: () => ipcRenderer.invoke("app:getVersion"),

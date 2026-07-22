@@ -20,6 +20,8 @@ import {
     Loader2,
     Image as ImageIcon,
     Bot,
+    Volume2,
+    Mic,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -49,6 +51,7 @@ import { OPENAI_MODELS, ANTHROPIC_MODELS, formatModelRef, parseModelRef } from "
 import { estimateCost, formatCost } from "@/lib/pricing";
 import { extractVariables, fillTemplate } from "@/lib/prompt-templates";
 import { PromptVariableDialog } from "@/components/prompt-variable-dialog";
+import { speakText, stopSpeaking } from "@/lib/tts";
 import type {
     ChatMessage,
     OllamaModel,
@@ -100,17 +103,28 @@ function deriveTitle(text: string) {
     return trimmed.length > 48 ? `${trimmed.slice(0, 48)}…` : trimmed;
 }
 
+function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve((reader.result as string).split(",")[1] ?? "");
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
 interface MessageBubbleProps {
     message: ChatMessage;
     index: number;
     isLastAssistant: boolean;
     isStreaming: boolean;
     copied: boolean;
+    speaking: boolean;
     provider: ProviderId | undefined;
     modelId: string | undefined;
     onCopy: (text: string, index: number) => void;
     onEdit: (index: number) => void;
     onRegenerate: () => void;
+    onToggleSpeak: (index: number, text: string) => void;
 }
 
 // Memoized so a token arriving mid-stream (which only replaces the last
@@ -124,11 +138,13 @@ const MessageBubble = memo(function MessageBubble({
     isLastAssistant,
     isStreaming,
     copied,
+    speaking,
     provider,
     modelId,
     onCopy,
     onEdit,
     onRegenerate,
+    onToggleSpeak,
 }: MessageBubbleProps) {
     const { t } = useI18n();
 
@@ -207,6 +223,15 @@ const MessageBubble = memo(function MessageBubble({
                         <RotateCcw className="size-3.5" />
                     </button>
                 )}
+                {m.role === "assistant" && m.content && !isStreaming && (
+                    <button
+                        onClick={() => onToggleSpeak(i, m.content)}
+                        className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        aria-label={speaking ? "Stop reading aloud" : "Read message aloud"}
+                    >
+                        {speaking ? <Square className="size-3.5 fill-current" /> : <Volume2 className="size-3.5" />}
+                    </button>
+                )}
                 {m.role === "assistant" && m.usage && (
                     <span className="self-center px-1 text-xs text-muted-foreground">
                         {formatUsage(m.usage, provider, modelId)}
@@ -226,6 +251,7 @@ const MessageBubble = memo(function MessageBubble({
     prev.isLastAssistant === next.isLastAssistant &&
     prev.isStreaming === next.isStreaming &&
     prev.copied === next.copied &&
+    prev.speaking === next.speaking &&
     prev.provider === next.provider &&
     prev.modelId === next.modelId
 );
@@ -258,6 +284,12 @@ export default function Chat() {
     const [isStreaming, setIsStreaming] = useState(false);
     const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
     const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+    const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
+    const [isRecording, setIsRecording] = useState(false);
+    const [isTranscribing, setIsTranscribing] = useState(false);
+    const [voiceError, setVoiceError] = useState<string | null>(null);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const audioChunksRef = useRef<Blob[]>([]);
     const [params, setParams] = useState<ChatOptions>({});
     const [sessionSystemPrompt, setSessionSystemPrompt] = useState<string | null>(null);
     const [agentMode, setAgentMode] = useState(false);
@@ -582,13 +614,18 @@ export default function Chat() {
         window.api.app.setBusy(false);
         setMessages((finalMessages) => {
             const last = finalMessages[finalMessages.length - 1];
-            if (!result.error && last?.role === "assistant" && last.toolCalls && last.toolCalls.length > 0) {
-                setPendingToolCalls(last.toolCalls);
+            const hasPendingTools = !result.error && last?.role === "assistant" && last.toolCalls && last.toolCalls.length > 0;
+            if (hasPendingTools) {
+                setPendingToolCalls(last.toolCalls!);
                 // Tools the user already trusted this session skip the
                 // confirmation card and resolve themselves immediately.
-                for (const call of last.toolCalls) {
+                for (const call of last.toolCalls!) {
                     if (autoApprovedTools.has(call.name)) respondToToolCall(call, true);
                 }
+            } else if (settings?.ttsAutoRead && !result.error && last?.role === "assistant" && last.content) {
+                const lastIndex = finalMessages.length - 1;
+                setSpeakingIndex(lastIndex);
+                speakText(last.content, settings.ttsVoiceURI, () => setSpeakingIndex((i) => (i === lastIndex ? null : i)));
             }
             window.api.sessions
                 .update(sessionId, {
@@ -769,6 +806,64 @@ export default function Chat() {
         await navigator.clipboard.writeText(text);
         setCopiedIndex(index);
         setTimeout(() => setCopiedIndex((i) => (i === index ? null : i)), 1500);
+    }
+
+    function toggleSpeak(index: number, text: string) {
+        if (speakingIndex === index) {
+            stopSpeaking();
+            setSpeakingIndex(null);
+            return;
+        }
+        setSpeakingIndex(index);
+        speakText(text, settings?.ttsVoiceURI, () => setSpeakingIndex((i) => (i === index ? null : i)));
+    }
+
+    async function startRecording() {
+        setVoiceError(null);
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const recorder = new MediaRecorder(stream);
+            audioChunksRef.current = [];
+            recorder.ondataavailable = (e) => {
+                if (e.data.size > 0) audioChunksRef.current.push(e.data);
+            };
+            recorder.onstop = async () => {
+                stream.getTracks().forEach((track) => track.stop());
+                if (audioChunksRef.current.length === 0) return;
+                const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType });
+                setIsTranscribing(true);
+                const base64 = await blobToBase64(blob);
+                const result = await window.api.audio.transcribe(base64, recorder.mimeType);
+                setIsTranscribing(false);
+                if (result.text) {
+                    setInput((prev) => (prev.trim() ? `${prev.trim()} ${result.text}` : result.text!));
+                } else if (result.error) {
+                    setVoiceError(result.error);
+                }
+            };
+            recorder.start();
+            mediaRecorderRef.current = recorder;
+            setIsRecording(true);
+        } catch {
+            setVoiceError("Couldn't access the microphone — check your OS microphone permissions for this app.");
+        }
+    }
+
+    function stopRecording() {
+        mediaRecorderRef.current?.stop();
+        setIsRecording(false);
+    }
+
+    // Interrupt: discard the in-progress recording instead of transcribing it.
+    function cancelRecording() {
+        const recorder = mediaRecorderRef.current;
+        if (recorder) {
+            recorder.onstop = null;
+            recorder.stream.getTracks().forEach((track) => track.stop());
+            if (recorder.state !== "inactive") recorder.stop();
+        }
+        audioChunksRef.current = [];
+        setIsRecording(false);
     }
 
     function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -1178,11 +1273,13 @@ export default function Chat() {
                             isLastAssistant={m.role === "assistant" && i === lastAssistantIndex}
                             isStreaming={isStreaming}
                             copied={copiedIndex === i}
+                            speaking={speakingIndex === i}
                             provider={parsedModel?.provider}
                             modelId={parsedModel?.modelId}
                             onCopy={handleCopyMessage}
                             onEdit={handleEditUserMessage}
                             onRegenerate={handleRegenerate}
+                            onToggleSpeak={toggleSpeak}
                         />
                     ))}
                     {pendingToolCalls.map((call) => (
@@ -1319,6 +1416,9 @@ export default function Chat() {
                             ))}
                         </div>
                     )}
+                    {voiceError && (
+                        <p className="mb-1.5 text-xs text-destructive">{voiceError}</p>
+                    )}
                     <div className="flex items-end gap-2">
                         <DropdownMenu>
                             <DropdownMenuTrigger
@@ -1346,6 +1446,43 @@ export default function Chat() {
                                 </DropdownMenuItem>
                             </DropdownMenuContent>
                         </DropdownMenu>
+                        {isTranscribing ? (
+                            <Button size="icon" variant="outline" disabled className="rounded-xl" aria-label={t.transcribing}>
+                                <Loader2 className="animate-spin" />
+                            </Button>
+                        ) : isRecording ? (
+                            <>
+                                <Button
+                                    onClick={stopRecording}
+                                    size="icon"
+                                    variant="destructive"
+                                    className="rounded-xl animate-pulse"
+                                    aria-label={t.stopRecording}
+                                >
+                                    <Mic />
+                                </Button>
+                                <Button
+                                    onClick={cancelRecording}
+                                    size="icon"
+                                    variant="outline"
+                                    className="rounded-xl"
+                                    aria-label={t.cancelRecording}
+                                >
+                                    <X />
+                                </Button>
+                            </>
+                        ) : (
+                            <Button
+                                onClick={startRecording}
+                                disabled={isStreaming}
+                                size="icon"
+                                variant="outline"
+                                className="rounded-xl"
+                                aria-label={t.startRecording}
+                            >
+                                <Mic />
+                            </Button>
+                        )}
                         <Textarea
                             ref={textareaRef}
                             value={input}

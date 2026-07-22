@@ -275,6 +275,27 @@ function registerIpcHandlers(): void {
         secretsStore.setSecret(requireString(key, "secret key"), value ?? "")
     );
 
+    ipcMain.handle(
+        "audio:transcribe",
+        async (_event: IpcMainInvokeEvent, { audioBase64, mimeType }: { audioBase64: string; mimeType: string }) => {
+            requireString(audioBase64, "audio data");
+            const apiKey = secretsStore.getSecret("openai_api_key");
+            if (!apiKey) {
+                return { error: "Voice input needs an OpenAI API key — add one in Settings to use it." };
+            }
+            try {
+                const buffer = Buffer.from(audioBase64, "base64");
+                const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("ogg") ? "ogg" : "wav";
+                const text = await openaiProvider.transcribeAudio(apiKey, buffer, `audio.${ext}`);
+                return { text };
+            } catch (err) {
+                const error = err as Error;
+                logger.error(`Audio transcription failed: ${error.message}`);
+                return { error: error.message };
+            }
+        }
+    );
+
     ipcMain.handle("app:setBusy", (_event: IpcMainInvokeEvent, busy: boolean) => {
         isBusy = busy;
     });

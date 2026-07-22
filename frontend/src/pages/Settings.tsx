@@ -40,6 +40,7 @@ import { useSessions } from "@/lib/sessions-context";
 import { useI18n } from "@/lib/i18n";
 import type { Locale } from "@/lib/translations";
 import { useTheme, ACCENT_COLORS, type AccentColor } from "@/components/theme-provider";
+import { speakText } from "@/lib/tts";
 import { cn } from "@/lib/utils";
 
 // Ollama pulls Hugging Face GGUF models via a "hf.co/user/repo[:quant]" model
@@ -71,6 +72,16 @@ function formatBytes(bytes: number) {
 export default function Settings() {
     const { t, locale, setLocale } = useI18n();
     const { theme, setTheme, accent, setAccent } = useTheme();
+    const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+    useEffect(() => {
+        function loadVoices() {
+            setVoices(window.speechSynthesis.getVoices());
+        }
+        loadVoices();
+        window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
+        return () => window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
+    }, []);
     const [running, setRunning] = useState<boolean | null>(null);
     const [specs, setSpecs] = useState<SystemSpecs | null>(null);
     const [recommendations, setRecommendations] = useState<ModelRecommendations | null>(null);
@@ -407,6 +418,57 @@ export default function Settings() {
                                 </div>
                             </SettingsRow>
                         </SettingsSection>
+
+                        {settings && (
+                            <SettingsSection title={t.ttsSection}>
+                                <SettingsRow label={t.ttsAutoRead}>
+                                    <Button
+                                        size="sm"
+                                        variant={settings.ttsAutoRead ? "default" : "outline"}
+                                        onClick={() => saveSettings({ ttsAutoRead: !settings.ttsAutoRead })}
+                                        className="gap-1.5"
+                                    >
+                                        {settings.ttsAutoRead && <Check className="size-3.5" />}
+                                        {settings.ttsAutoRead ? t.enabled : t.disabled}
+                                    </Button>
+                                </SettingsRow>
+                                <SettingsRow label={t.ttsVoice} stacked>
+                                    <div className="flex gap-1.5">
+                                        <Select
+                                            value={settings.ttsVoiceURI ?? "__default__"}
+                                            onValueChange={(v) =>
+                                                saveSettings({ ttsVoiceURI: !v || v === "__default__" ? undefined : v })
+                                            }
+                                        >
+                                            <SelectTrigger size="sm" className="flex-1">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="__default__">{t.ttsVoiceDefault}</SelectItem>
+                                                {voices.map((v) => (
+                                                    <SelectItem key={v.voiceURI} value={v.voiceURI}>
+                                                        {v.name} ({v.lang})
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() =>
+                                                speakText(
+                                                    "This is what the selected voice sounds like.",
+                                                    settings.ttsVoiceURI,
+                                                    () => {}
+                                                )
+                                            }
+                                        >
+                                            {t.ttsVoiceTest}
+                                        </Button>
+                                    </div>
+                                </SettingsRow>
+                            </SettingsSection>
+                        )}
 
                         <SettingsSection title={t.language}>
                             <SettingsRow label={t.language}>

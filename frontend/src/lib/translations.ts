@@ -80,6 +80,17 @@ export interface Dictionary {
     noPreviousVersions: string;
     savePreset: string;
     promptLibraryVariablesHint: string;
+    startRecording: string;
+    stopRecording: string;
+    cancelRecording: string;
+    transcribing: string;
+    ttsSection: string;
+    ttsAutoRead: string;
+    ttsVoice: string;
+    ttsVoiceDefault: string;
+    ttsVoiceTest: string;
+    enabled: string;
+    disabled: string;
     resetToDefault: string;
     usingCustomPrompt: string;
     dataManagement: string;
@@ -198,6 +209,17 @@ export const en: Dictionary = {
     noPreviousVersions: "No previous versions yet.",
     savePreset: "Save",
     promptLibraryVariablesHint: "Add {{variables}} to a prompt (e.g. {{topic}}) and you'll be asked to fill them in each time you apply it. Edits keep version history so you can undo a change.",
+    startRecording: "Start voice input",
+    stopRecording: "Stop and transcribe",
+    cancelRecording: "Cancel recording",
+    transcribing: "Transcribing...",
+    ttsSection: "Voice",
+    ttsAutoRead: "Automatically read responses aloud",
+    ttsVoice: "Voice",
+    ttsVoiceDefault: "System default",
+    ttsVoiceTest: "Test",
+    enabled: "Enabled",
+    disabled: "Disabled",
     resetToDefault: "Reset to default",
     usingCustomPrompt: "Custom prompt for this chat",
     dataManagement: "Data management",
@@ -324,6 +346,17 @@ export const tr: Dictionary = {
     noPreviousVersions: "Henüz önceki bir sürüm yok.",
     savePreset: "Kaydet",
     promptLibraryVariablesHint: "Bir isteme {{değişkenler}} ekleyin (ör. {{konu}}) — her uyguladığınızda bunları doldurmanız istenir. Düzenlemeler sürüm geçmişini korur, böylece bir değişikliği geri alabilirsiniz.",
+    startRecording: "Sesli girişi başlat",
+    stopRecording: "Durdur ve yazıya dök",
+    cancelRecording: "Kaydı iptal et",
+    transcribing: "Yazıya dökülüyor...",
+    ttsSection: "Ses",
+    ttsAutoRead: "Yanıtları otomatik olarak sesli oku",
+    ttsVoice: "Ses",
+    ttsVoiceDefault: "Sistem varsayılanı",
+    ttsVoiceTest: "Test et",
+    enabled: "Etkin",
+    disabled: "Kapalı",
     resetToDefault: "Varsayılana dön",
     usingCustomPrompt: "Bu sohbet için özel istem",
     dataManagement: "Veri yönetimi",

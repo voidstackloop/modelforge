@@ -113,6 +113,8 @@ export interface AppSettings {
   promptPresets: PromptPreset[];
   theme: "light" | "dark" | "system";
   language: "en" | "tr";
+  ttsVoiceURI?: string;
+  ttsAutoRead?: boolean;
 }
 
 export interface ChatOptions {
@@ -257,6 +259,9 @@ export interface ElectronApi {
   secrets: {
     has: (key: string) => Promise<boolean>;
     set: (key: string, value: string) => Promise<void>;
+  };
+  audio: {
+    transcribe: (audioBase64: string, mimeType: string) => Promise<{ text?: string; error?: string }>;
   };
   app: {
     setBusy: (busy: boolean) => Promise<void>;
