@@ -105,7 +105,13 @@ async function connectStdio(config: McpServerConfig): Promise<Connection> {
         conn.pending.clear();
     });
     proc.on("error", (err) => {
+        // Fires for launch failures (e.g. command not found) — unlike a normal
+        // exit, Node doesn't also emit "exit" in that case, so without this the
+        // pending initialize/tools-list request would just sit until its 30s
+        // timeout instead of failing immediately with a useful message.
         conn.lastError = err.message;
+        for (const { reject } of conn.pending.values()) reject(err);
+        conn.pending.clear();
     });
 
     try {

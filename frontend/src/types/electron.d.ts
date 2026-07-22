@@ -145,6 +145,7 @@ export interface AppSettings {
   ttsVoiceURI?: string;
   ttsAutoRead?: boolean;
   mcpServers?: McpServerConfig[];
+  modelsDir?: string;
 }
 
 export interface ChatOptions {
@@ -165,6 +166,10 @@ export interface OllamaStartResult {
   alreadyRunning?: boolean;
   started?: boolean;
   error?: string;
+}
+
+export interface RestartResult extends OllamaStartResult {
+  external?: boolean;
 }
 
 export interface ChatSession {
@@ -244,6 +249,8 @@ export interface ElectronApi {
     stop: () => Promise<void>;
     listModels: () => Promise<OllamaModel[]>;
     deleteModel: (name: string) => Promise<{ deleted: boolean }>;
+    pickModelsDir: () => Promise<string | null>;
+    setModelsDir: (dir: string | null) => Promise<RestartResult>;
     pullModel: (name: string, onProgress: (chunk: PullProgress) => void) => Promise<{ done: boolean; error?: string }>;
   };
   chat: {

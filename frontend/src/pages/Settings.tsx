@@ -110,6 +110,8 @@ export default function Settings() {
     const [userDataPath, setUserDataPath] = useState<string | null>(null);
     const [importMessage, setImportMessage] = useState<string | null>(null);
     const [ollamaHostInput, setOllamaHostInput] = useState("");
+    const [modelsDirStatus, setModelsDirStatus] = useState<string | null>(null);
+    const [changingModelsDir, setChangingModelsDir] = useState(false);
     const [newPresetName, setNewPresetName] = useState("");
     const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
     const [editDraftName, setEditDraftName] = useState("");
@@ -208,6 +210,40 @@ export default function Settings() {
         await saveSettings({ ollamaHost: host });
         window.api.ollama.status().then(setRunning);
         refreshInstalled();
+    }
+
+    async function chooseModelsDir() {
+        const dir = await window.api.ollama.pickModelsDir();
+        if (!dir) return;
+        setChangingModelsDir(true);
+        setModelsDirStatus(null);
+        const result = await window.api.ollama.setModelsDir(dir);
+        if (result.error) {
+            setModelsDirStatus(result.error);
+        } else {
+            const updated = await window.api.settings.get();
+            setSettings(updated);
+            setModelsDirStatus(
+                result.external ? t.modelsDirExternalWarning : result.started || result.alreadyRunning ? t.modelsDirApplied : t.modelsDirFailed
+            );
+            window.api.ollama.status().then(setRunning);
+            refreshInstalled();
+        }
+        setChangingModelsDir(false);
+    }
+
+    async function resetModelsDir() {
+        setChangingModelsDir(true);
+        setModelsDirStatus(null);
+        const result = await window.api.ollama.setModelsDir(null);
+        setModelsDirStatus(
+            result.external ? t.modelsDirExternalWarning : result.started || result.alreadyRunning ? t.modelsDirApplied : t.modelsDirFailed
+        );
+        const updated = await window.api.settings.get();
+        setSettings(updated);
+        window.api.ollama.status().then(setRunning);
+        refreshInstalled();
+        setChangingModelsDir(false);
     }
 
     async function toggleServer() {
@@ -453,6 +489,39 @@ export default function Settings() {
                                         {t.save}
                                     </Button>
                                 </div>
+                            </SettingsRow>
+                            <SettingsRow label={t.modelsDir} description={t.modelsDirHint} stacked>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className="truncate rounded border border-border bg-muted px-2 py-1 font-mono text-xs">
+                                        {settings?.modelsDir ?? t.modelsDirDefault}
+                                    </span>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={changingModelsDir}
+                                        onClick={chooseModelsDir}
+                                        className="gap-1.5"
+                                    >
+                                        {changingModelsDir ? (
+                                            <Loader2 className="size-3.5 animate-spin" />
+                                        ) : (
+                                            <FolderOpen className="size-3.5" />
+                                        )}
+                                        {t.chooseFolder}
+                                    </Button>
+                                    {settings?.modelsDir && (
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            disabled={changingModelsDir}
+                                            onClick={resetModelsDir}
+                                            className="text-xs text-muted-foreground"
+                                        >
+                                            {t.resetToDefault}
+                                        </Button>
+                                    )}
+                                </div>
+                                {modelsDirStatus && <p className="text-xs text-muted-foreground">{modelsDirStatus}</p>}
                             </SettingsRow>
                         </SettingsSection>
 

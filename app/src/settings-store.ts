@@ -23,6 +23,9 @@ export interface PromptPreset {
 export interface AppSettings {
     defaultModel: string | null;
     ollamaHost: string;
+    // undefined = Ollama's own default location. Only takes effect the next
+    // time this app (re)starts a local `ollama serve` process.
+    modelsDir?: string;
     temperature: number;
     topP: number;
     maxTokens: number;

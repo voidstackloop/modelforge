@@ -48,6 +48,7 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 - **GPU offload control** — set how many model layers Ollama offloads to GPU (`num_gpu`) per chat, per project, or as a global default; leave it blank to let Ollama decide automatically.
 - **Pull models directly from Hugging Face** — paste any GGUF model's Hugging Face URL (or `hf.co/user/repo`) into the model search box alongside the curated catalog and Ollama's own library.
 - Models with reliable tool/function-calling support are flagged with a 🔧 badge, so picking a good Agent mode model doesn't require guesswork.
+- **Custom model storage location** — Settings → Ollama Server → "Model storage location" lets you point downloaded models at any folder (e.g. a larger or faster drive) instead of Ollama's default location. If this app started Ollama, it restarts it automatically with the new location; if Ollama is running outside the app, you're told to restart it yourself.
 
 **Customization & control**
 - English and Turkish UI localization.

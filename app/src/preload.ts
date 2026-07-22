@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { PullProgress } from "./ollama-manager";
+import type { PullProgress, RestartResult } from "./ollama-manager";
 import type { AttachedFile, MediaAttachment } from "./file-reader";
 import type { ChatMessage, ChatChunk, ChatOptions, ProviderId } from "./providers/types";
 import type { McpServerConfig, McpServerStatus } from "./mcp-client";
@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld("api", {
         stop: () => ipcRenderer.invoke("ollama:stop"),
         listModels: () => ipcRenderer.invoke("ollama:listModels"),
         deleteModel: (name: string) => ipcRenderer.invoke("ollama:deleteModel", name),
+        pickModelsDir: (): Promise<string | null> => ipcRenderer.invoke("ollama:pickModelsDir"),
+        setModelsDir: (dir: string | null): Promise<RestartResult> => ipcRenderer.invoke("ollama:setModelsDir", dir),
 
         pullModel: (name: string, onProgress: (chunk: PullProgress) => void) => {
             const requestId = randomId();

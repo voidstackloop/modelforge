@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import * as fs from "node:fs";
 import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, dialog, shell } from "electron";
 import * as ollama from "./ollama-manager";
 import { logger, getLogPath, getLogTail } from "./logger";
@@ -150,6 +151,34 @@ function registerIpcHandlers(): void {
     ipcMain.handle("ollama:start", () => ollama.start());
     ipcMain.handle("ollama:stop", () => ollama.stop());
     ipcMain.handle("ollama:listModels", () => ollama.listModels());
+    ipcMain.handle("ollama:pickModelsDir", async () => {
+        const result = mainWindow
+            ? await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "createDirectory"] })
+            : await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
+        return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+    });
+
+    ipcMain.handle("ollama:setModelsDir", async (_event: IpcMainInvokeEvent, dir: string | null) => {
+        if (dir) {
+            requireString(dir, "models directory");
+            try {
+                fs.mkdirSync(dir, { recursive: true });
+                fs.accessSync(dir, fs.constants.W_OK);
+            } catch (err) {
+                return { error: `Can't use that folder: ${(err as Error).message}` };
+            }
+        }
+        settingsStore.saveSettings({ modelsDir: dir ?? undefined });
+        ollama.setModelsDir(dir);
+        try {
+            return await ollama.restartWithCurrentConfig();
+        } catch (err) {
+            const error = err as Error;
+            logger.error(`Failed to restart Ollama after changing models directory: ${error.message}`);
+            return { started: false, error: error.message };
+        }
+    });
+
     ipcMain.handle("ollama:deleteModel", (_event: IpcMainInvokeEvent, name: string) =>
         ollama.deleteModel(requireString(name, "model name"))
     );
@@ -408,6 +437,7 @@ app.whenReady().then(async () => {
     setupMenu(() => mainWindow, () => checkForUpdatesManually(() => mainWindow));
     createWindow();
     ollama.setHost(settingsStore.getSettings().ollamaHost);
+    ollama.setModelsDir(settingsStore.getSettings().modelsDir);
     await ollama.start();
     setupAutoUpdater(() => mainWindow);
     void connectEnabledMcpServers();

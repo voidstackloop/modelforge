@@ -114,6 +114,13 @@ export interface Dictionary {
     runLint: string;
     runFormat: string;
     newFile: string;
+    modelsDir: string;
+    modelsDirHint: string;
+    modelsDirDefault: string;
+    chooseFolder: string;
+    modelsDirApplied: string;
+    modelsDirFailed: string;
+    modelsDirExternalWarning: string;
     resetToDefault: string;
     usingCustomPrompt: string;
     dataManagement: string;
@@ -266,6 +273,13 @@ export const en: Dictionary = {
     runLint: "Lint",
     runFormat: "Format",
     newFile: "New file",
+    modelsDir: "Model storage location",
+    modelsDirHint: "Where Ollama downloads and stores model files. Changing this restarts Ollama (only if this app started it) — running downloads will be interrupted.",
+    modelsDirDefault: "Default (Ollama's own location)",
+    chooseFolder: "Choose folder...",
+    modelsDirApplied: "Applied — Ollama restarted with the new location.",
+    modelsDirFailed: "Couldn't restart Ollama with the new location. Try starting it manually.",
+    modelsDirExternalWarning: "Saved, but Ollama is running outside this app — restart it manually (with OLLAMA_MODELS set to this folder) for the change to take effect.",
     resetToDefault: "Reset to default",
     usingCustomPrompt: "Custom prompt for this chat",
     dataManagement: "Data management",
@@ -426,6 +440,13 @@ export const tr: Dictionary = {
     runLint: "Lint",
     runFormat: "Biçimlendir",
     newFile: "Yeni dosya",
+    modelsDir: "Model depolama konumu",
+    modelsDirHint: "Ollama'nın model dosyalarını indirdiği ve sakladığı yer. Bunu değiştirmek Ollama'yı yeniden başlatır (yalnızca bu uygulama başlattıysa) — devam eden indirmeler kesintiye uğrar.",
+    modelsDirDefault: "Varsayılan (Ollama'nın kendi konumu)",
+    chooseFolder: "Klasör seç...",
+    modelsDirApplied: "Uygulandı — Ollama yeni konumla yeniden başlatıldı.",
+    modelsDirFailed: "Ollama yeni konumla yeniden başlatılamadı. Elle başlatmayı deneyin.",
+    modelsDirExternalWarning: "Kaydedildi, ancak Ollama bu uygulamanın dışında çalışıyor — değişikliğin etkili olması için Ollama'yı bu klasör OLLAMA_MODELS olarak ayarlanmış şekilde elle yeniden başlatın.",
     resetToDefault: "Varsayılana dön",
     usingCustomPrompt: "Bu sohbet için özel istem",
     dataManagement: "Veri yönetimi",

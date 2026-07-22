@@ -5,6 +5,7 @@ import type { ChatMessage, ChatChunk, ChatOptions, ToolDefinition } from "./prov
 
 const DEFAULT_HOST = "http://127.0.0.1:11434";
 let HOST = DEFAULT_HOST;
+let MODELS_DIR: string | undefined;
 let child: ChildProcess | null = null;
 let weStartedIt = false;
 
@@ -14,6 +15,17 @@ export function setHost(url: string | null | undefined): void {
 
 export function getHost(): string {
     return HOST;
+}
+
+// Ollama reads its models directory from the OLLAMA_MODELS env var at
+// process launch — there's no way to change it for an already-running
+// server, so this only takes effect the next time we spawn `ollama serve`.
+export function setModelsDir(dir: string | null | undefined): void {
+    MODELS_DIR = dir && dir.trim() ? dir.trim() : undefined;
+}
+
+export function getModelsDir(): string | undefined {
+    return MODELS_DIR;
 }
 
 function isLocalHost(): boolean {
@@ -71,7 +83,10 @@ export async function start(): Promise<OllamaStartResult> {
     }
 
     try {
-        child = spawn("ollama", ["serve"], { stdio: "ignore" });
+        child = spawn("ollama", ["serve"], {
+            stdio: "ignore",
+            env: MODELS_DIR ? { ...process.env, OLLAMA_MODELS: MODELS_DIR } : process.env,
+        });
         weStartedIt = true;
 
         child.on("exit", () => {
@@ -102,6 +117,29 @@ export function stop(): void {
         child = null;
         weStartedIt = false;
     }
+}
+
+export interface RestartResult extends OllamaStartResult {
+    // true when Ollama is running but wasn't launched by this app (started
+    // externally, or from before the models directory was changed this
+    // session) — we can't safely kill a process we didn't start, so the new
+    // location won't take effect until the user restarts Ollama themselves.
+    external?: boolean;
+}
+
+export async function restartWithCurrentConfig(): Promise<RestartResult> {
+    if (child && weStartedIt) {
+        stop();
+        for (let i = 0; i < 10; i++) {
+            await sleep(300);
+            if (!(await isRunning())) break;
+        }
+        return start();
+    }
+    if (await isRunning()) {
+        return { started: false, external: true };
+    }
+    return start();
 }
 
 // Ollama error responses are JSON like {"error": "..."} — surface that text
