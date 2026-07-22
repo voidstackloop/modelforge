@@ -39,6 +39,8 @@ export interface ChatMessage {
     // Present on a "tool" role message: which call this is the result of.
     toolCallId?: string;
     toolName?: string;
+    // User-set bookmark, purely a UI affordance — never sent to a provider.
+    pinned?: boolean;
 }
 
 export interface ChatChunk {

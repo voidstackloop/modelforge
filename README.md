@@ -36,6 +36,10 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 - **Per-session and per-project overrides** — pin a specific prompt, model, temperature, seed, top-K/top-P, repeat penalty, context length, GPU offload, or stop sequences to a single chat or an entire project, falling back to sane defaults. Provider-specific parameters (e.g. seed isn't supported by Claude, top-K isn't supported by ChatGPT) are automatically disabled when they don't apply to the selected model.
 - **Prompt library** — save and reuse system prompts across chats. Prompts can include `{{variables}}` (e.g. `{{topic}}`) that you fill in each time you apply one, and edits keep version history so a bad change can be restored.
 - **Command palette** (`Ctrl/Cmd+K`) — jump between chats, projects, and settings without touching the mouse.
+- **Full-text search** — the sidebar search box matches message content across every chat, not just titles.
+- **Tags** — label chats with freeform tags and filter the sidebar by them; lighter-weight than Projects for ad-hoc organization.
+- **Pin messages** — bookmark any message in a chat and jump straight to it from a "Pinned" panel in the toolbar.
+- **Fork a conversation** — branch a new chat from any earlier message, keeping everything up to that point and continuing independently from there.
 
 **Files & retrieval**
 - Attach files, folders, images, video, and PDFs directly into a conversation.
@@ -134,11 +138,14 @@ Click **Agent** in the chat toolbar and pick a folder — that becomes the model
 | `list_dir` | List files and subdirectories |
 | `search_files` | Search for a text string across the workspace |
 | `run_command` | Execute a shell command in the workspace (or a subfolder), with a 60s timeout |
+| `run_code` | Run a Python or JavaScript snippet — a convenience over shell-quoting multi-line code through `run_command`, not a new capability |
+| `git_status`, `git_diff`, `git_log` | Read-only git helpers (auto-approvable, like the file tools) so the model doesn't need to guess flag syntax |
+| `git_commit` | Stage everything and commit — requires approval, like `write_file` |
 
 **Safety model:**
 - `read_file`, `write_file`, `list_dir`, and `search_files` are genuinely confined to the chosen workspace folder — path-traversal attempts (`../../etc`, absolute paths elsewhere on disk) are rejected before anything runs.
-- `run_command` is different: a shell command is opaque text that can reference any path on the system regardless of its working directory, so it isn't sandboxed the way the file tools are. As a safety net, commands matching destructive or system-level patterns — deleting outside the workspace, formatting a drive, shutting down the machine, registry deletion, `sudo`/`runas`, piping a remote script into a shell — are **rejected outright**, even if already approved. This blocklist catches the common catastrophic cases, not everything a shell can do — only approve a command you actually understand.
-- Every call (including ones the blocklist doesn't catch) shows an **Allow / Deny** card before it executes — nothing runs without an explicit click. Read-only tools (`read_file`, `list_dir`, `search_files`) can be marked "always allow this session" to cut down on repetitive approvals; `write_file` and `run_command` always require a fresh click, since they have real, potentially irreversible effects.
+- `run_command` and `run_code` are different: a shell command (or a script `run_code` hands to `python3`/`node`) is opaque text that can reference any path on the system regardless of its working directory, so neither is sandboxed the way the file tools are. As a safety net, commands (and `run_code`'s source text) matching destructive or system-level patterns — deleting outside the workspace, formatting a drive, shutting down the machine, registry deletion, `sudo`/`runas`, piping a remote script into a shell — are **rejected outright**, even if already approved. This blocklist catches the common catastrophic cases, not everything a shell or script can do — only approve a command or snippet you actually understand.
+- Every call (including ones the blocklist doesn't catch) shows an **Allow / Deny** card before it executes — nothing runs without an explicit click. Read-only tools (`read_file`, `list_dir`, `search_files`, `git_status`, `git_diff`, `git_log`) can be marked "always allow this session" to cut down on repetitive approvals; `write_file`, `run_command`, `run_code`, and `git_commit` always require a fresh click, since they have real, potentially irreversible effects.
 - A per-turn step limit (25 tool-result → model-continuation round trips) stops a model from looping indefinitely without producing a final answer.
 - The trust list for "always allow" is in-memory only — closing and reopening a chat resets it.
 

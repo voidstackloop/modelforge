@@ -16,6 +16,7 @@ export interface ChatSession {
     systemPrompt?: string | null;
     agentMode?: boolean;
     agentWorkspace?: string | null;
+    tags?: string[];
     createdAt: string;
     updatedAt: string;
 }
@@ -60,7 +61,10 @@ export function createSession(model: string | null, projectId: string | null = n
 export function updateSession(
     id: string,
     partial: Partial<
-        Pick<ChatSession, "title" | "model" | "messages" | "params" | "projectId" | "systemPrompt" | "agentMode" | "agentWorkspace">
+        Pick<
+            ChatSession,
+            "title" | "model" | "messages" | "params" | "projectId" | "systemPrompt" | "agentMode" | "agentWorkspace" | "tags"
+        >
     >
 ): ChatSession | null {
     const all = readAll();

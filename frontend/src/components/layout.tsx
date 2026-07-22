@@ -12,7 +12,9 @@ import {
     RotateCw,
     Search,
     Settings as SettingsIcon,
+    Tag,
     Trash2,
+    X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,12 +35,29 @@ function SessionRow({
     active,
     onOpen,
     onDelete,
+    onUpdateTags,
 }: {
     session: ChatSession;
     active: boolean;
     onOpen: () => void;
     onDelete: (e: React.MouseEvent) => void;
+    onUpdateTags: (tags: string[]) => void;
 }) {
+    const { t } = useI18n();
+    const [tagInput, setTagInput] = useState("");
+    const tags = session.tags ?? [];
+
+    function addTag() {
+        const value = tagInput.trim();
+        if (!value || tags.includes(value)) return;
+        onUpdateTags([...tags, value]);
+        setTagInput("");
+    }
+
+    function removeTag(tag: string) {
+        onUpdateTags(tags.filter((t) => t !== tag));
+    }
+
     return (
         <div
             onClick={onOpen}
@@ -49,6 +68,57 @@ function SessionRow({
         >
             <MessageSquare className="size-3.5 shrink-0" />
             <span className="flex-1 truncate">{session.title}</span>
+            {tags.length > 0 && (
+                <span className="hidden shrink-0 truncate text-[10px] text-muted-foreground sm:inline">
+                    {tags.map((tg) => `#${tg}`).join(" ")}
+                </span>
+            )}
+            <Popover>
+                <PopoverTrigger
+                    render={
+                        <button
+                            onClick={(e) => e.stopPropagation()}
+                            className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                            aria-label={`${t.editTags}: ${session.title}`}
+                        >
+                            <Tag className="size-3.5" />
+                        </button>
+                    }
+                />
+                <PopoverContent align="start" className="w-56" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex flex-col gap-2">
+                        <p className="text-xs font-medium">{t.editTags}</p>
+                        {tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                                {tags.map((tg) => (
+                                    <span
+                                        key={tg}
+                                        className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs"
+                                    >
+                                        #{tg}
+                                        <button onClick={() => removeTag(tg)} aria-label={`Remove tag ${tg}`}>
+                                            <X className="size-3" />
+                                        </button>
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                        <div className="flex gap-1.5">
+                            <Input
+                                autoFocus
+                                value={tagInput}
+                                onChange={(e) => setTagInput(e.target.value)}
+                                onKeyDown={(e) => e.key === "Enter" && addTag()}
+                                placeholder={t.addTag}
+                                className="h-7 text-xs"
+                            />
+                            <Button size="sm" variant="outline" onClick={addTag} disabled={!tagInput.trim()}>
+                                {t.add}
+                            </Button>
+                        </div>
+                    </div>
+                </PopoverContent>
+            </Popover>
             <button
                 onClick={onDelete}
                 className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
@@ -67,6 +137,7 @@ function ProjectGroup({
     onOpenSession,
     onDeleteSession,
     onNewChat,
+    onUpdateSessionTags,
 }: {
     project: Project;
     sessions: ChatSession[];
@@ -74,6 +145,7 @@ function ProjectGroup({
     onOpenSession: (id: string) => void;
     onDeleteSession: (e: React.MouseEvent, id: string) => void;
     onNewChat: (projectId: string) => void;
+    onUpdateSessionTags: (id: string, tags: string[]) => void;
 }) {
     const { updateProject, deleteProject } = useSessions();
     const { t } = useI18n();
@@ -408,6 +480,7 @@ function ProjectGroup({
                             active={s.id === activeSessionId}
                             onOpen={() => onOpenSession(s.id)}
                             onDelete={(e) => onDeleteSession(e, s.id)}
+                            onUpdateTags={(tags) => onUpdateSessionTags(s.id, tags)}
                         />
                     ))}
                 </div>
@@ -427,23 +500,49 @@ function ProjectGroup({
 }
 
 export default function Layout() {
-    const { sessions, projects, hasApi, createSession, deleteSession, createProject } = useSessions();
+    const { sessions, projects, hasApi, createSession, deleteSession, createProject, refresh } = useSessions();
     const { t } = useI18n();
     const navigate = useNavigate();
     const { sessionId } = useParams();
     const [search, setSearch] = useState("");
+    const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
     const [creatingProject, setCreatingProject] = useState(false);
     const [newProjectName, setNewProjectName] = useState("");
     const [paletteOpen, setPaletteOpen] = useState(false);
 
     const query = search.trim().toLowerCase();
-    const matchesSearch = (s: ChatSession) => !query || s.title.toLowerCase().includes(query);
+    const matchesSearch = (s: ChatSession) =>
+        (!query ||
+            s.title.toLowerCase().includes(query) ||
+            s.messages.some((m) => m.content.toLowerCase().includes(query))) &&
+        (activeTags.size === 0 || (s.tags ?? []).some((tg) => activeTags.has(tg)));
+
+    const allTags = useMemo(() => {
+        const set = new Set<string>();
+        for (const s of sessions) for (const tg of s.tags ?? []) set.add(tg);
+        return [...set].sort();
+    }, [sessions]);
+
+    function toggleTagFilter(tag: string) {
+        setActiveTags((prev) => {
+            const next = new Set(prev);
+            if (next.has(tag)) next.delete(tag);
+            else next.add(tag);
+            return next;
+        });
+    }
+
+    async function updateSessionTags(id: string, tags: string[]) {
+        await window.api.sessions.update(id, { tags });
+        await refresh();
+    }
 
     /* eslint-disable-next-line react-hooks/exhaustive-deps --
-       matchesSearch is a plain function derived from `query`, already listed below */
+       matchesSearch is a plain function derived from `query`/`activeTags`, already listed below */
     const ungroupedSessions = useMemo(() => sessions.filter((s) => !s.projectId && matchesSearch(s)), [
         sessions,
         query,
+        activeTags,
     ]);
 
     async function handleNewChat(projectId?: string) {
@@ -547,6 +646,25 @@ export default function Layout() {
                     />
                 </div>
 
+                {allTags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 px-3 pb-2">
+                        {allTags.map((tg) => (
+                            <button
+                                key={tg}
+                                onClick={() => toggleTagFilter(tg)}
+                                className={cn(
+                                    "rounded-full px-2 py-0.5 text-[10px] transition-colors",
+                                    activeTags.has(tg)
+                                        ? "bg-primary text-primary-foreground"
+                                        : "bg-muted text-muted-foreground hover:bg-muted/70"
+                                )}
+                            >
+                                #{tg}
+                            </button>
+                        ))}
+                    </div>
+                )}
+
                 <ScrollArea className="flex-1 px-2">
                     <div className="flex flex-col gap-0.5 pb-2">
                         {projects.map((project) => (
@@ -558,6 +676,7 @@ export default function Layout() {
                                 onOpenSession={(id) => navigate(`/chat/${id}`)}
                                 onDeleteSession={handleDelete}
                                 onNewChat={handleNewChat}
+                                onUpdateSessionTags={updateSessionTags}
                             />
                         ))}
 
@@ -573,6 +692,7 @@ export default function Layout() {
                                 active={s.id === sessionId}
                                 onOpen={() => navigate(`/chat/${s.id}`)}
                                 onDelete={(e) => handleDelete(e, s.id)}
+                                onUpdateTags={(tags) => updateSessionTags(s.id, tags)}
                             />
                         ))}
                     </div>

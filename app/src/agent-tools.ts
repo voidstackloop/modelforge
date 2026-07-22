@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
 import type { ToolDefinition } from "./providers/types";
 
 const execAsync = promisify(exec);
@@ -64,6 +66,59 @@ export const AGENT_TOOLS: ToolDefinition[] = [
                 cwd: { type: "string", description: 'Working directory for the command, relative to the workspace root. Defaults to "."' },
             },
             required: ["command"],
+        },
+    },
+    {
+        name: "run_code",
+        description:
+            "Run a Python or JavaScript code snippet in the workspace and return its stdout/stderr/exit code. A convenience over run_command for multi-line code (no shell-quoting to worry about) — it is not a sandbox: the code runs with the same permissions as run_command and is subject to the same safety checks.",
+        parameters: {
+            type: "object",
+            properties: {
+                language: { type: "string", enum: ["python", "javascript"], description: "Which interpreter to run the code with." },
+                code: { type: "string", description: "The full source code to execute." },
+                cwd: { type: "string", description: 'Working directory, relative to the workspace root. Defaults to "."' },
+            },
+            required: ["language", "code"],
+        },
+    },
+    {
+        name: "git_status",
+        description: "Show the working tree status (git status) for the workspace.",
+        parameters: { type: "object", properties: {}, required: [] },
+    },
+    {
+        name: "git_diff",
+        description: "Show unstaged (or, if staged=true, staged) changes in the workspace as a unified diff.",
+        parameters: {
+            type: "object",
+            properties: {
+                staged: { type: "boolean", description: "Show staged changes (git diff --staged) instead of unstaged." },
+                path: { type: "string", description: "Limit the diff to this file or directory, relative to the workspace root." },
+            },
+            required: [],
+        },
+    },
+    {
+        name: "git_log",
+        description: "Show recent commit history for the workspace.",
+        parameters: {
+            type: "object",
+            properties: {
+                count: { type: "number", description: "How many commits to show. Defaults to 10." },
+            },
+            required: [],
+        },
+    },
+    {
+        name: "git_commit",
+        description: "Stage all changes and create a commit in the workspace. Requires explicit approval, like write_file.",
+        parameters: {
+            type: "object",
+            properties: {
+                message: { type: "string", description: "The commit message." },
+            },
+            required: ["message"],
         },
     },
 ];
@@ -284,6 +339,54 @@ export async function runCommand(workspaceRoot: string, command: string, relativ
     }
 }
 
+// run_code is a thin convenience wrapper over run_command for multi-line
+// snippets (avoids shell-quoting hell for real code) — it carries the exact
+// same risk and is checked against the exact same blocklist as run_command,
+// applied to the source text too since dangerous *content* (not just the
+// invocation) could otherwise slip past a check that only looks at the
+// command line.
+export async function runCode(
+    workspaceRoot: string,
+    language: "python" | "javascript",
+    code: string,
+    relativeCwd = "."
+): Promise<string> {
+    const dangerReason = findDangerousCommandReason(code);
+    if (dangerReason) throw new Error(dangerReason);
+
+    const ext = language === "python" ? "py" : "js";
+    const tmpFile = path.join(os.tmpdir(), `modelforge-code-${randomUUID()}.${ext}`);
+    fs.writeFileSync(tmpFile, code);
+    try {
+        const interpreter = language === "python" ? "python3" : "node";
+        return await runCommand(workspaceRoot, `${interpreter} "${tmpFile}"`, relativeCwd);
+    } finally {
+        fs.rmSync(tmpFile, { force: true });
+    }
+}
+
+function gitCommand(workspaceRoot: string, args: string): Promise<string> {
+    return runCommand(workspaceRoot, `git ${args}`, ".");
+}
+
+export function gitStatus(workspaceRoot: string): Promise<string> {
+    return gitCommand(workspaceRoot, "status");
+}
+
+export function gitDiff(workspaceRoot: string, staged = false, relativePath?: string): Promise<string> {
+    const target = relativePath ? ` -- "${relativePath}"` : "";
+    return gitCommand(workspaceRoot, `diff${staged ? " --staged" : ""}${target}`);
+}
+
+export function gitLog(workspaceRoot: string, count = 10): Promise<string> {
+    return gitCommand(workspaceRoot, `log -n ${Math.max(1, Math.min(count, 100))} --oneline`);
+}
+
+export async function gitCommit(workspaceRoot: string, message: string): Promise<string> {
+    await gitCommand(workspaceRoot, "add -A");
+    return gitCommand(workspaceRoot, `commit -m ${JSON.stringify(message)}`);
+}
+
 export interface ProjectScripts {
     test?: string;
     lint?: string;
@@ -321,6 +424,18 @@ export async function executeTool(workspaceRoot: string, name: string, args: Rec
             return searchFiles(workspaceRoot, String(args.query ?? ""), args.path ? String(args.path) : ".");
         case "run_command":
             return runCommand(workspaceRoot, String(args.command ?? ""), args.cwd ? String(args.cwd) : ".");
+        case "run_code": {
+            const language = args.language === "python" ? "python" : "javascript";
+            return runCode(workspaceRoot, language, String(args.code ?? ""), args.cwd ? String(args.cwd) : ".");
+        }
+        case "git_status":
+            return gitStatus(workspaceRoot);
+        case "git_diff":
+            return gitDiff(workspaceRoot, args.staged === true, args.path ? String(args.path) : undefined);
+        case "git_log":
+            return gitLog(workspaceRoot, typeof args.count === "number" ? args.count : 10);
+        case "git_commit":
+            return gitCommit(workspaceRoot, String(args.message ?? ""));
         default:
             throw new Error(`Unknown tool: ${name}`);
     }

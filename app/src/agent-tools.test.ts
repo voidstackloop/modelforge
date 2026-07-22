@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execSync } from "node:child_process";
 import {
     readFile,
     writeFile,
@@ -9,8 +10,13 @@ import {
     searchFiles,
     executeTool,
     runCommand,
+    runCode,
     rollbackLastWrite,
     detectProjectScripts,
+    gitStatus,
+    gitDiff,
+    gitLog,
+    gitCommit,
 } from "./agent-tools";
 
 describe("agent-tools", () => {
@@ -192,6 +198,64 @@ describe("agent-tools", () => {
 
         it("rejects a cwd that escapes the workspace", async () => {
             await expect(runCommand(workspace, "echo hi", "../../etc")).rejects.toThrow(/outside the workspace/);
+        });
+    });
+
+    describe("run_code", () => {
+        it("runs a JavaScript snippet via node", async () => {
+            const output = await runCode(workspace, "javascript", "console.log('hi from js')");
+            expect(output).toContain("Exit code: 0");
+            expect(output).toContain("hi from js");
+        });
+
+        it("runs a Python snippet via python3", async () => {
+            const output = await runCode(workspace, "python", "print('hi from py')");
+            expect(output).toContain("Exit code: 0");
+            expect(output).toContain("hi from py");
+        });
+
+        it("blocks code whose text matches the dangerous-command blocklist", async () => {
+            await expect(runCode(workspace, "python", "import os\nos.system('sudo rm -rf /')")).rejects.toThrow(
+                /blocked/
+            );
+        });
+
+        it("cleans up its temp file after running", async () => {
+            const before = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith("modelforge-code-"));
+            await runCode(workspace, "javascript", "1+1");
+            const after = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith("modelforge-code-"));
+            expect(after.length).toBe(before.length);
+        });
+    });
+
+    describe("git tools", () => {
+        beforeEach(() => {
+            execSync("git init -q", { cwd: workspace });
+            execSync('git -c user.email=test@test.com -c user.name=Test config commit.gpgsign false', { cwd: workspace });
+            fs.writeFileSync(path.join(workspace, "a.txt"), "hello");
+        });
+
+        it("git_status reports an untracked file", async () => {
+            const output = await gitStatus(workspace);
+            expect(output).toContain("a.txt");
+        });
+
+        it("git_diff shows staged changes when staged=true", async () => {
+            execSync("git add a.txt", { cwd: workspace });
+            const output = await gitDiff(workspace, true);
+            expect(output).toContain("a.txt");
+        });
+
+        it("git_commit stages and commits everything", async () => {
+            const output = await gitCommit(workspace, "initial commit");
+            expect(output).toContain("Exit code: 0");
+            const log = await gitLog(workspace, 5);
+            expect(log).toContain("initial commit");
+        });
+
+        it("git_log returns nothing unusual with no commits yet", async () => {
+            const output = await gitLog(workspace);
+            expect(output).toContain("Exit code:");
         });
     });
 

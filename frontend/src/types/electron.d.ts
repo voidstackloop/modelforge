@@ -28,6 +28,7 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   toolCallId?: string;
   toolName?: string;
+  pinned?: boolean;
 }
 
 export interface ChatChunk {
@@ -204,6 +205,7 @@ export interface ChatSession {
   systemPrompt?: string | null;
   agentMode?: boolean;
   agentWorkspace?: string | null;
+  tags?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -303,7 +305,15 @@ export interface ElectronApi {
       partial: Partial<
         Pick<
           ChatSession,
-          "title" | "model" | "messages" | "params" | "projectId" | "systemPrompt" | "agentMode" | "agentWorkspace"
+          | "title"
+          | "model"
+          | "messages"
+          | "params"
+          | "projectId"
+          | "systemPrompt"
+          | "agentMode"
+          | "agentWorkspace"
+          | "tags"
         >
       >
     ) => Promise<ChatSession | null>;

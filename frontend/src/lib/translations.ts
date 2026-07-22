@@ -141,6 +141,12 @@ export interface Dictionary {
     figmaFetch: string;
     extractTextOcr: string;
     ocrNoTextFound: string;
+    editTags: string;
+    addTag: string;
+    add: string;
+    pinnedMessages: string;
+    you: string;
+    assistant: string;
     resetToDefault: string;
     usingCustomPrompt: string;
     dataManagement: string;
@@ -181,7 +187,7 @@ export const en: Dictionary = {
     appName: "Modelforge",
     newChat: "New chat",
     newProject: "New project",
-    searchChats: "Search chats...",
+    searchChats: "Search chats and messages...",
     settings: "Settings",
     noChatsYet: "No chats yet.",
     noMatchingChats: "No matching chats.",
@@ -320,6 +326,12 @@ export const en: Dictionary = {
     figmaFetch: "Fetch",
     extractTextOcr: "Extract text (OCR)",
     ocrNoTextFound: "No text found in that image.",
+    editTags: "Edit tags",
+    addTag: "Add tag...",
+    add: "Add",
+    pinnedMessages: "Pinned",
+    you: "You",
+    assistant: "Assistant",
     resetToDefault: "Reset to default",
     usingCustomPrompt: "Custom prompt for this chat",
     dataManagement: "Data management",
@@ -367,7 +379,7 @@ export const tr: Dictionary = {
     appName: "Modelforge",
     newChat: "Yeni sohbet",
     newProject: "Yeni proje",
-    searchChats: "Sohbetlerde ara...",
+    searchChats: "Sohbetlerde ve mesajlarda ara...",
     settings: "Ayarlar",
     noChatsYet: "Henüz sohbet yok.",
     noMatchingChats: "Eşleşen sohbet yok.",
@@ -507,6 +519,12 @@ export const tr: Dictionary = {
     figmaFetch: "Getir",
     extractTextOcr: "Metni çıkar (OCR)",
     ocrNoTextFound: "O görüntüde metin bulunamadı.",
+    editTags: "Etiketleri düzenle",
+    addTag: "Etiket ekle...",
+    add: "Ekle",
+    pinnedMessages: "Sabitlenenler",
+    you: "Siz",
+    assistant: "Asistan",
     resetToDefault: "Varsayılana dön",
     usingCustomPrompt: "Bu sohbet için özel istem",
     dataManagement: "Veri yönetimi",

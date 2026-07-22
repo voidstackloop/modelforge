@@ -29,6 +29,8 @@ import {
     MonitorSmartphone,
     Frame,
     ScanText,
+    Pin,
+    GitFork,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -93,7 +95,7 @@ const RAG_THRESHOLD_CHARS = 20_000;
 // Read-only tools are safe to let the model call repeatedly without a fresh
 // click each time — write_file and run_command always require explicit
 // per-call approval since they have real, potentially irreversible effects.
-const READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "search_files"]);
+const READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "search_files", "git_status", "git_diff", "git_log"]);
 
 // Vision models can already reason over any attached image — these just save
 // re-typing a good prompt for the common "I attached a diagram/wireframe"
@@ -171,6 +173,8 @@ interface MessageBubbleProps {
     onEdit: (index: number) => void;
     onRegenerate: () => void;
     onToggleSpeak: (index: number, text: string) => void;
+    onTogglePin: (index: number) => void;
+    onFork: (index: number) => void;
 }
 
 // Memoized so a token arriving mid-stream (which only replaces the last
@@ -191,6 +195,8 @@ const MessageBubble = memo(function MessageBubble({
     onEdit,
     onRegenerate,
     onToggleSpeak,
+    onTogglePin,
+    onFork,
 }: MessageBubbleProps) {
     const { t } = useI18n();
 
@@ -208,7 +214,10 @@ const MessageBubble = memo(function MessageBubble({
     }
 
     return (
-        <div className={cn("group flex flex-col", m.role === "user" ? "items-end" : "items-start")}>
+        <div
+            data-message-index={i}
+            className={cn("group flex flex-col", m.role === "user" ? "items-end" : "items-start")}
+        >
             {m.toolCalls && m.toolCalls.length > 0 && (
                 <div className="mb-1 flex max-w-[75%] flex-col gap-1">
                     {m.toolCalls.map((tc) => (
@@ -278,6 +287,25 @@ const MessageBubble = memo(function MessageBubble({
                         {speaking ? <Square className="size-3.5 fill-current" /> : <Volume2 className="size-3.5" />}
                     </button>
                 )}
+                <button
+                    onClick={() => onTogglePin(i)}
+                    className={cn(
+                        "rounded p-1 hover:bg-muted hover:text-foreground",
+                        m.pinned ? "text-primary" : "text-muted-foreground"
+                    )}
+                    aria-label={m.pinned ? "Unpin message" : "Pin message"}
+                >
+                    <Pin className={cn("size-3.5", m.pinned && "fill-current")} />
+                </button>
+                {i > 0 && !isStreaming && (
+                    <button
+                        onClick={() => onFork(i)}
+                        className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        aria-label="Fork conversation from here"
+                    >
+                        <GitFork className="size-3.5" />
+                    </button>
+                )}
                 {m.role === "assistant" && m.usage && (
                     <span className="self-center px-1 text-xs text-muted-foreground">
                         {formatUsage(m.usage, provider, modelId)}
@@ -299,7 +327,8 @@ const MessageBubble = memo(function MessageBubble({
     prev.copied === next.copied &&
     prev.speaking === next.speaking &&
     prev.provider === next.provider &&
-    prev.modelId === next.modelId
+    prev.modelId === next.modelId &&
+    prev.message.pinned === next.message.pinned
 );
 
 function formatUsage(usage: UsageInfo, provider: ProviderId | undefined, modelId: string | undefined): string {
@@ -1000,6 +1029,33 @@ export default function Chat() {
         speakText(text, settings?.ttsVoiceURI, () => setSpeakingIndex((i) => (i === index ? null : i)));
     }
 
+    function togglePinMessage(index: number) {
+        setMessages((prev) => {
+            const next = prev.map((m, i) => (i === index ? { ...m, pinned: !m.pinned } : m));
+            if (sessionId) window.api.sessions.update(sessionId, { messages: next });
+            return next;
+        });
+    }
+
+    function scrollToMessage(index: number) {
+        const el = viewportRef.current?.querySelector(`[data-message-index="${index}"]`);
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    async function forkFromMessage(index: number) {
+        const forked = messages.slice(0, index + 1).map((m) => ({ ...m, pinned: false }));
+        const session = await createSession(model, getCurrentProject()?.id ?? null);
+        await window.api.sessions.update(session.id, {
+            messages: forked,
+            model,
+            params,
+            systemPrompt: sessionSystemPrompt,
+            title: deriveTitle(forked[forked.length - 1]?.content ?? "Forked chat"),
+        });
+        await refresh();
+        navigate(`/chat/${session.id}`);
+    }
+
     async function startRecording() {
         setVoiceError(null);
         try {
@@ -1215,6 +1271,37 @@ export default function Chat() {
                     </Button>
                 )}
                 {undoMessage && <span className="text-xs text-muted-foreground">{undoMessage}</span>}
+
+                {messages.some((m) => m.pinned) && (
+                    <Popover>
+                        <PopoverTrigger
+                            render={
+                                <Button size="sm" variant="ghost" className="gap-1.5 text-xs text-muted-foreground">
+                                    <Pin className="size-3.5" /> {t.pinnedMessages} ({messages.filter((m) => m.pinned).length})
+                                </Button>
+                            }
+                        />
+                        <PopoverContent align="start" className="w-80">
+                            <p className="mb-2 text-xs font-medium">{t.pinnedMessages}</p>
+                            <div className="flex max-h-72 flex-col gap-1.5 overflow-auto">
+                                {messages.map((m, i) =>
+                                    m.pinned ? (
+                                        <button
+                                            key={i}
+                                            onClick={() => scrollToMessage(i)}
+                                            className="rounded-md border border-border p-2 text-left text-xs hover:bg-muted"
+                                        >
+                                            <span className="mb-0.5 block text-[10px] text-muted-foreground">
+                                                {m.role === "user" ? t.you : t.assistant}
+                                            </span>
+                                            <span className="line-clamp-2">{m.content || `[${m.toolName ?? "tool"}]`}</span>
+                                        </button>
+                                    ) : null
+                                )}
+                            </div>
+                        </PopoverContent>
+                    </Popover>
+                )}
 
                 {sessionCost > 0 && (
                     <span className="ml-auto text-xs text-muted-foreground" title="Estimated session cost">
@@ -1511,6 +1598,8 @@ export default function Chat() {
                             onEdit={handleEditUserMessage}
                             onRegenerate={handleRegenerate}
                             onToggleSpeak={toggleSpeak}
+                            onTogglePin={togglePinMessage}
+                            onFork={forkFromMessage}
                         />
                     ))}
                     {pendingToolCalls.map((call) => {
