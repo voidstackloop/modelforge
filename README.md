@@ -33,7 +33,7 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 
 **Organization**
 - **Projects** — group related chats under shared instructions and default model parameters.
-- **Per-session and per-project overrides** — pin a specific prompt, model, context length, or temperature to a single chat or an entire project, falling back to sane defaults.
+- **Per-session and per-project overrides** — pin a specific prompt, model, temperature, seed, top-K/top-P, repeat penalty, context length, GPU offload, or stop sequences to a single chat or an entire project, falling back to sane defaults. Provider-specific parameters (e.g. seed isn't supported by Claude, top-K isn't supported by ChatGPT) are automatically disabled when they don't apply to the selected model.
 - **Prompt library** — save and reuse system prompts across chats.
 - **Command palette** (`Ctrl/Cmd+K`) — jump between chats, projects, and settings without touching the mouse.
 

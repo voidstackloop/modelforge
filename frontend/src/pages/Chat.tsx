@@ -507,6 +507,10 @@ export default function Chat() {
             presencePenalty: params.presencePenalty ?? project?.params?.presencePenalty ?? settings?.presencePenalty,
             contextLength: params.contextLength ?? project?.params?.contextLength ?? settings?.contextLength,
             gpuLayers: params.gpuLayers ?? project?.params?.gpuLayers ?? settings?.gpuLayers,
+            seed: params.seed ?? project?.params?.seed ?? settings?.seed,
+            topK: params.topK ?? project?.params?.topK ?? settings?.topK,
+            repeatPenalty: params.repeatPenalty ?? project?.params?.repeatPenalty ?? settings?.repeatPenalty,
+            stop: params.stop ?? project?.params?.stop ?? settings?.stop,
         };
     }
 
@@ -1070,6 +1074,72 @@ export default function Chat() {
                                     className="h-8 text-xs"
                                 />
                             </div>
+                            <div className="flex flex-col gap-1">
+                                <label className="text-xs text-muted-foreground">
+                                    {t.seed}
+                                    {parsedModel?.provider === "anthropic" ? " (not supported by Claude)" : ""}
+                                </label>
+                                <Input
+                                    type="number"
+                                    step={1}
+                                    placeholder={t.seedRandom}
+                                    title={t.seedHelp}
+                                    value={params.seed ?? currentProject?.params?.seed ?? settings?.seed ?? ""}
+                                    onChange={(e) => updateParam({ seed: e.target.value === "" ? undefined : Number(e.target.value) })}
+                                    disabled={parsedModel?.provider === "anthropic"}
+                                    className="h-8 text-xs"
+                                />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <label className="text-xs text-muted-foreground">
+                                    {t.topK}
+                                    {parsedModel?.provider === "openai" ? " (not supported by ChatGPT)" : ""}
+                                </label>
+                                <Input
+                                    type="number"
+                                    min={1}
+                                    step={1}
+                                    title={t.topKHelp}
+                                    value={params.topK ?? currentProject?.params?.topK ?? settings?.topK ?? ""}
+                                    onChange={(e) => updateParam({ topK: e.target.value === "" ? undefined : Number(e.target.value) })}
+                                    disabled={parsedModel?.provider === "openai"}
+                                    className="h-8 text-xs"
+                                />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <label className="text-xs text-muted-foreground">
+                                    {t.repeatPenalty}
+                                    {parsedModel?.provider !== "ollama" ? " (Ollama only)" : ""}
+                                </label>
+                                <Input
+                                    type="number"
+                                    min={0}
+                                    step={0.05}
+                                    title={t.repeatPenaltyHelp}
+                                    value={params.repeatPenalty ?? currentProject?.params?.repeatPenalty ?? settings?.repeatPenalty ?? ""}
+                                    onChange={(e) =>
+                                        updateParam({ repeatPenalty: e.target.value === "" ? undefined : Number(e.target.value) })
+                                    }
+                                    disabled={parsedModel?.provider !== "ollama"}
+                                    className="h-8 text-xs"
+                                />
+                            </div>
+                        </div>
+                        <div className="mt-3 flex flex-col gap-1">
+                            <label className="text-xs text-muted-foreground">{t.stopSequences}</label>
+                            <Input
+                                placeholder={t.stopSequencesPlaceholder}
+                                value={(params.stop ?? currentProject?.params?.stop ?? settings?.stop ?? []).join(", ")}
+                                onChange={(e) =>
+                                    updateParam({
+                                        stop: e.target.value
+                                            .split(",")
+                                            .map((s) => s.trim())
+                                            .filter(Boolean),
+                                    })
+                                }
+                                className="h-8 text-xs"
+                            />
                         </div>
                     </PopoverContent>
                 </Popover>

@@ -57,6 +57,8 @@ export const chat: ChatFn = async (apiKey, model, messages, options, onToken, si
                 max_tokens: options?.maxTokens,
                 frequency_penalty: options?.frequencyPenalty,
                 presence_penalty: options?.presencePenalty,
+                seed: options?.seed,
+                stop: options?.stop && options.stop.length > 0 ? options.stop : undefined,
                 ...(tools && tools.length > 0 ? { tools: toOpenAiTools(tools) } : {}),
             }),
             signal,

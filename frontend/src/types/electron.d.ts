@@ -97,6 +97,10 @@ export interface AppSettings {
   presencePenalty: number;
   contextLength: number;
   gpuLayers?: number;
+  seed?: number;
+  topK?: number;
+  repeatPenalty?: number;
+  stop?: string[];
   systemPrompt: string;
   promptPresets: PromptPreset[];
   theme: "light" | "dark" | "system";
@@ -111,6 +115,10 @@ export interface ChatOptions {
   presencePenalty?: number;
   contextLength?: number;
   gpuLayers?: number;
+  seed?: number;
+  topK?: number;
+  repeatPenalty?: number;
+  stop?: string[];
 }
 
 export interface OllamaStartResult {

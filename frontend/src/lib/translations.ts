@@ -52,6 +52,16 @@ export interface Dictionary {
     gpuLayers: string;
     gpuLayersAuto: string;
     gpuLayersHelp: string;
+    seed: string;
+    seedRandom: string;
+    seedHelp: string;
+    topK: string;
+    topKHelp: string;
+    repeatPenalty: string;
+    repeatPenaltyHelp: string;
+    stopSequences: string;
+    stopSequencesHelp: string;
+    stopSequencesPlaceholder: string;
     contextLengthOllamaOnly: string;
     frequencyPenalty: string;
     presencePenalty: string;
@@ -142,6 +152,16 @@ export const en: Dictionary = {
     gpuLayers: "GPU layers",
     gpuLayersAuto: "Auto",
     gpuLayersHelp: "How many model layers to offload to the GPU (Ollama's num_gpu). Leave blank to let Ollama decide automatically; 0 forces CPU-only.",
+    seed: "Seed",
+    seedRandom: "Random",
+    seedHelp: "A fixed seed makes output reproducible — same seed and prompt should give the same response. Leave blank for a random seed each time. Not supported by Claude.",
+    topK: "Top K",
+    topKHelp: "Limits sampling to the K most likely next tokens. Lower values are more focused/deterministic. Not supported by ChatGPT.",
+    repeatPenalty: "Repeat penalty",
+    repeatPenaltyHelp: "Penalizes tokens that already appeared recently, reducing repetition. 1.0 = no penalty. Ollama only.",
+    stopSequences: "Stop sequences",
+    stopSequencesHelp: "Generation stops as soon as any of these strings appears in the output. Comma-separated.",
+    stopSequencesPlaceholder: "e.g. \\n\\nUser:, ###, <|end|>",
     contextLengthOllamaOnly: " (Ollama only)",
     frequencyPenalty: "Frequency penalty",
     presencePenalty: "Presence penalty",
@@ -234,6 +254,16 @@ export const tr: Dictionary = {
     gpuLayers: "GPU katmanları",
     gpuLayersAuto: "Otomatik",
     gpuLayersHelp: "GPU'ya kaç model katmanının aktarılacağı (Ollama'nın num_gpu ayarı). Ollama'nın otomatik karar vermesi için boş bırakın; 0 sadece CPU kullanımını zorlar.",
+    seed: "Seed",
+    seedRandom: "Rastgele",
+    seedHelp: "Sabit bir seed, çıktıyı tekrarlanabilir kılar — aynı seed ve istemle aynı yanıt alınır. Her seferinde rastgele bir seed için boş bırakın. Claude tarafından desteklenmez.",
+    topK: "Top K",
+    topKHelp: "Örneklemeyi en olası K sonraki token ile sınırlar. Düşük değerler daha odaklı/deterministik sonuç verir. ChatGPT tarafından desteklenmez.",
+    repeatPenalty: "Tekrar cezası",
+    repeatPenaltyHelp: "Yakın zamanda geçmiş olan token'ları cezalandırarak tekrarı azaltır. 1.0 = ceza yok. Sadece Ollama.",
+    stopSequences: "Durdurma dizileri",
+    stopSequencesHelp: "Çıktıda bu dizilerden herhangi biri göründüğünde üretim durur. Virgülle ayırın.",
+    stopSequencesPlaceholder: "örn. \\n\\nUser:, ###, <|end|>",
     contextLengthOllamaOnly: " (yalnızca Ollama)",
     frequencyPenalty: "Sıklık cezası",
     presencePenalty: "Varlık cezası",

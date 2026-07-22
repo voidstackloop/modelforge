@@ -676,7 +676,60 @@ export default function Settings() {
                                                     onChange={(e) => saveSettings({ presencePenalty: Number(e.target.value) })}
                                                 />
                                             </div>
+                                            <div className="flex flex-col gap-1">
+                                                <label htmlFor="setting-seed" className="text-xs text-muted-foreground">{t.seed}</label>
+                                                <Input
+                                                    id="setting-seed"
+                                                    type="number"
+                                                    step={1}
+                                                    placeholder={t.seedRandom}
+                                                    title={t.seedHelp}
+                                                    value={settings.seed ?? ""}
+                                                    onChange={(e) => saveSettings({ seed: e.target.value === "" ? undefined : Number(e.target.value) })}
+                                                />
+                                            </div>
+                                            <div className="flex flex-col gap-1">
+                                                <label htmlFor="setting-topK" className="text-xs text-muted-foreground">{t.topK}</label>
+                                                <Input
+                                                    id="setting-topK"
+                                                    type="number"
+                                                    min={1}
+                                                    step={1}
+                                                    title={t.topKHelp}
+                                                    value={settings.topK ?? ""}
+                                                    onChange={(e) => saveSettings({ topK: e.target.value === "" ? undefined : Number(e.target.value) })}
+                                                />
+                                            </div>
+                                            <div className="flex flex-col gap-1">
+                                                <label htmlFor="setting-repeatPenalty" className="text-xs text-muted-foreground">{t.repeatPenalty}</label>
+                                                <Input
+                                                    id="setting-repeatPenalty"
+                                                    type="number"
+                                                    min={0}
+                                                    step={0.05}
+                                                    title={t.repeatPenaltyHelp}
+                                                    value={settings.repeatPenalty ?? ""}
+                                                    onChange={(e) =>
+                                                        saveSettings({ repeatPenalty: e.target.value === "" ? undefined : Number(e.target.value) })
+                                                    }
+                                                />
+                                            </div>
                                         </div>
+                                    </SettingsRow>
+
+                                    <SettingsRow label={t.stopSequences} description={t.stopSequencesHelp} stacked>
+                                        <Input
+                                            placeholder={t.stopSequencesPlaceholder}
+                                            value={(settings.stop ?? []).join(", ")}
+                                            onChange={(e) =>
+                                                saveSettings({
+                                                    stop: e.target.value
+                                                        .split(",")
+                                                        .map((s) => s.trim())
+                                                        .filter(Boolean),
+                                                })
+                                            }
+                                        />
                                     </SettingsRow>
 
                                     <SettingsRow label={t.systemPrompt} stacked>

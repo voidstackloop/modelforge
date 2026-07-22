@@ -313,6 +313,64 @@ function ProjectGroup({
                                         className="h-8 text-xs"
                                     />
                                 </div>
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-xs text-muted-foreground">{t.seed}</label>
+                                    <Input
+                                        type="number"
+                                        step={1}
+                                        placeholder={t.seedRandom}
+                                        title={t.seedHelp}
+                                        value={params.seed ?? ""}
+                                        onChange={(e) => updateParam({ seed: e.target.value === "" ? undefined : Number(e.target.value) })}
+                                        aria-label={t.seed}
+                                        className="h-8 text-xs"
+                                    />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-xs text-muted-foreground">{t.topK}</label>
+                                    <Input
+                                        type="number"
+                                        min={1}
+                                        step={1}
+                                        title={t.topKHelp}
+                                        value={params.topK ?? ""}
+                                        onChange={(e) => updateParam({ topK: e.target.value === "" ? undefined : Number(e.target.value) })}
+                                        aria-label={t.topK}
+                                        className="h-8 text-xs"
+                                    />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-xs text-muted-foreground">{t.repeatPenalty}</label>
+                                    <Input
+                                        type="number"
+                                        min={0}
+                                        step={0.05}
+                                        title={t.repeatPenaltyHelp}
+                                        value={params.repeatPenalty ?? ""}
+                                        onChange={(e) =>
+                                            updateParam({ repeatPenalty: e.target.value === "" ? undefined : Number(e.target.value) })
+                                        }
+                                        aria-label={t.repeatPenalty}
+                                        className="h-8 text-xs"
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <label className="text-xs text-muted-foreground">{t.stopSequences}</label>
+                                <Input
+                                    placeholder={t.stopSequencesPlaceholder}
+                                    value={(params.stop ?? []).join(", ")}
+                                    onChange={(e) =>
+                                        updateParam({
+                                            stop: e.target.value
+                                                .split(",")
+                                                .map((s) => s.trim())
+                                                .filter(Boolean),
+                                        })
+                                    }
+                                    aria-label={t.stopSequences}
+                                    className="h-8 text-xs"
+                                />
                             </div>
                             <p className="text-xs text-muted-foreground">
                                 Blank fields fall back to the global default. {t.penaltyClaudeNote}

@@ -61,6 +61,16 @@ export interface ChatOptions {
     // number = offload that many layers (useful for tuning multi-GPU setups
     // or freeing VRAM for something else running alongside Ollama).
     gpuLayers?: number;
+    // Ollama + OpenAI only (Anthropic has no reproducibility param). Same
+    // seed + same prompt should produce the same output, useful for testing.
+    seed?: number;
+    // Ollama + Anthropic only (OpenAI doesn't expose top-k sampling).
+    topK?: number;
+    // Ollama-only: penalizes tokens that already appeared recently, distinct
+    // from (and in addition to) the OpenAI-style frequency/presence penalties.
+    repeatPenalty?: number;
+    // All providers: stop generation as soon as any of these strings appears.
+    stop?: string[];
 }
 
 export type ChatFn = (

@@ -63,6 +63,8 @@ export const chat: ChatFn = async (apiKey, model, messages, options, onToken, si
                 stream: true,
                 temperature: options?.temperature ?? 0.7,
                 top_p: options?.topP,
+                top_k: options?.topK,
+                stop_sequences: options?.stop && options.stop.length > 0 ? options.stop : undefined,
                 ...(tools && tools.length > 0 ? { tools: toAnthropicTools(tools) } : {}),
             }),
             signal,
