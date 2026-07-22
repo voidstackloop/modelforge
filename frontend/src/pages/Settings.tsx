@@ -28,6 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SettingsSection, SettingsRow } from "@/components/settings-ui";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
     Select,
     SelectContent,
@@ -59,6 +60,8 @@ import type { Locale } from "@/lib/translations";
 import { useTheme, ACCENT_COLORS, type AccentColor } from "@/components/theme-provider";
 import { speakText } from "@/lib/tts";
 import { cn } from "@/lib/utils";
+
+type SettingsTab = "general" | "models" | "integrations" | "chat" | "voice" | "data";
 
 // Ollama pulls Hugging Face GGUF models via a "hf.co/user/repo[:quant]" model
 // name — accept a pasted full URL or the "huggingface.co/" host too, rather
@@ -107,6 +110,7 @@ export default function Settings() {
     const [settings, setSettings] = useState<AppSettings | null>(null);
     const [hasApi, setHasApi] = useState(true);
     const [search, setSearch] = useState("");
+    const [activeTab, setActiveTab] = useState<SettingsTab>("general");
     const [openaiKeyInput, setOpenaiKeyInput] = useState("");
     const [anthropicKeyInput, setAnthropicKeyInput] = useState("");
     const [openaiKeySet, setOpenaiKeySet] = useState(false);
@@ -583,7 +587,17 @@ export default function Settings() {
                     <h1 className="text-lg font-semibold tracking-tight">{t.settings}</h1>
                 </div>
 
-                <div className="flex flex-col gap-8">
+                <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as SettingsTab)}>
+                    <TabsList className="mb-6 h-auto flex-wrap">
+                        <TabsTrigger value="general">{t.settingsTabGeneral}</TabsTrigger>
+                        <TabsTrigger value="models">{t.settingsTabModels}</TabsTrigger>
+                        <TabsTrigger value="integrations">{t.settingsTabIntegrations}</TabsTrigger>
+                        <TabsTrigger value="chat">{t.settingsTabChat}</TabsTrigger>
+                        <TabsTrigger value="voice">{t.settingsTabVoice}</TabsTrigger>
+                        <TabsTrigger value="data">{t.settingsTabData}</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="general" className="flex flex-col gap-8">
                     <div>
                         <SettingsSection title={t.ollamaServer}>
                             <SettingsRow
@@ -646,7 +660,7 @@ export default function Settings() {
                         </SettingsSection>
 
                         {settings && (
-                            <SettingsSection title={t.llamaCppSection} description={t.llamaCppHint}>
+                            <SettingsSection title={t.llamaCppSection} description={t.llamaCppHint} className="mt-8">
                                 <SettingsRow label={t.gpuBackend} description={t.gpuBackendHint} stacked>
                                     <Select
                                         value={settings.llamaCppGpuBackend ?? "auto"}
@@ -703,7 +717,7 @@ export default function Settings() {
                             </SettingsSection>
                         )}
 
-                        <SettingsSection title={t.appearance}>
+                        <SettingsSection title={t.appearance} className="mt-8">
                             <SettingsRow label={t.colorMode}>
                                 <Select value={theme} onValueChange={(v) => setTheme(v as "light" | "dark" | "system")}>
                                     <SelectTrigger size="sm" className="w-36">
@@ -741,177 +755,7 @@ export default function Settings() {
                             </SettingsRow>
                         </SettingsSection>
 
-                        {settings && (
-                            <SettingsSection title={t.ttsSection}>
-                                <SettingsRow label={t.ttsAutoRead}>
-                                    <Button
-                                        size="sm"
-                                        variant={settings.ttsAutoRead ? "default" : "outline"}
-                                        onClick={() => saveSettings({ ttsAutoRead: !settings.ttsAutoRead })}
-                                        className="gap-1.5"
-                                    >
-                                        {settings.ttsAutoRead && <Check className="size-3.5" />}
-                                        {settings.ttsAutoRead ? t.enabled : t.disabled}
-                                    </Button>
-                                </SettingsRow>
-                                <SettingsRow label={t.ttsVoice} stacked>
-                                    <div className="flex gap-1.5">
-                                        <Select
-                                            value={settings.ttsVoiceURI ?? "__default__"}
-                                            onValueChange={(v) =>
-                                                saveSettings({ ttsVoiceURI: !v || v === "__default__" ? undefined : v })
-                                            }
-                                        >
-                                            <SelectTrigger size="sm" className="flex-1">
-                                                <SelectValue />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="__default__">{t.ttsVoiceDefault}</SelectItem>
-                                                {voices.map((v) => (
-                                                    <SelectItem key={v.voiceURI} value={v.voiceURI}>
-                                                        {v.name} ({v.lang})
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() =>
-                                                speakText(
-                                                    "This is what the selected voice sounds like.",
-                                                    settings.ttsVoiceURI,
-                                                    () => {}
-                                                )
-                                            }
-                                        >
-                                            {t.ttsVoiceTest}
-                                        </Button>
-                                    </div>
-                                </SettingsRow>
-                            </SettingsSection>
-                        )}
-
-                        {settings && (
-                            <SettingsSection title={t.mcpServersSection} description={t.mcpServersHint}>
-                                {(settings.mcpServers ?? []).map((server) => {
-                                    const status = mcpStatuses[server.id];
-                                    const connecting = mcpConnecting[server.id];
-                                    return (
-                                        <SettingsRow
-                                            key={server.id}
-                                            label={server.name}
-                                            description={
-                                                server.transport === "stdio"
-                                                    ? `stdio · ${server.command} ${(server.args ?? []).join(" ")}`.trim()
-                                                    : `http · ${server.url}`
-                                            }
-                                            stacked
-                                        >
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <Badge variant={status?.connected ? "default" : "secondary"}>
-                                                    {status?.connected
-                                                        ? `${t.mcpConnected} · ${status.toolCount} ${t.mcpToolCount}`
-                                                        : t.mcpNotConnected}
-                                                </Badge>
-                                                {status?.error && (
-                                                    <span className="text-xs text-destructive">{status.error}</span>
-                                                )}
-                                                {status?.connected ? (
-                                                    <Button
-                                                        size="sm"
-                                                        variant="outline"
-                                                        onClick={() => disconnectMcpServer(server.id)}
-                                                    >
-                                                        {t.mcpDisconnect}
-                                                    </Button>
-                                                ) : (
-                                                    <Button
-                                                        size="sm"
-                                                        variant="outline"
-                                                        disabled={connecting}
-                                                        onClick={() => connectMcpServer(server)}
-                                                    >
-                                                        {connecting ? (
-                                                            <Loader2 className="size-3.5 animate-spin" />
-                                                        ) : (
-                                                            <Plug className="size-3.5" />
-                                                        )}
-                                                        {connecting ? t.mcpConnecting : t.mcpConnect}
-                                                    </Button>
-                                                )}
-                                                <Button
-                                                    size="sm"
-                                                    variant="ghost"
-                                                    onClick={() => removeMcpServer(server.id)}
-                                                    aria-label={`${t.mcpRemove} ${server.name}`}
-                                                >
-                                                    <Trash2 className="size-3.5 text-destructive" />
-                                                </Button>
-                                            </div>
-                                        </SettingsRow>
-                                    );
-                                })}
-                                <SettingsRow stacked>
-                                    {showAddMcp ? (
-                                        <div className="flex flex-col gap-2">
-                                            <Input
-                                                value={mcpDraftName}
-                                                onChange={(e) => setMcpDraftName(e.target.value)}
-                                                placeholder={t.mcpServerName}
-                                                className="h-8 text-xs"
-                                            />
-                                            <Select
-                                                value={mcpDraftTransport}
-                                                onValueChange={(v) => setMcpDraftTransport(v as "stdio" | "http")}
-                                            >
-                                                <SelectTrigger size="sm" className="w-36">
-                                                    <SelectValue />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="stdio">stdio</SelectItem>
-                                                    <SelectItem value="http">HTTP</SelectItem>
-                                                </SelectContent>
-                                            </Select>
-                                            {mcpDraftTransport === "stdio" ? (
-                                                <Input
-                                                    value={mcpDraftCommand}
-                                                    onChange={(e) => setMcpDraftCommand(e.target.value)}
-                                                    placeholder={t.mcpCommandHint}
-                                                    className="h-8 text-xs"
-                                                />
-                                            ) : (
-                                                <Input
-                                                    value={mcpDraftUrl}
-                                                    onChange={(e) => setMcpDraftUrl(e.target.value)}
-                                                    placeholder={t.mcpUrlHint}
-                                                    className="h-8 text-xs"
-                                                />
-                                            )}
-                                            <div className="flex gap-2">
-                                                <Button size="sm" onClick={addMcpServer} className="gap-1.5">
-                                                    <Plus className="size-3.5" /> {t.mcpAdd}
-                                                </Button>
-                                                <Button size="sm" variant="outline" onClick={() => setShowAddMcp(false)}>
-                                                    {t.cancel}
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => setShowAddMcp(true)}
-                                            className="w-fit gap-1.5"
-                                        >
-                                            <Plus className="size-3.5" /> {t.addMcpServer}
-                                        </Button>
-                                    )}
-                                </SettingsRow>
-                            </SettingsSection>
-                        )}
-
-                        <SettingsSection title={t.language}>
+                        <SettingsSection title={t.language} className="mt-8">
                             <SettingsRow label={t.language}>
                                 <Select value={locale} onValueChange={(v) => setLocale(v as Locale)}>
                                     <SelectTrigger size="sm" className="w-36">
@@ -925,6 +769,19 @@ export default function Settings() {
                             </SettingsRow>
                         </SettingsSection>
 
+                        <div className="flex flex-col items-center gap-1.5 pt-2">
+                            <p className="text-center text-xs text-muted-foreground">
+                                {t.appName}{appVersion ? ` v${appVersion}` : ""}
+                            </p>
+                            <Button size="sm" variant="outline" onClick={() => window.api.app.checkForUpdates()} className="gap-1.5">
+                                <RefreshCw className="size-3.5" /> {t.checkForUpdates}
+                            </Button>
+                        </div>
+                    </div>
+                    </TabsContent>
+
+                    <TabsContent value="models" className="flex flex-col gap-8">
+                    <div>
                         {specs && (
                             <SettingsSection title={t.yourSystem}>
                                 <SettingsRow label="RAM">
@@ -966,92 +823,7 @@ export default function Settings() {
                             </SettingsSection>
                         )}
 
-                        <div className="flex flex-col items-center gap-1.5">
-                            <p className="text-center text-xs text-muted-foreground">
-                                {t.appName}{appVersion ? ` v${appVersion}` : ""}
-                            </p>
-                            <Button size="sm" variant="outline" onClick={() => window.api.app.checkForUpdates()} className="gap-1.5">
-                                <RefreshCw className="size-3.5" /> {t.checkForUpdates}
-                            </Button>
-                        </div>
-                    </div>
-
-                    <div>
-                        <SettingsSection title={t.cloudProviders} description={t.keysEncryptedNote}>
-                            <SettingsRow label="ChatGPT (OpenAI)" stacked>
-                                <div className="flex items-center gap-2">
-                                    {openaiKeySet && (
-                                        <Badge variant="secondary">
-                                            <Check className="mr-1 size-3" /> Configured
-                                        </Badge>
-                                    )}
-                                </div>
-                                <div className="flex gap-1.5">
-                                    <Input
-                                        type="password"
-                                        value={openaiKeyInput}
-                                        onChange={(e) => setOpenaiKeyInput(e.target.value)}
-                                        placeholder={openaiKeySet ? "Replace API key..." : "sk-..."}
-                                        aria-label="ChatGPT (OpenAI) API key"
-                                        className="h-8 text-xs"
-                                    />
-                                    <Button size="sm" variant="outline" onClick={saveOpenaiKey} disabled={!openaiKeyInput.trim()}>
-                                        {t.save}
-                                    </Button>
-                                </div>
-                            </SettingsRow>
-                            <SettingsRow label="Claude (Anthropic)" stacked>
-                                <div className="flex items-center gap-2">
-                                    {anthropicKeySet && (
-                                        <Badge variant="secondary">
-                                            <Check className="mr-1 size-3" /> Configured
-                                        </Badge>
-                                    )}
-                                </div>
-                                <div className="flex gap-1.5">
-                                    <Input
-                                        type="password"
-                                        value={anthropicKeyInput}
-                                        onChange={(e) => setAnthropicKeyInput(e.target.value)}
-                                        placeholder={anthropicKeySet ? "Replace API key..." : "sk-ant-..."}
-                                        aria-label="Claude (Anthropic) API key"
-                                        className="h-8 text-xs"
-                                    />
-                                    <Button size="sm" variant="outline" onClick={saveAnthropicKey} disabled={!anthropicKeyInput.trim()}>
-                                        {t.save}
-                                    </Button>
-                                </div>
-                            </SettingsRow>
-                        </SettingsSection>
-
-                        <SettingsSection title={t.integrations} description={t.figmaTokenHint} className="mt-8">
-                            <SettingsRow label="Figma" stacked>
-                                <div className="flex items-center gap-2">
-                                    {figmaTokenSet && (
-                                        <Badge variant="secondary">
-                                            <Check className="mr-1 size-3" /> Configured
-                                        </Badge>
-                                    )}
-                                </div>
-                                <div className="flex gap-1.5">
-                                    <Input
-                                        type="password"
-                                        value={figmaTokenInput}
-                                        onChange={(e) => setFigmaTokenInput(e.target.value)}
-                                        placeholder={figmaTokenSet ? "Replace token..." : "figd_..."}
-                                        aria-label="Figma personal access token"
-                                        className="h-8 text-xs"
-                                    />
-                                    <Button size="sm" variant="outline" onClick={saveFigmaToken} disabled={!figmaTokenInput.trim()}>
-                                        {t.save}
-                                    </Button>
-                                </div>
-                            </SettingsRow>
-                        </SettingsSection>
-                    </div>
-
-                    <div>
-                        <SettingsSection title={t.ollamaModelsSection}>
+                        <SettingsSection title={t.ollamaModelsSection} className="mt-8">
                             <div className="p-3">
                                 <div className="relative">
                                     <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -1181,7 +953,7 @@ export default function Settings() {
                         </SettingsSection>
 
                         {search.trim() && (
-                            <SettingsSection title={t.huggingFaceResults} description={t.huggingFaceResultsHint}>
+                            <SettingsSection title={t.huggingFaceResults} description={t.huggingFaceResultsHint} className="mt-8">
                                 {hfSearching && (
                                     <div className="flex items-center justify-center p-4">
                                         <Loader2 className="size-4 animate-spin text-muted-foreground" />
@@ -1257,7 +1029,7 @@ export default function Settings() {
                         )}
 
                         {otherInstalled.length > 0 && (
-                            <SettingsSection title={t.otherInstalledModels}>
+                            <SettingsSection title={t.otherInstalledModels} className="mt-8">
                                 {otherInstalled.map((m) => (
                                     <SettingsRow key={m.name} label={m.name} description={`${formatBytes(m.size)} · installed`}>
                                         <Button
@@ -1273,7 +1045,259 @@ export default function Settings() {
                             </SettingsSection>
                         )}
                     </div>
+                    </TabsContent>
 
+                    <TabsContent value="integrations" className="flex flex-col gap-8">
+                    <div>
+                        <SettingsSection title={t.cloudProviders} description={t.keysEncryptedNote}>
+                            <SettingsRow label="ChatGPT (OpenAI)" stacked>
+                                <div className="flex items-center gap-2">
+                                    {openaiKeySet && (
+                                        <Badge variant="secondary">
+                                            <Check className="mr-1 size-3" /> Configured
+                                        </Badge>
+                                    )}
+                                </div>
+                                <div className="flex gap-1.5">
+                                    <Input
+                                        type="password"
+                                        value={openaiKeyInput}
+                                        onChange={(e) => setOpenaiKeyInput(e.target.value)}
+                                        placeholder={openaiKeySet ? "Replace API key..." : "sk-..."}
+                                        aria-label="ChatGPT (OpenAI) API key"
+                                        className="h-8 text-xs"
+                                    />
+                                    <Button size="sm" variant="outline" onClick={saveOpenaiKey} disabled={!openaiKeyInput.trim()}>
+                                        {t.save}
+                                    </Button>
+                                </div>
+                            </SettingsRow>
+                            <SettingsRow label="Claude (Anthropic)" stacked>
+                                <div className="flex items-center gap-2">
+                                    {anthropicKeySet && (
+                                        <Badge variant="secondary">
+                                            <Check className="mr-1 size-3" /> Configured
+                                        </Badge>
+                                    )}
+                                </div>
+                                <div className="flex gap-1.5">
+                                    <Input
+                                        type="password"
+                                        value={anthropicKeyInput}
+                                        onChange={(e) => setAnthropicKeyInput(e.target.value)}
+                                        placeholder={anthropicKeySet ? "Replace API key..." : "sk-ant-..."}
+                                        aria-label="Claude (Anthropic) API key"
+                                        className="h-8 text-xs"
+                                    />
+                                    <Button size="sm" variant="outline" onClick={saveAnthropicKey} disabled={!anthropicKeyInput.trim()}>
+                                        {t.save}
+                                    </Button>
+                                </div>
+                            </SettingsRow>
+                        </SettingsSection>
+
+                        <SettingsSection title={t.integrations} description={t.figmaTokenHint} className="mt-8">
+                            <SettingsRow label="Figma" stacked>
+                                <div className="flex items-center gap-2">
+                                    {figmaTokenSet && (
+                                        <Badge variant="secondary">
+                                            <Check className="mr-1 size-3" /> Configured
+                                        </Badge>
+                                    )}
+                                </div>
+                                <div className="flex gap-1.5">
+                                    <Input
+                                        type="password"
+                                        value={figmaTokenInput}
+                                        onChange={(e) => setFigmaTokenInput(e.target.value)}
+                                        placeholder={figmaTokenSet ? "Replace token..." : "figd_..."}
+                                        aria-label="Figma personal access token"
+                                        className="h-8 text-xs"
+                                    />
+                                    <Button size="sm" variant="outline" onClick={saveFigmaToken} disabled={!figmaTokenInput.trim()}>
+                                        {t.save}
+                                    </Button>
+                                </div>
+                            </SettingsRow>
+                        </SettingsSection>
+
+                        {settings && (
+                            <SettingsSection title={t.mcpServersSection} description={t.mcpServersHint} className="mt-8">
+                                {(settings.mcpServers ?? []).map((server) => {
+                                    const status = mcpStatuses[server.id];
+                                    const connecting = mcpConnecting[server.id];
+                                    return (
+                                        <SettingsRow
+                                            key={server.id}
+                                            label={server.name}
+                                            description={
+                                                server.transport === "stdio"
+                                                    ? `stdio · ${server.command} ${(server.args ?? []).join(" ")}`.trim()
+                                                    : `http · ${server.url}`
+                                            }
+                                            stacked
+                                        >
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Badge variant={status?.connected ? "default" : "secondary"}>
+                                                    {status?.connected
+                                                        ? `${t.mcpConnected} · ${status.toolCount} ${t.mcpToolCount}`
+                                                        : t.mcpNotConnected}
+                                                </Badge>
+                                                {status?.error && (
+                                                    <span className="text-xs text-destructive">{status.error}</span>
+                                                )}
+                                                {status?.connected ? (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() => disconnectMcpServer(server.id)}
+                                                    >
+                                                        {t.mcpDisconnect}
+                                                    </Button>
+                                                ) : (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        disabled={connecting}
+                                                        onClick={() => connectMcpServer(server)}
+                                                    >
+                                                        {connecting ? (
+                                                            <Loader2 className="size-3.5 animate-spin" />
+                                                        ) : (
+                                                            <Plug className="size-3.5" />
+                                                        )}
+                                                        {connecting ? t.mcpConnecting : t.mcpConnect}
+                                                    </Button>
+                                                )}
+                                                <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={() => removeMcpServer(server.id)}
+                                                    aria-label={`${t.mcpRemove} ${server.name}`}
+                                                >
+                                                    <Trash2 className="size-3.5 text-destructive" />
+                                                </Button>
+                                            </div>
+                                        </SettingsRow>
+                                    );
+                                })}
+                                <SettingsRow stacked>
+                                    {showAddMcp ? (
+                                        <div className="flex flex-col gap-2">
+                                            <Input
+                                                value={mcpDraftName}
+                                                onChange={(e) => setMcpDraftName(e.target.value)}
+                                                placeholder={t.mcpServerName}
+                                                className="h-8 text-xs"
+                                            />
+                                            <Select
+                                                value={mcpDraftTransport}
+                                                onValueChange={(v) => setMcpDraftTransport(v as "stdio" | "http")}
+                                            >
+                                                <SelectTrigger size="sm" className="w-36">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="stdio">stdio</SelectItem>
+                                                    <SelectItem value="http">HTTP</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                            {mcpDraftTransport === "stdio" ? (
+                                                <Input
+                                                    value={mcpDraftCommand}
+                                                    onChange={(e) => setMcpDraftCommand(e.target.value)}
+                                                    placeholder={t.mcpCommandHint}
+                                                    className="h-8 text-xs"
+                                                />
+                                            ) : (
+                                                <Input
+                                                    value={mcpDraftUrl}
+                                                    onChange={(e) => setMcpDraftUrl(e.target.value)}
+                                                    placeholder={t.mcpUrlHint}
+                                                    className="h-8 text-xs"
+                                                />
+                                            )}
+                                            <div className="flex gap-2">
+                                                <Button size="sm" onClick={addMcpServer} className="gap-1.5">
+                                                    <Plus className="size-3.5" /> {t.mcpAdd}
+                                                </Button>
+                                                <Button size="sm" variant="outline" onClick={() => setShowAddMcp(false)}>
+                                                    {t.cancel}
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => setShowAddMcp(true)}
+                                            className="w-fit gap-1.5"
+                                        >
+                                            <Plus className="size-3.5" /> {t.addMcpServer}
+                                        </Button>
+                                    )}
+                                </SettingsRow>
+                            </SettingsSection>
+                        )}
+                    </div>
+                    </TabsContent>
+
+                    <TabsContent value="voice" className="flex flex-col gap-8">
+                    <div>
+                        {settings && (
+                            <SettingsSection title={t.ttsSection}>
+                                <SettingsRow label={t.ttsAutoRead}>
+                                    <Button
+                                        size="sm"
+                                        variant={settings.ttsAutoRead ? "default" : "outline"}
+                                        onClick={() => saveSettings({ ttsAutoRead: !settings.ttsAutoRead })}
+                                        className="gap-1.5"
+                                    >
+                                        {settings.ttsAutoRead && <Check className="size-3.5" />}
+                                        {settings.ttsAutoRead ? t.enabled : t.disabled}
+                                    </Button>
+                                </SettingsRow>
+                                <SettingsRow label={t.ttsVoice} stacked>
+                                    <div className="flex gap-1.5">
+                                        <Select
+                                            value={settings.ttsVoiceURI ?? "__default__"}
+                                            onValueChange={(v) =>
+                                                saveSettings({ ttsVoiceURI: !v || v === "__default__" ? undefined : v })
+                                            }
+                                        >
+                                            <SelectTrigger size="sm" className="flex-1">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="__default__">{t.ttsVoiceDefault}</SelectItem>
+                                                {voices.map((v) => (
+                                                    <SelectItem key={v.voiceURI} value={v.voiceURI}>
+                                                        {v.name} ({v.lang})
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() =>
+                                                speakText(
+                                                    "This is what the selected voice sounds like.",
+                                                    settings.ttsVoiceURI,
+                                                    () => {}
+                                                )
+                                            }
+                                        >
+                                            {t.ttsVoiceTest}
+                                        </Button>
+                                    </div>
+                                </SettingsRow>
+                            </SettingsSection>
+                        )}
+                    </div>
+                    </TabsContent>
+
+                    <TabsContent value="chat" className="flex flex-col gap-8">
                     <div>
                         {settings && (
                             <>
@@ -1596,7 +1620,9 @@ export default function Settings() {
                             </>
                         )}
                     </div>
+                    </TabsContent>
 
+                    <TabsContent value="data" className="flex flex-col gap-8">
                     <div>
                         <SettingsSection title={t.dataManagement}>
                             <SettingsRow label={t.exportAllConversations} description={t.exportAllDescription}>
@@ -1647,7 +1673,8 @@ export default function Settings() {
                             </SettingsRow>
                         </SettingsSection>
                     </div>
-                </div>
+                    </TabsContent>
+                </Tabs>
             </div>
         </ScrollArea>
     );

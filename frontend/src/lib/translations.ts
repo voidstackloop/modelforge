@@ -162,6 +162,12 @@ export interface Dictionary {
     noGgufFiles: string;
     pullWithOllama: string;
     downloadForLlamaCpp: string;
+    settingsTabGeneral: string;
+    settingsTabModels: string;
+    settingsTabIntegrations: string;
+    settingsTabChat: string;
+    settingsTabVoice: string;
+    settingsTabData: string;
     resetToDefault: string;
     usingCustomPrompt: string;
     dataManagement: string;
@@ -362,6 +368,12 @@ export const en: Dictionary = {
     noGgufFiles: "No GGUF files found in this repo.",
     pullWithOllama: "Pull with Ollama",
     downloadForLlamaCpp: "Download for llama.cpp",
+    settingsTabGeneral: "General",
+    settingsTabModels: "Models",
+    settingsTabIntegrations: "Integrations",
+    settingsTabChat: "Chat & Prompts",
+    settingsTabVoice: "Voice",
+    settingsTabData: "Data",
     resetToDefault: "Reset to default",
     usingCustomPrompt: "Custom prompt for this chat",
     dataManagement: "Data management",
@@ -570,6 +582,12 @@ export const tr: Dictionary = {
     noGgufFiles: "Bu depoda GGUF dosyası bulunamadı.",
     pullWithOllama: "Ollama ile indir",
     downloadForLlamaCpp: "llama.cpp için indir",
+    settingsTabGeneral: "Genel",
+    settingsTabModels: "Modeller",
+    settingsTabIntegrations: "Entegrasyonlar",
+    settingsTabChat: "Sohbet ve Promptlar",
+    settingsTabVoice: "Ses",
+    settingsTabData: "Veri",
     resetToDefault: "Varsayılana dön",
     usingCustomPrompt: "Bu sohbet için özel istem",
     dataManagement: "Veri yönetimi",

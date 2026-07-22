@@ -48,7 +48,7 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 - **Screenshot capture** — pick a screen or window from the Attach menu and it's captured and attached as an image, no separate screenshot tool needed. (macOS may require granting Screen Recording permission the first time.)
 - **OCR** — extract plain text from any attached image with one click, dropped straight into the composer. Runs fully offline via [tesseract.js](https://github.com/naptha/tesseract.js) after its first use (which needs network access once, to download the ~2MB English text-recognition model).
 - **Figma frame import** — add a personal access token in Settings → Integrations, then paste a "Copy link to selection" URL from Figma to fetch that frame as an image, attached like any other screenshot.
-- **Prompt library sharing** — export your saved prompts to a JSON file and import one a teammate sent you (Settings → Prompt Library). There's no live sync — it's just a plain file, sent however you like.
+- **Prompt library sharing** — export your saved prompts to a JSON file and import one a teammate sent you (Settings → Chat & Prompts). There's no live sync — it's just a plain file, sent however you like.
 
 **Agent mode** — see the [dedicated section](#agent-mode) below.
 
@@ -57,18 +57,19 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 - **GPU offload control** — set how many model layers Ollama offloads to GPU (`num_gpu`) per chat, per project, or as a global default; leave it blank to let Ollama decide automatically.
 - **Real Hugging Face search** — typing in the model search box queries the actual Hugging Face Hub API (not just "paste an exact URL"), showing real repos ranked by downloads/likes; expand one to see its actual GGUF files with real file sizes, then either pull it via Ollama or download it directly for the llama.cpp backend. Pasting an exact `hf.co/user/repo` tag or a full URL still works too, for Ollama's own pull mechanism.
 - Models with reliable tool/function-calling support are flagged with a 🔧 badge, so picking a good Agent mode model doesn't require guesswork.
-- **Custom model storage location** — Settings → Ollama Server → "Model storage location" lets you point downloaded models at any folder (e.g. a larger or faster drive) instead of Ollama's default location. If this app started Ollama, it restarts it automatically with the new location; if Ollama is running outside the app, you're told to restart it yourself.
+- **Custom model storage location** — Settings → General → Ollama Server → "Model storage location" lets you point downloaded models at any folder (e.g. a larger or faster drive) instead of Ollama's default location. If this app started Ollama, it restarts it automatically with the new location; if Ollama is running outside the app, you're told to restart it yourself.
 
 **Customization & control**
+- **Settings is organized into tabs** (General, Models, Integrations, Chat & Prompts, Voice, Data) instead of one long scrolling page — it holds up better as more settings get added over time.
 - English and Turkish UI localization.
-- **Theming** — light/dark/system color mode plus a choice of accent colors (default gray, blue, green, purple, orange, rose), in Settings → Appearance.
+- **Theming** — light/dark/system color mode plus a choice of accent colors (default gray, blue, green, purple, orange, rose), in Settings → General → Appearance.
 - Configurable Ollama host — point at a remote server instead of localhost.
 - Data export/import, and one-click "copy diagnostic info" for bug reports.
 - **Updates** — packaged builds check GitHub Releases for new versions automatically on launch, plus a manual "Check for updates" button in Settings (also available from the app menu).
 
 **Voice**
 - **Voice input** — record a question with the mic button; it's transcribed via OpenAI's Whisper API and dropped into the composer (requires an OpenAI API key in Settings, even when chatting with a local Ollama model).
-- **Read aloud** — any assistant reply can be played back through your OS's own text-to-speech voices, with a per-message speaker button, an optional "auto-read every response" toggle, and a voice picker with a test button in Settings → Voice. Works fully offline, no API key needed.
+- **Read aloud** — any assistant reply can be played back through your OS's own text-to-speech voices, with a per-message speaker button, an optional "auto-read every response" toggle, and a voice picker with a test button in Settings → Voice tab. Works fully offline, no API key needed.
 - Both are start/stop/cancel controllable mid-action — stop a reply from being read, or cancel a recording before it's sent for transcription.
 - Not included: fully real-time, bidirectional voice conversation (speaking over the model and having it react instantly, à la OpenAI's Realtime API). That's a different streaming architecture and hasn't been built.
 
@@ -199,7 +200,7 @@ app/                Electron main process
   src/agent-tools.ts     Agent mode's file/shell tool implementations (workspace-sandboxed)
   src/*-store.ts         Settings/sessions/projects/secrets persistence (atomic writes, corruption recovery)
   src/rag.ts             Chunking + embedding + retrieval for large folder attachments
-  src/logger.ts          Rotating file logs surfaced via Settings → Diagnostics
+  src/logger.ts          Rotating file logs surfaced via Settings → Data → Diagnostics
 ```
 
 The frontend builds to a single inlined HTML file (`vite-plugin-singlefile`) so Electron can load it directly via `file://` in production, matching how the packaged app actually runs.
