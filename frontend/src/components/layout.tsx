@@ -15,6 +15,8 @@ import {
     Tag,
     Trash2,
     X,
+    Keyboard,
+    Scale,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +25,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { CommandPalette } from "@/components/command-palette";
+import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { useSessions } from "@/lib/sessions-context";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -509,6 +512,7 @@ export default function Layout() {
     const [creatingProject, setCreatingProject] = useState(false);
     const [newProjectName, setNewProjectName] = useState("");
     const [paletteOpen, setPaletteOpen] = useState(false);
+    const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
     const query = search.trim().toLowerCase();
     const matchesSearch = (s: ChatSession) =>
@@ -570,12 +574,16 @@ export default function Layout() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [hasApi]);
 
-    // Ctrl/Cmd+K opens the command palette from anywhere in the app.
+    // Ctrl/Cmd+K opens the command palette, Ctrl/Cmd+/ shows the shortcuts
+    // cheat-sheet, both from anywhere in the app.
     useEffect(() => {
         function onKeyDown(e: KeyboardEvent) {
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
                 e.preventDefault();
                 setPaletteOpen((o) => !o);
+            } else if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+                e.preventDefault();
+                setShortcutsOpen((o) => !o);
             }
         }
         window.addEventListener("keydown", onKeyDown);
@@ -633,6 +641,16 @@ export default function Layout() {
                             </Button>
                         </div>
                     )}
+                    <Button
+                        onClick={() => navigate("/compare")}
+                        size="sm"
+                        variant="ghost"
+                        className="w-full justify-start gap-2 text-muted-foreground"
+                        disabled={!hasApi}
+                    >
+                        <Scale className="size-4" />
+                        {t.compareModels}
+                    </Button>
                 </div>
 
                 <div className="relative px-3 pb-2">
@@ -698,15 +716,25 @@ export default function Layout() {
                     </div>
                 </ScrollArea>
 
-                <div className="border-t border-border p-2">
+                <div className="flex border-t border-border p-2">
                     <Button
                         variant="ghost"
                         size="sm"
-                        className="w-full justify-start gap-2"
+                        className="flex-1 justify-start gap-2"
                         onClick={() => navigate("/settings")}
                     >
                         <SettingsIcon className="size-4" />
                         {t.settings}
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="shrink-0"
+                        onClick={() => setShortcutsOpen(true)}
+                        aria-label={t.keyboardShortcuts}
+                        title={t.keyboardShortcuts}
+                    >
+                        <Keyboard className="size-4" />
                     </Button>
                 </div>
             </aside>
@@ -723,7 +751,9 @@ export default function Layout() {
                 onNewChat={(projectId) => handleNewChat(projectId)}
                 onOpenSession={(id) => navigate(`/chat/${id}`)}
                 onNavigateSettings={() => navigate("/settings")}
+                onNavigateCompare={() => navigate("/compare")}
             />
+            <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
         </div>
     );
 }

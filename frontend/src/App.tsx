@@ -2,6 +2,7 @@ import { createHashRouter, RouterProvider } from "react-router-dom";
 import Layout from "./components/layout";
 import Chat from "./pages/Chat";
 import Settings from "./pages/Settings";
+import Compare from "./pages/Compare";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SessionsProvider } from "@/lib/sessions-context";
 import { I18nProvider } from "@/lib/i18n";
@@ -14,6 +15,7 @@ const router = createHashRouter([
       { index: true, element: <Chat /> },
       { path: "chat/:sessionId", element: <Chat /> },
       { path: "settings", element: <Settings /> },
+      { path: "compare", element: <Compare /> },
     ],
   },
 ]);

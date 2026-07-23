@@ -168,6 +168,20 @@ export interface Dictionary {
     settingsTabChat: string;
     settingsTabVoice: string;
     settingsTabData: string;
+    keyboardShortcuts: string;
+    keyboardShortcutsHelp: string;
+    shortcutCommandPalette: string;
+    shortcutNewChat: string;
+    shortcutSettings: string;
+    shortcutShowShortcuts: string;
+    shortcutSend: string;
+    shortcutNewline: string;
+    shortcutStopGenerating: string;
+    compareModels: string;
+    compareSamePrompt: string;
+    compareRun: string;
+    compareRunToSee: string;
+    noModelsAvailable: string;
     resetToDefault: string;
     usingCustomPrompt: string;
     dataManagement: string;
@@ -374,6 +388,20 @@ export const en: Dictionary = {
     settingsTabChat: "Chat & Prompts",
     settingsTabVoice: "Voice",
     settingsTabData: "Data",
+    keyboardShortcuts: "Keyboard shortcuts",
+    keyboardShortcutsHelp: "Everything you can do without touching the mouse.",
+    shortcutCommandPalette: "Command palette",
+    shortcutNewChat: "New chat",
+    shortcutSettings: "Open settings",
+    shortcutShowShortcuts: "Show this dialog",
+    shortcutSend: "Send message",
+    shortcutNewline: "New line",
+    shortcutStopGenerating: "Stop generating",
+    compareModels: "Compare models",
+    compareSamePrompt: "Type a prompt to send to every selected model at once...",
+    compareRun: "Run",
+    compareRunToSee: "Run the comparison to see this model's response.",
+    noModelsAvailable: "No models available yet — install one in Settings first.",
     resetToDefault: "Reset to default",
     usingCustomPrompt: "Custom prompt for this chat",
     dataManagement: "Data management",
@@ -588,6 +616,20 @@ export const tr: Dictionary = {
     settingsTabChat: "Sohbet ve Promptlar",
     settingsTabVoice: "Ses",
     settingsTabData: "Veri",
+    keyboardShortcuts: "Klavye kısayolları",
+    keyboardShortcutsHelp: "Fareye dokunmadan yapabileceğiniz her şey.",
+    shortcutCommandPalette: "Komut paleti",
+    shortcutNewChat: "Yeni sohbet",
+    shortcutSettings: "Ayarları aç",
+    shortcutShowShortcuts: "Bu pencereyi göster",
+    shortcutSend: "Mesaj gönder",
+    shortcutNewline: "Yeni satır",
+    shortcutStopGenerating: "Üretimi durdur",
+    compareModels: "Modelleri karşılaştır",
+    compareSamePrompt: "Seçili tüm modellere aynı anda gönderilecek bir prompt yazın...",
+    compareRun: "Çalıştır",
+    compareRunToSee: "Bu modelin yanıtını görmek için karşılaştırmayı çalıştırın.",
+    noModelsAvailable: "Henüz kullanılabilir model yok — önce Ayarlar'dan bir tane kurun.",
     resetToDefault: "Varsayılana dön",
     usingCustomPrompt: "Bu sohbet için özel istem",
     dataManagement: "Veri yönetimi",

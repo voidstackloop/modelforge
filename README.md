@@ -36,7 +36,9 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 - **Projects** — group related chats under shared instructions and default model parameters.
 - **Per-session and per-project overrides** — pin a specific prompt, model, temperature, seed, top-K/top-P, repeat penalty, context length, GPU offload, or stop sequences to a single chat or an entire project, falling back to sane defaults. Provider-specific parameters (e.g. seed isn't supported by Claude, top-K isn't supported by ChatGPT) are automatically disabled when they don't apply to the selected model.
 - **Prompt library** — save and reuse system prompts across chats. Prompts can include `{{variables}}` (e.g. `{{topic}}`) that you fill in each time you apply one, and edits keep version history so a bad change can be restored.
-- **Command palette** (`Ctrl/Cmd+K`) — jump between chats, projects, and settings without touching the mouse.
+- **Command palette** (`Ctrl/Cmd+K`) — jump between chats, projects, settings, and Compare without touching the mouse.
+- **Keyboard shortcuts cheat-sheet** (`Ctrl/Cmd+/`, or the keyboard icon next to Settings) — everything you can do without the mouse, in one place.
+- **Compare models** — send one prompt to several models at once (local or cloud) and see every response stream in side by side, with per-model token counts and cost estimates.
 - **Full-text search** — the sidebar search box matches message content across every chat, not just titles.
 - **Tags** — label chats with freeform tags and filter the sidebar by them; lighter-weight than Projects for ad-hoc organization.
 - **Pin messages** — bookmark any message in a chat and jump straight to it from a "Pinned" panel in the toolbar.
