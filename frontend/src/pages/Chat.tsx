@@ -270,8 +270,8 @@ const MessageBubble = memo(function MessageBubble({
             {(m.content || (isStreaming && isLastAssistant) || !m.toolCalls?.length) && (
                 <div
                     className={cn(
-                        "max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-                        m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+                        "max-w-[82%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm sm:max-w-[75%]",
+                        m.role === "user" ? "rounded-br-md bg-primary text-primary-foreground" : "surface-glass rounded-bl-md border border-border/60 text-foreground"
                     )}
                 >
                     {m.images && m.images.length > 0 && (
@@ -1278,8 +1278,8 @@ export default function Chat() {
             : 0;
 
     return (
-        <div className="flex h-full flex-col">
-            <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+        <div className="flex h-full flex-col bg-background/35">
+            <div className="surface-glass flex min-h-14 flex-wrap items-center gap-2 border-b border-border/70 px-4 py-2.5 pl-14 shadow-sm md:pl-4">
                 {currentProject && (
                     <span className="rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
                         {currentProject.name}
@@ -1805,11 +1805,16 @@ export default function Chat() {
 
             <div className="relative flex-1 overflow-hidden">
             <ScrollArea viewportRef={viewportRef} className="h-full">
-                <div className="mx-auto flex max-w-3xl flex-col gap-5 p-6 2xl:max-w-4xl">
+                <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6 2xl:max-w-4xl">
                     {messages.length === 0 && (
-                        <div className="flex flex-col items-center gap-2 py-24 text-center text-muted-foreground">
-                            <Sparkles className="size-6" />
-                            <p className="text-sm">{t.startConversationWith(parsedModel?.modelId || "a model")}</p>
+                        <div className="flex flex-col items-center gap-4 py-20 text-center">
+                            <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-sm"><Sparkles className="size-7" /></div>
+                            <div><h2 className="text-xl font-semibold tracking-tight">What would you like to build?</h2><p className="mt-1 text-sm text-muted-foreground">{t.startConversationWith(parsedModel?.modelId || "a model")}</p></div>
+                            <div className="mt-3 grid w-full max-w-xl gap-2 sm:grid-cols-3">
+                                {["Analyze my GitHub repository", "Review and improve my code", "Plan a new application"].map((suggestion) => (
+                                    <button key={suggestion} onClick={() => setInput(suggestion)} className="surface-glass rounded-xl border border-border/70 p-3 text-left text-xs font-medium shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:bg-primary/5 hover:shadow-md">{suggestion}</button>
+                                ))}
+                            </div>
                         </div>
                     )}
                     {messages.map((m, i) => (
@@ -1958,7 +1963,7 @@ export default function Chat() {
             )}
             </div>
 
-            <div className="border-t border-border p-4">
+            <div className="surface-glass border-t border-border/70 p-3 shadow-[0_-12px_36px_rgb(0_0_0/0.04)] sm:p-4">
                 <div className="mx-auto max-w-3xl 2xl:max-w-4xl">
                     {(individualAttachments.length > 0 ||
                         folderGroups.length > 0 ||
@@ -2087,7 +2092,7 @@ export default function Chat() {
                     )}
                     {figmaError && <p className="mb-1.5 text-xs text-destructive">{figmaError}</p>}
                     {ocrError && <p className="mb-1.5 text-xs text-destructive">{ocrError}</p>}
-                    <div className="flex items-end gap-2">
+                    <div className="flex items-end gap-2 rounded-2xl border border-border/80 bg-background/75 p-2 shadow-soft focus-within:border-primary/35 focus-within:ring-3 focus-within:ring-primary/10">
                         <DropdownMenu>
                             <DropdownMenuTrigger
                                 render={
@@ -2186,7 +2191,7 @@ export default function Chat() {
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={handleKeyDown}
                             placeholder={t.sendMessage}
-                            className="min-h-11 flex-1 resize-none rounded-xl"
+                            className="min-h-11 flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
                             disabled={isStreaming}
                         />
                         {isStreaming ? (

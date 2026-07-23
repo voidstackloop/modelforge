@@ -18,6 +18,8 @@ import {
     Keyboard,
     Scale,
     BarChart3,
+    Menu,
+    Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,10 +71,10 @@ function SessionRow({
         <div
             onClick={onOpen}
             className={cn(
-                "group relative flex cursor-pointer items-center gap-2 rounded-lg border-l-2 px-2 py-2 text-sm transition-colors",
+                "group relative flex cursor-pointer items-center gap-2 rounded-xl border px-2.5 py-2.5 text-sm transition-all",
                 active
-                    ? "border-primary bg-muted text-foreground"
-                    : "border-transparent text-muted-foreground hover:border-border hover:bg-muted/60"
+                    ? "border-primary/25 bg-primary/10 text-foreground shadow-sm"
+                    : "border-transparent text-muted-foreground hover:border-border/70 hover:bg-muted/60"
             )}
         >
             <MessageSquare className="size-3.5 shrink-0" />
@@ -532,6 +534,9 @@ export default function Layout() {
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const [showOnboarding, setShowOnboarding] = useState(false);
     const [keybindings, setKeybindings] = useState<Record<KeybindingAction, string>>(DEFAULT_KEYBINDINGS);
+    const [sidebarOpen, setSidebarOpen] = useState(false);
+
+    useEffect(() => setSidebarOpen(false), [sessionId]);
 
     useEffect(() => {
         if (!hasApi) return;
@@ -628,10 +633,17 @@ export default function Layout() {
     }
 
     return (
-        <div className="flex h-svh">
-            <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40">
-                <div className="flex items-center justify-between px-3 py-3">
-                    <span className="text-sm font-semibold tracking-tight">{t.appName}</span>
+        <div className="flex h-svh overflow-hidden">
+            {sidebarOpen && <button className="fixed inset-0 z-30 bg-black/35 backdrop-blur-sm md:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close navigation" />}
+            <aside className={cn(
+                "surface-glass fixed inset-y-0 left-0 z-40 flex w-[18rem] shrink-0 flex-col border-r border-border/70 shadow-2xl transition-transform duration-200 md:static md:translate-x-0 md:shadow-none",
+                sidebarOpen ? "translate-x-0" : "-translate-x-full"
+            )}>
+                <div className="flex items-center justify-between px-4 py-4">
+                    <div className="flex items-center gap-2.5">
+                        <span className="flex size-8 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm"><Sparkles className="size-4" /></span>
+                        <div><span className="block text-sm font-semibold tracking-tight">{t.appName}</span><span className="block text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">AI workspace</span></div>
+                    </div>
                     <ThemeToggle />
                 </div>
 
@@ -639,8 +651,8 @@ export default function Layout() {
                     <Button
                         onClick={() => handleNewChat()}
                         size="sm"
-                        variant="outline"
-                        className="w-full justify-start gap-2"
+                        variant="default"
+                        className="h-9 w-full justify-start gap-2 rounded-xl shadow-sm"
                         disabled={!hasApi}
                     >
                         <Plus className="size-4" />
@@ -694,14 +706,14 @@ export default function Layout() {
                     </Button>
                 </div>
 
-                <div className="relative px-3 pb-2">
+                <div className="relative px-3 pb-3 pt-1">
                     <Search className="pointer-events-none absolute top-1/2 left-5 size-3.5 -translate-y-1/2 text-muted-foreground" />
                     <Input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder={t.searchChats}
                         aria-label={t.searchChats}
-                        className="h-8 pl-7 text-xs"
+                        className="h-9 rounded-xl border-border/70 bg-background/70 pl-8 text-xs shadow-sm"
                     />
                 </div>
 
@@ -724,7 +736,7 @@ export default function Layout() {
                     </div>
                 )}
 
-                <ScrollArea className="flex-1 px-2">
+                <ScrollArea className="flex-1 px-2.5">
                     <div className="flex flex-col gap-0.5 pb-2">
                         {projects.map((project) => (
                             <ProjectGroup
@@ -757,7 +769,7 @@ export default function Layout() {
                     </div>
                 </ScrollArea>
 
-                <div className="flex border-t border-border p-2">
+                <div className="flex border-t border-border/70 bg-background/30 p-2.5">
                     <Button
                         variant="ghost"
                         size="sm"
@@ -780,7 +792,10 @@ export default function Layout() {
                 </div>
             </aside>
 
-            <main className="flex-1 overflow-hidden">
+            <main className="relative min-w-0 flex-1 overflow-hidden">
+                <Button variant="outline" size="icon" className="surface-glass absolute left-3 top-3 z-30 shadow-md md:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open navigation">
+                    <Menu className="size-4" />
+                </Button>
                 <Outlet />
             </main>
 

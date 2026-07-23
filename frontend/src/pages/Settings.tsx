@@ -841,20 +841,20 @@ export default function Settings() {
     const exactMatchExists = searchResults.some((m) => m.name.toLowerCase() === search.trim().toLowerCase());
 
     return (
-        <ScrollArea className="h-full">
-            <div className="mx-auto max-w-4xl p-6 pb-16 2xl:max-w-5xl">
-                <div className="mb-6 flex items-center gap-2">
-                    <Settings2 className="size-5 text-muted-foreground" />
-                    <h1 className="text-lg font-semibold tracking-tight">{t.settings}</h1>
+        <ScrollArea className="h-full bg-background/25">
+            <div className="mx-auto max-w-5xl px-4 pb-20 pt-16 sm:px-6 md:pt-8 2xl:max-w-6xl">
+                <div className="mb-8 flex items-center gap-3">
+                    <span className="flex size-10 items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-sm"><Settings2 className="size-5" /></span>
+                    <div><h1 className="text-2xl font-semibold tracking-tight">{t.settings}</h1><p className="mt-0.5 text-xs text-muted-foreground">Configure models, integrations, automation, and your workspace.</p></div>
                 </div>
 
                 <Tabs
                     value={activeTab}
                     onValueChange={(v) => setActiveTab(v as SettingsTab)}
                     orientation="vertical"
-                    className="items-start gap-8"
+                    className="flex-col items-stretch gap-6 lg:flex-row lg:items-start lg:gap-10"
                 >
-                    <TabsList variant="line" className="w-48 shrink-0">
+                    <TabsList variant="line" className="surface-glass sticky top-0 z-10 w-full shrink-0 flex-row overflow-x-auto rounded-xl border border-border/70 p-1 shadow-sm lg:top-6 lg:w-52 lg:flex-col lg:rounded-2xl lg:p-2">
                         <TabsTrigger value="general" className="justify-start gap-2">
                             <SlidersHorizontal className="size-4 shrink-0" /> {t.settingsTabGeneral}
                         </TabsTrigger>
