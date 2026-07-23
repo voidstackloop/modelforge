@@ -182,6 +182,22 @@ export interface Dictionary {
     compareRun: string;
     compareRunToSee: string;
     noModelsAvailable: string;
+    settingsTabAutomation: string;
+    scheduledTasksSection: string;
+    scheduledTasksHint: string;
+    taskName: string;
+    taskPrompt: string;
+    taskModel: string;
+    intervalMinutes: string;
+    createTask: string;
+    noScheduledTasks: string;
+    runNow: string;
+    lastRun: string;
+    never: string;
+    every: string;
+    minutes: string;
+    enable: string;
+    disable: string;
     resetToDefault: string;
     usingCustomPrompt: string;
     dataManagement: string;
@@ -402,6 +418,22 @@ export const en: Dictionary = {
     compareRun: "Run",
     compareRunToSee: "Run the comparison to see this model's response.",
     noModelsAvailable: "No models available yet — install one in Settings first.",
+    settingsTabAutomation: "Automation",
+    scheduledTasksSection: "Scheduled tasks",
+    scheduledTasksHint: "Run a saved prompt on a repeating interval while the app is open — results are appended to a dedicated chat for that task. This runs only while Modelforge is open, not as a background service, and doesn't use Agent mode tools.",
+    taskName: "Task name",
+    taskPrompt: "Prompt to send each run",
+    taskModel: "Model",
+    intervalMinutes: "Every (minutes)",
+    createTask: "Create task",
+    noScheduledTasks: "No scheduled tasks yet.",
+    runNow: "Run now",
+    lastRun: "Last run",
+    never: "Never",
+    every: "every",
+    minutes: "min",
+    enable: "Enable",
+    disable: "Disable",
     resetToDefault: "Reset to default",
     usingCustomPrompt: "Custom prompt for this chat",
     dataManagement: "Data management",
@@ -630,6 +662,22 @@ export const tr: Dictionary = {
     compareRun: "Çalıştır",
     compareRunToSee: "Bu modelin yanıtını görmek için karşılaştırmayı çalıştırın.",
     noModelsAvailable: "Henüz kullanılabilir model yok — önce Ayarlar'dan bir tane kurun.",
+    settingsTabAutomation: "Otomasyon",
+    scheduledTasksSection: "Zamanlanmış görevler",
+    scheduledTasksHint: "Uygulama açıkken kayıtlı bir promptu tekrarlayan aralıklarla çalıştırın — sonuçlar o görev için ayrılmış bir sohbete eklenir. Bu yalnızca Modelforge açıkken çalışır, arka plan servisi değildir ve Agent modu araçlarını kullanmaz.",
+    taskName: "Görev adı",
+    taskPrompt: "Her çalıştırmada gönderilecek prompt",
+    taskModel: "Model",
+    intervalMinutes: "Her (dakika)",
+    createTask: "Görev oluştur",
+    noScheduledTasks: "Henüz zamanlanmış görev yok.",
+    runNow: "Şimdi çalıştır",
+    lastRun: "Son çalıştırma",
+    never: "Hiç",
+    every: "her",
+    minutes: "dk",
+    enable: "Etkinleştir",
+    disable: "Devre dışı bırak",
     resetToDefault: "Varsayılana dön",
     usingCustomPrompt: "Bu sohbet için özel istem",
     dataManagement: "Veri yönetimi",

@@ -18,13 +18,15 @@ import * as figma from "./figma";
 import * as ocr from "./ocr";
 import * as huggingface from "./huggingface";
 import * as llamacpp from "./llamacpp-manager";
+import * as scheduledTasksStore from "./scheduled-tasks-store";
+import * as scheduler from "./scheduler";
 import type { McpServerConfig } from "./mcp-client";
 import type { AttachedFile } from "./file-reader";
 import * as openaiProvider from "./providers/openai";
 import * as anthropicProvider from "./providers/anthropic";
 import { setupMenu } from "./menu";
 import { setupAutoUpdater, checkForUpdatesManually } from "./updater";
-import type { ChatMessage, ChatChunk, ChatOptions, ProviderId } from "./providers/types";
+import type { ChatMessage, ChatChunk, ChatOptions, ProviderId, ToolDefinition } from "./providers/types";
 
 const PROVIDER_SECRET_KEYS: Record<Exclude<ProviderId, "ollama" | "llamacpp">, string> = {
     openai: "openai_api_key",
@@ -158,6 +160,43 @@ function createWindow(): void {
     }
 }
 
+// Shared by chat:send (renderer-driven, streams tokens back over IPC) and
+// the scheduled-task runner (background, wants the full text once done) —
+// same provider dispatch and error handling either way.
+async function dispatchChat(
+    provider: ProviderId,
+    model: string,
+    messages: ChatMessage[],
+    options: ChatOptions | undefined,
+    onToken: (chunk: ChatChunk) => void,
+    signal?: AbortSignal,
+    tools?: ToolDefinition[]
+): Promise<void> {
+    if (provider === "ollama") {
+        await ollama.chat(model, messages, options, onToken, signal, tools);
+    } else if (provider === "llamacpp") {
+        const modelPath = path.join(getLlamaCppModelsDir(), model);
+        await llamacpp.chat(modelPath, messages, options, onToken, signal, tools);
+    } else {
+        const secretKey = PROVIDER_SECRET_KEYS[provider];
+        const apiKey = secretsStore.getSecret(secretKey);
+        if (!apiKey) throw new Error(`No API key set for ${provider}. Add one in Settings.`);
+        const providerFn = provider === "openai" ? openaiProvider.chat : anthropicProvider.chat;
+        await providerFn(apiKey, model, messages, options, onToken, signal, tools);
+    }
+}
+
+// Runs a single-turn prompt to completion and returns the full text —
+// what the scheduled-task runner needs, as opposed to chat:send's
+// token-by-token streaming back to the renderer.
+async function completePrompt(provider: ProviderId, model: string, prompt: string): Promise<string> {
+    let text = "";
+    await dispatchChat(provider, model, [{ role: "user", content: prompt }], undefined, (chunk) => {
+        text += chunk.message?.content ?? "";
+    });
+    return text;
+}
+
 function registerIpcHandlers(): void {
     ipcMain.handle("ollama:status", () => ollama.isRunning());
     ipcMain.handle("ollama:start", () => ollama.start());
@@ -253,20 +292,7 @@ function registerIpcHandlers(): void {
             activeChatRequests.set(requestId, controller);
             const tools = agentMode ? [...agentTools.AGENT_TOOLS, ...mcpClient.getConnectedTools()] : undefined;
             try {
-                if (provider === "ollama") {
-                    await ollama.chat(model, messages, options, onToken, controller.signal, tools);
-                } else if (provider === "llamacpp") {
-                    const modelPath = path.join(getLlamaCppModelsDir(), model);
-                    await llamacpp.chat(modelPath, messages, options, onToken, controller.signal, tools);
-                } else {
-                    const secretKey = PROVIDER_SECRET_KEYS[provider];
-                    const apiKey = secretsStore.getSecret(secretKey);
-                    if (!apiKey) {
-                        throw new Error(`No API key set for ${provider}. Add one in Settings.`);
-                    }
-                    const providerFn = provider === "openai" ? openaiProvider.chat : anthropicProvider.chat;
-                    await providerFn(apiKey, model, messages, options, onToken, controller.signal, tools);
-                }
+                await dispatchChat(provider, model, messages, options, onToken, controller.signal, tools);
                 return { done: true };
             } catch (err) {
                 const error = err as Error;
@@ -314,6 +340,59 @@ function registerIpcHandlers(): void {
         sessionsStore.deleteSession(requireString(id, "session id"))
     );
     ipcMain.handle("sessions:clearAll", () => sessionsStore.clearAll());
+
+    ipcMain.handle("scheduledTasks:list", () => scheduledTasksStore.listTasks());
+
+    ipcMain.handle(
+        "scheduledTasks:create",
+        (
+            _event: IpcMainInvokeEvent,
+            {
+                name,
+                prompt,
+                model,
+                intervalMinutes,
+            }: { name: string; prompt: string; model: string; intervalMinutes: number }
+        ) => {
+            requireString(name, "task name");
+            requireString(prompt, "task prompt");
+            requireString(model, "task model");
+            // Each task gets a dedicated chat session it appends results to —
+            // created here so the task always has somewhere to write to.
+            const session = sessionsStore.createSession(model);
+            sessionsStore.updateSession(session.id, { title: name });
+            const task = scheduledTasksStore.createTask({
+                name,
+                prompt,
+                model,
+                targetSessionId: session.id,
+                intervalMinutes: Math.max(1, intervalMinutes || 60),
+            });
+            scheduler.rescheduleAll();
+            return task;
+        }
+    );
+
+    ipcMain.handle(
+        "scheduledTasks:update",
+        (_event: IpcMainInvokeEvent, { id, partial }: { id: string; partial: Record<string, unknown> }) => {
+            requireString(id, "task id");
+            const updated = scheduledTasksStore.updateTask(id, partial);
+            scheduler.rescheduleAll();
+            return updated;
+        }
+    );
+
+    ipcMain.handle("scheduledTasks:delete", (_event: IpcMainInvokeEvent, id: string) => {
+        requireString(id, "task id");
+        scheduledTasksStore.deleteTask(id);
+        scheduler.rescheduleAll();
+    });
+
+    ipcMain.handle("scheduledTasks:runNow", (_event: IpcMainInvokeEvent, id: string) => {
+        requireString(id, "task id");
+        return scheduler.runTask(id);
+    });
 
     ipcMain.handle("projects:list", () => projectsStore.listProjects());
     ipcMain.handle("projects:create", (_event: IpcMainInvokeEvent, name: string) =>
@@ -580,6 +659,7 @@ app.whenReady().then(async () => {
     llamacpp.setGpuBackend(settingsStore.getSettings().llamaCppGpuBackend ?? "auto");
     setupAutoUpdater(() => mainWindow);
     void connectEnabledMcpServers();
+    scheduler.init((provider, model, prompt) => completePrompt(provider as ProviderId, model, prompt));
 
     app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();

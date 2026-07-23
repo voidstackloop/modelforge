@@ -19,6 +19,8 @@ import {
     Plus,
     ChevronDown,
     ChevronRight,
+    Clock,
+    Play,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -51,6 +53,7 @@ import type {
     LlamaCppGpuBackend,
     HfModelSummary,
     HfGgufFile,
+    ScheduledTask,
 } from "@/types/electron";
 import { EXTRA_MODELS } from "@/lib/model-catalog";
 import { OPENAI_MODELS, ANTHROPIC_MODELS, formatModelRef } from "@/lib/providers";
@@ -61,7 +64,7 @@ import { useTheme, ACCENT_COLORS, type AccentColor } from "@/components/theme-pr
 import { speakText } from "@/lib/tts";
 import { cn } from "@/lib/utils";
 
-type SettingsTab = "general" | "models" | "integrations" | "chat" | "voice" | "data";
+type SettingsTab = "general" | "models" | "integrations" | "chat" | "voice" | "automation" | "data";
 
 // Ollama pulls Hugging Face GGUF models via a "hf.co/user/repo[:quant]" model
 // name — accept a pasted full URL or the "huggingface.co/" host too, rather
@@ -152,6 +155,13 @@ export default function Settings() {
     const [hfFilesLoading, setHfFilesLoading] = useState(false);
     const [hfDownloading, setHfDownloading] = useState<Record<string, number>>({});
 
+    const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+    const [showAddTask, setShowAddTask] = useState(false);
+    const [taskDraftName, setTaskDraftName] = useState("");
+    const [taskDraftPrompt, setTaskDraftPrompt] = useState("");
+    const [taskDraftModel, setTaskDraftModel] = useState("");
+    const [taskDraftInterval, setTaskDraftInterval] = useState(60);
+
     async function refreshInstalled() {
         const list = await window.api.ollama.listModels();
         setInstalled(list);
@@ -181,6 +191,7 @@ export default function Settings() {
         window.api.mcp.status().then(setMcpStatuses);
         window.api.llamacpp.listModels().then(setLlamaCppModels);
         window.api.llamacpp.getAvailableGpuBackends().then(setLlamaCppGpuBackends);
+        window.api.scheduledTasks.list().then(setScheduledTasks);
     }, []);
 
     // Debounced real Hugging Face Hub search — fires a bit after typing stops
@@ -253,6 +264,38 @@ export default function Settings() {
             window.api.llamacpp.listModels().then(setLlamaCppModels);
         }
         setChangingLlamaCppDir(false);
+    }
+
+    async function createScheduledTask() {
+        const name = taskDraftName.trim();
+        const prompt = taskDraftPrompt.trim();
+        if (!name || !prompt || !taskDraftModel) return;
+        await window.api.scheduledTasks.create(name, prompt, taskDraftModel, taskDraftInterval);
+        // Re-fetch rather than optimistically appending: the initial mount
+        // fetch and this one can otherwise race (the mount fetch resolving
+        // after creation, already containing the new task, followed by this
+        // handler appending it again on top).
+        window.api.scheduledTasks.list().then(setScheduledTasks);
+        setTaskDraftName("");
+        setTaskDraftPrompt("");
+        setTaskDraftModel("");
+        setTaskDraftInterval(60);
+        setShowAddTask(false);
+    }
+
+    async function toggleScheduledTask(task: ScheduledTask) {
+        const updated = await window.api.scheduledTasks.update(task.id, { enabled: !task.enabled });
+        if (updated) setScheduledTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
+    }
+
+    async function deleteScheduledTask(id: string) {
+        await window.api.scheduledTasks.delete(id);
+        setScheduledTasks((prev) => prev.filter((t) => t.id !== id));
+    }
+
+    async function runScheduledTaskNow(id: string) {
+        await window.api.scheduledTasks.runNow(id);
+        window.api.scheduledTasks.list().then(setScheduledTasks);
     }
 
     async function handleExportAll() {
@@ -599,6 +642,7 @@ export default function Settings() {
                         <TabsTrigger value="integrations">{t.settingsTabIntegrations}</TabsTrigger>
                         <TabsTrigger value="chat">{t.settingsTabChat}</TabsTrigger>
                         <TabsTrigger value="voice">{t.settingsTabVoice}</TabsTrigger>
+                        <TabsTrigger value="automation">{t.settingsTabAutomation}</TabsTrigger>
                         <TabsTrigger value="data">{t.settingsTabData}</TabsTrigger>
                     </TabsList>
 
@@ -1299,6 +1343,128 @@ export default function Settings() {
                                 </SettingsRow>
                             </SettingsSection>
                         )}
+                    </div>
+                    </TabsContent>
+
+                    <TabsContent value="automation" className="min-w-0 flex-1 flex flex-col gap-8">
+                    <div>
+                        <SettingsSection title={t.scheduledTasksSection} description={t.scheduledTasksHint}>
+                            {scheduledTasks.map((task) => (
+                                <SettingsRow
+                                    key={task.id}
+                                    label={task.name}
+                                    description={`${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? "…" : ""} · ${t.every} ${task.intervalMinutes} ${t.minutes}${task.lastError ? ` · ${task.lastError}` : ""}`}
+                                    stacked
+                                >
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <Badge variant={task.enabled ? "default" : "secondary"}>
+                                            {task.enabled ? t.enabled : t.disabled}
+                                        </Badge>
+                                        <span className="text-xs text-muted-foreground">
+                                            {t.lastRun}: {task.lastRunAt ? new Date(task.lastRunAt).toLocaleString() : t.never}
+                                        </span>
+                                        <Button size="sm" variant="outline" onClick={() => runScheduledTaskNow(task.id)} className="gap-1.5">
+                                            <Play className="size-3.5" /> {t.runNow}
+                                        </Button>
+                                        <Button size="sm" variant="outline" onClick={() => toggleScheduledTask(task)}>
+                                            {task.enabled ? t.disable : t.enable}
+                                        </Button>
+                                        <Button
+                                            size="icon"
+                                            variant="ghost"
+                                            onClick={() => deleteScheduledTask(task.id)}
+                                            aria-label={`Delete ${task.name}`}
+                                        >
+                                            <Trash2 className="size-3.5 text-destructive" />
+                                        </Button>
+                                    </div>
+                                </SettingsRow>
+                            ))}
+                            {scheduledTasks.length === 0 && (
+                                <p className="p-4 text-xs text-muted-foreground">{t.noScheduledTasks}</p>
+                            )}
+                            <SettingsRow stacked>
+                                {showAddTask ? (
+                                    <div className="flex flex-col gap-2">
+                                        <Input
+                                            value={taskDraftName}
+                                            onChange={(e) => setTaskDraftName(e.target.value)}
+                                            placeholder={t.taskName}
+                                            className="h-8 text-xs"
+                                        />
+                                        <Textarea
+                                            value={taskDraftPrompt}
+                                            onChange={(e) => setTaskDraftPrompt(e.target.value)}
+                                            placeholder={t.taskPrompt}
+                                            className="min-h-16 text-xs"
+                                        />
+                                        <Select value={taskDraftModel} onValueChange={(v) => setTaskDraftModel(v ?? "")}>
+                                            <SelectTrigger size="sm" className="w-full">
+                                                <SelectValue placeholder={t.taskModel} />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectGroup>
+                                                    <SelectLabel>Ollama (local)</SelectLabel>
+                                                    {installed.map((m) => (
+                                                        <SelectItem key={m.name} value={formatModelRef("ollama", m.name)}>
+                                                            {m.name}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectGroup>
+                                                <SelectGroup>
+                                                    <SelectLabel>ChatGPT</SelectLabel>
+                                                    {OPENAI_MODELS.map((m) => (
+                                                        <SelectItem key={m.id} value={formatModelRef("openai", m.id)}>
+                                                            {m.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectGroup>
+                                                <SelectGroup>
+                                                    <SelectLabel>Claude</SelectLabel>
+                                                    {ANTHROPIC_MODELS.map((m) => (
+                                                        <SelectItem key={m.id} value={formatModelRef("anthropic", m.id)}>
+                                                            {m.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectGroup>
+                                            </SelectContent>
+                                        </Select>
+                                        <div className="flex items-center gap-2">
+                                            <label className="text-xs text-muted-foreground">{t.intervalMinutes}</label>
+                                            <Input
+                                                type="number"
+                                                min={1}
+                                                value={taskDraftInterval}
+                                                onChange={(e) => setTaskDraftInterval(Number(e.target.value) || 60)}
+                                                className="h-8 w-24 text-xs"
+                                            />
+                                        </div>
+                                        <div className="flex gap-1.5">
+                                            <Button
+                                                size="sm"
+                                                onClick={createScheduledTask}
+                                                disabled={!taskDraftName.trim() || !taskDraftPrompt.trim() || !taskDraftModel}
+                                                className="gap-1.5"
+                                            >
+                                                <Clock className="size-3.5" /> {t.createTask}
+                                            </Button>
+                                            <Button size="sm" variant="outline" onClick={() => setShowAddTask(false)}>
+                                                {t.cancel}
+                                            </Button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => setShowAddTask(true)}
+                                        className="w-fit gap-1.5"
+                                    >
+                                        <Plus className="size-3.5" /> {t.createTask}
+                                    </Button>
+                                )}
+                            </SettingsRow>
+                        </SettingsSection>
                     </div>
                     </TabsContent>
 

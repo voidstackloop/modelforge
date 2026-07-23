@@ -6,6 +6,7 @@ import type { McpServerConfig, McpServerStatus } from "./mcp-client";
 import type { RollbackResult, ProjectScripts } from "./agent-tools";
 import type { PromptPreset } from "./settings-store";
 import type { LocalGgufModel, GpuBackend } from "./llamacpp-manager";
+import type { ScheduledTask } from "./scheduled-tasks-store";
 
 interface ToolExecuteResult {
     result?: unknown;
@@ -133,6 +134,16 @@ contextBridge.exposeInMainWorld("api", {
             ipcRenderer.invoke("sessions:update", { id, partial }),
         delete: (id: string) => ipcRenderer.invoke("sessions:delete", id),
         clearAll: () => ipcRenderer.invoke("sessions:clearAll"),
+    },
+
+    scheduledTasks: {
+        list: (): Promise<ScheduledTask[]> => ipcRenderer.invoke("scheduledTasks:list"),
+        create: (name: string, prompt: string, model: string, intervalMinutes: number): Promise<ScheduledTask> =>
+            ipcRenderer.invoke("scheduledTasks:create", { name, prompt, model, intervalMinutes }),
+        update: (id: string, partial: Record<string, unknown>): Promise<ScheduledTask | null> =>
+            ipcRenderer.invoke("scheduledTasks:update", { id, partial }),
+        delete: (id: string): Promise<void> => ipcRenderer.invoke("scheduledTasks:delete", id),
+        runNow: (id: string): Promise<void> => ipcRenderer.invoke("scheduledTasks:runNow", id),
     },
 
     files: {

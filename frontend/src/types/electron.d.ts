@@ -229,6 +229,19 @@ export interface ChatSession {
   updatedAt: string;
 }
 
+export interface ScheduledTask {
+  id: string;
+  name: string;
+  prompt: string;
+  model: string;
+  targetSessionId: string;
+  intervalMinutes: number;
+  enabled: boolean;
+  lastRunAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -353,6 +366,13 @@ export interface ElectronApi {
     ) => Promise<ChatSession | null>;
     delete: (id: string) => Promise<void>;
     clearAll: () => Promise<void>;
+  };
+  scheduledTasks: {
+    list: () => Promise<ScheduledTask[]>;
+    create: (name: string, prompt: string, model: string, intervalMinutes: number) => Promise<ScheduledTask>;
+    update: (id: string, partial: Record<string, unknown>) => Promise<ScheduledTask | null>;
+    delete: (id: string) => Promise<void>;
+    runNow: (id: string) => Promise<void>;
   };
   files: {
     openAndRead: () => Promise<AttachedFile[]>;

@@ -54,6 +54,9 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 
 **Agent mode** — see the [dedicated section](#agent-mode) below.
 
+**Automation**
+- **Scheduled tasks** (Settings → Automation) — run a saved prompt against a chosen model on a repeating interval while the app is open, with results appended to a dedicated chat for that task so you get a running log rather than a new chat every time. This only runs while Modelforge is open (there's no OS-level background service), and doesn't use Agent mode tools — it's plain scheduled chat completions, not a scheduled agent run.
+
 **Models & hardware**
 - Model recommendations based on your actual hardware — RAM and VRAM are detected and summed **across all GPUs**, not just the first one, so multi-GPU machines get accurate suggestions.
 - **GPU offload control** — set how many model layers Ollama offloads to GPU (`num_gpu`) per chat, per project, or as a global default; leave it blank to let Ollama decide automatically.
