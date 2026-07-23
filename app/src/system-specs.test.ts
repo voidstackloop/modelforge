@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { recommendModels, type SystemSpecs } from "./system-specs";
+import { classifyGpuVendor, recommendModels, type SystemSpecs } from "./system-specs";
 
 function baseSpecs(overrides: Partial<SystemSpecs> = {}): SystemSpecs {
     return {
@@ -15,6 +15,34 @@ function baseSpecs(overrides: Partial<SystemSpecs> = {}): SystemSpecs {
         ...overrides,
     };
 }
+
+describe("classifyGpuVendor", () => {
+    it("identifies NVIDIA cards by common product names", () => {
+        expect(classifyGpuVendor("NVIDIA GeForce RTX 4070")).toBe("nvidia");
+        expect(classifyGpuVendor("GTX 1660 Super")).toBe("nvidia");
+        expect(classifyGpuVendor("Tesla T4")).toBe("nvidia");
+    });
+
+    it("identifies AMD cards", () => {
+        expect(classifyGpuVendor("AMD Radeon RX 7900 XTX")).toBe("amd");
+        expect(classifyGpuVendor("Radeon Vega 8")).toBe("amd");
+        expect(classifyGpuVendor("Advanced Micro Devices, Inc. [AMD/ATI] Navi 31")).toBe("amd");
+    });
+
+    it("identifies Intel GPUs including integrated graphics", () => {
+        expect(classifyGpuVendor("Intel Arc A770")).toBe("intel");
+        expect(classifyGpuVendor("Intel(R) Iris(R) Xe Graphics")).toBe("intel");
+        expect(classifyGpuVendor("Intel(R) UHD Graphics 630")).toBe("intel");
+    });
+
+    it("identifies Apple GPUs", () => {
+        expect(classifyGpuVendor("Apple M3 Pro")).toBe("apple");
+    });
+
+    it("returns unknown for unrecognized names", () => {
+        expect(classifyGpuVendor("Matrox G200eW")).toBe("unknown");
+    });
+});
 
 describe("recommendModels", () => {
     it("falls back to RAM-based sizing when there's no GPU", () => {

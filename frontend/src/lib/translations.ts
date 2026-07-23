@@ -157,6 +157,11 @@ export interface Dictionary {
     gpuBackendHint: string;
     gpuBackendAuto: string;
     gpuBackendCpu: string;
+    gpuRecommended: string;
+    gpuDetected: string;
+    gpuAmdRocmNote: string;
+    gpuIntelVulkanNote: string;
+    gpuNoneDetectedNote: string;
     llamaCppNoModels: string;
     huggingFaceResults: string;
     huggingFaceResultsHint: string;
@@ -441,6 +446,12 @@ export const en: Dictionary = {
     gpuBackendHint: "Only backends detected on this machine are shown as selectable, besides Auto and CPU.",
     gpuBackendAuto: "Auto-detect",
     gpuBackendCpu: "CPU only",
+    gpuRecommended: "Recommended",
+    gpuDetected: "Detected",
+    gpuAmdRocmNote:
+        "AMD GPUs are accelerated through Vulkan here. For native ROCm acceleration, run your models through the Ollama backend instead — it supports ROCm directly.",
+    gpuIntelVulkanNote: "Intel GPUs (Arc and integrated) are accelerated through Vulkan.",
+    gpuNoneDetectedNote: "No GPU detected — inference will run on the CPU.",
     llamaCppNoModels: "No GGUF models downloaded yet — search Hugging Face below and choose \"Download for llama.cpp\".",
     huggingFaceResults: "Hugging Face results",
     huggingFaceResultsHint: "Real search results from huggingface.co — expand a model to see its GGUF files.",
@@ -733,6 +744,12 @@ export const tr: Dictionary = {
     gpuBackendHint: "Otomatik ve CPU dışında yalnızca bu makinede tespit edilen backend'ler seçilebilir olarak gösterilir.",
     gpuBackendAuto: "Otomatik algıla",
     gpuBackendCpu: "Yalnızca CPU",
+    gpuRecommended: "Önerilen",
+    gpuDetected: "Algılanan",
+    gpuAmdRocmNote:
+        "AMD GPU'lar burada Vulkan üzerinden hızlandırılır. Yerel ROCm hızlandırması için modellerinizi ROCm'u doğrudan destekleyen Ollama arka ucu üzerinden çalıştırın.",
+    gpuIntelVulkanNote: "Intel GPU'lar (Arc ve tümleşik) Vulkan üzerinden hızlandırılır.",
+    gpuNoneDetectedNote: "GPU algılanmadı — çıkarım CPU üzerinde çalışacak.",
     llamaCppNoModels: "Henüz indirilmiş GGUF modeli yok — aşağıdan Hugging Face'te arayın ve \"llama.cpp için indir\"i seçin.",
     huggingFaceResults: "Hugging Face sonuçları",
     huggingFaceResultsHint: "huggingface.co'dan gerçek arama sonuçları — GGUF dosyalarını görmek için bir modeli genişletin.",

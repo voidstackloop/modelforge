@@ -68,6 +68,21 @@ export const MODEL_CATALOG: ModelCatalogEntry[] = [
     { name: "llama3.1:70b", label: "Llama 3.1 70B", minRAMGB: 48, description: "Near top-tier quality, requires a workstation-class PC.", supportsTools: true },
 ];
 
+export type GpuVendor = "nvidia" | "amd" | "intel" | "apple" | "unknown";
+
+// Classifies a GPU by its marketing name — the only identity most detection
+// paths give us (the Windows WMI path and macOS system_profiler report names,
+// not vendor IDs). Drives which llama.cpp backend gets recommended: CUDA is
+// NVIDIA-only, Metal is Apple-only, and AMD/Intel accelerate via Vulkan
+// (node-llama-cpp ships no ROCm/SYCL prebuilds — native ROCm means Ollama).
+export function classifyGpuVendor(name: string): GpuVendor {
+    if (/nvidia|geforce|\brtx\b|\bgtx\b|quadro|tesla/i.test(name)) return "nvidia";
+    if (/\bamd\b|radeon|\brx\s?\d{3,4}\b|vega|firepro|instinct/i.test(name)) return "amd";
+    if (/intel|\barc\b|iris|uhd graphics|hd graphics/i.test(name)) return "intel";
+    if (/apple/i.test(name)) return "apple";
+    return "unknown";
+}
+
 function execFileP(cmd: string, args: string[]): Promise<string | null> {
     return new Promise((resolve) => {
         execFile(cmd, args, { timeout: 3000 }, (err, stdout) => {
@@ -117,13 +132,30 @@ async function detectGpus(): Promise<GpuInfo[]> {
                     gpus.push({
                         name: gpu.Name,
                         vramGB: ramGB > 0 && ramGB < 64 ? +ramGB.toFixed(1) : null,
-                        vendor: "unknown",
+                        vendor: classifyGpuVendor(gpu.Name),
                     });
                 }
                 if (gpus.length > 0) return gpus;
             } catch {
                 // ignore malformed output
             }
+        }
+    }
+
+    // Linux without NVIDIA drivers (AMD/Intel boxes) previously detected
+    // nothing at all — lspci names the display controllers even when no
+    // vendor tooling is installed.
+    if (os.platform() === "linux") {
+        const out = await execFileP("lspci", []);
+        if (out) {
+            const gpus: GpuInfo[] = [];
+            for (const line of out.split("\n")) {
+                if (/VGA compatible controller|3D controller|Display controller/i.test(line)) {
+                    const name = line.split(":").slice(2).join(":").trim();
+                    if (name) gpus.push({ name, vramGB: null, vendor: classifyGpuVendor(name) });
+                }
+            }
+            if (gpus.length > 0) return gpus;
         }
     }
 

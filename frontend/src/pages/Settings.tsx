@@ -63,6 +63,7 @@ import type {
     AppActivity,
 } from "@/types/electron";
 import { EXTRA_MODELS } from "@/lib/model-catalog";
+import { recommendGpuBackend, gpuBackendNote } from "@/lib/gpu";
 import {
     DEFAULT_KEYBINDINGS,
     KEYBINDING_ACTIONS,
@@ -868,21 +869,52 @@ export default function Settings() {
                         {settings && (
                             <SettingsSection title={t.llamaCppSection} description={t.llamaCppHint} className="mt-8">
                                 <SettingsRow label={t.gpuBackend} description={t.gpuBackendHint} stacked>
-                                    <Select
-                                        value={settings.llamaCppGpuBackend ?? "auto"}
-                                        onValueChange={(v) => changeLlamaCppGpuBackend(v as LlamaCppGpuBackend)}
-                                    >
-                                        <SelectTrigger size="sm" className="w-48">
-                                            <SelectValue />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="auto">{t.gpuBackendAuto}</SelectItem>
-                                            {llamaCppGpuBackends.includes("vulkan") && <SelectItem value="vulkan">Vulkan</SelectItem>}
-                                            {llamaCppGpuBackends.includes("cuda") && <SelectItem value="cuda">CUDA</SelectItem>}
-                                            {llamaCppGpuBackends.includes("metal") && <SelectItem value="metal">Metal</SelectItem>}
-                                            <SelectItem value="cpu">{t.gpuBackendCpu}</SelectItem>
-                                        </SelectContent>
-                                    </Select>
+                                    {(() => {
+                                        const vendors = specs?.gpus.map((g) => g.vendor) ?? [];
+                                        const recommended = recommendGpuBackend(vendors, llamaCppGpuBackends);
+                                        const note = gpuBackendNote(vendors);
+                                        const rec = (backend: string, label: string) =>
+                                            backend === recommended ? `${label} (${t.gpuRecommended})` : label;
+                                        return (
+                                            <>
+                                                <Select
+                                                    value={settings.llamaCppGpuBackend ?? "auto"}
+                                                    onValueChange={(v) => changeLlamaCppGpuBackend(v as LlamaCppGpuBackend)}
+                                                >
+                                                    <SelectTrigger size="sm" className="w-56">
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="auto">{t.gpuBackendAuto}</SelectItem>
+                                                        {llamaCppGpuBackends.includes("cuda") && (
+                                                            <SelectItem value="cuda">{rec("cuda", "CUDA (NVIDIA)")}</SelectItem>
+                                                        )}
+                                                        {llamaCppGpuBackends.includes("vulkan") && (
+                                                            <SelectItem value="vulkan">{rec("vulkan", "Vulkan (NVIDIA / AMD / Intel)")}</SelectItem>
+                                                        )}
+                                                        {llamaCppGpuBackends.includes("metal") && (
+                                                            <SelectItem value="metal">{rec("metal", "Metal (Apple)")}</SelectItem>
+                                                        )}
+                                                        <SelectItem value="cpu">{rec("cpu", t.gpuBackendCpu)}</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                                {specs && specs.gpus.length > 0 && (
+                                                    <p className="text-xs text-muted-foreground">
+                                                        {t.gpuDetected}: {specs.gpus.map((g) => g.name).join(", ")}
+                                                    </p>
+                                                )}
+                                                {note === "amdViaVulkan" && (
+                                                    <p className="text-xs text-muted-foreground">{t.gpuAmdRocmNote}</p>
+                                                )}
+                                                {note === "intelViaVulkan" && (
+                                                    <p className="text-xs text-muted-foreground">{t.gpuIntelVulkanNote}</p>
+                                                )}
+                                                {note === "noGpuDetected" && (
+                                                    <p className="text-xs text-muted-foreground">{t.gpuNoneDetectedNote}</p>
+                                                )}
+                                            </>
+                                        );
+                                    })()}
                                 </SettingsRow>
                                 <SettingsRow label={t.modelsDir} stacked>
                                     <div className="flex flex-wrap items-center gap-2">
