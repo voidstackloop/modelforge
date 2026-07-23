@@ -7,6 +7,11 @@ export interface OllamaModel {
 export interface UsageInfo {
   promptTokens?: number;
   completionTokens?: number;
+  // Wall-clock time from request start to this usage snapshot, measured
+  // client-side (providers don't report generation speed themselves) — used
+  // to derive a tokens/sec figure. Not persisted meaning across app
+  // restarts in any special way; it's just another number on the message.
+  elapsedMs?: number;
 }
 
 export interface MessageImage {

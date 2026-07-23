@@ -335,9 +335,14 @@ const MessageBubble = memo(function MessageBubble({
 function formatUsage(usage: UsageInfo, provider: ProviderId | undefined, modelId: string | undefined): string {
     const total = (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
     const tokenLabel = `${total.toLocaleString()} tokens`;
-    if (provider === "ollama" || provider === "llamacpp") return `${tokenLabel} · local`;
+    const speed =
+        usage.completionTokens && usage.elapsedMs && usage.elapsedMs > 0
+            ? `${(usage.completionTokens / (usage.elapsedMs / 1000)).toFixed(1)} tok/s`
+            : null;
+    const withSpeed = (label: string) => (speed ? `${label} · ${speed}` : label);
+    if (provider === "ollama" || provider === "llamacpp") return withSpeed(`${tokenLabel} · local`);
     const cost = modelId ? estimateCost(modelId, usage.promptTokens, usage.completionTokens) : null;
-    return cost !== null ? `${tokenLabel} · ~${formatCost(cost)}` : tokenLabel;
+    return withSpeed(cost !== null ? `${tokenLabel} · ~${formatCost(cost)}` : tokenLabel);
 }
 
 export default function Chat() {
@@ -775,6 +780,11 @@ export default function Chat() {
     ) {
         const parsed = parseModelRef(model);
         if (!parsed || !sessionId) return;
+        // Timing an in-flight network stream, not computing render output —
+        // the react-hooks purity rule can't tell this closure only runs once
+        // per user-initiated send, not during render.
+        // eslint-disable-next-line react-hooks/purity
+        const streamStartedAt = Date.now();
 
         setMessages([...baseMessages, { role: "assistant", content: "" }]);
         setIsStreaming(true);
@@ -803,6 +813,7 @@ export default function Chat() {
                             ? {
                                   promptTokens: chunk.usage.promptTokens ?? last.usage?.promptTokens,
                                   completionTokens: chunk.usage.completionTokens ?? last.usage?.completionTokens,
+                                  elapsedMs: Date.now() - streamStartedAt,
                               }
                             : last.usage,
                         toolCalls: chunk.toolCalls ? [...(last.toolCalls ?? []), ...chunk.toolCalls] : last.toolCalls,
