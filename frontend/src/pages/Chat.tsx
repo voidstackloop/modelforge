@@ -69,6 +69,7 @@ import { ScreenshotPickerDialog } from "@/components/screenshot-picker-dialog";
 import { speakText, stopSpeaking } from "@/lib/tts";
 import { computeLineDiff } from "@/lib/diff";
 import { useToast } from "@/components/toast";
+import { isTransientError } from "@/lib/transient-errors";
 import type {
     ChatMessage,
     OllamaModel,
@@ -223,11 +224,20 @@ const MessageBubble = memo(function MessageBubble({
     const { t } = useI18n();
 
     if (m.role === "tool") {
+        // Tool failures get a visually distinct card — an agent run that hit
+        // an error mid-way should be scannable at a glance, not require
+        // reading every result body to find where things went wrong.
+        const isError = m.content.startsWith("Error:") || m.content === "The user denied this tool call.";
         return (
             <div className="flex flex-col items-start">
-                <div className="max-w-[85%] rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-xs text-muted-foreground">
-                    <div className="mb-1 font-sans font-medium text-foreground">
-                        🔧 {m.toolName} {t.toolResult}
+                <div
+                    className={cn(
+                        "max-w-[85%] rounded-lg border px-3 py-2 font-mono text-xs text-muted-foreground",
+                        isError ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/50"
+                    )}
+                >
+                    <div className={cn("mb-1 font-sans font-medium", isError ? "text-destructive" : "text-foreground")}>
+                        {isError ? "⚠️" : "🔧"} {m.toolName} {isError ? t.toolFailed : t.toolResult}
                     </div>
                     <pre className="max-h-48 overflow-auto whitespace-pre-wrap">{m.content}</pre>
                 </div>
@@ -492,7 +502,7 @@ export default function Chat() {
             setAgentWorkspace(session.agentWorkspace ?? null);
             setPendingToolCalls([]);
             setAgentStepCount(0);
-            setPlanSteps([]);
+            setPlanSteps(session.planSteps ?? []);
             setAutoApprovedTools(new Set());
             setWriteDiffPreviews({});
             setUndoMessage(null);
@@ -832,7 +842,7 @@ export default function Chat() {
     async function runCompletion(
         history: ChatMessage[],
         baseMessages: ChatMessage[],
-        opts: { isFirstMessage: boolean; titleSource: string }
+        opts: { isFirstMessage: boolean; titleSource: string; attempt?: number }
     ) {
         const parsed = parseModelRef(model);
         if (!parsed || !sessionId) return;
@@ -882,6 +892,18 @@ export default function Chat() {
         setActiveRequestId(requestId);
         const result = await promise;
         setActiveRequestId(null);
+
+        // One silent retry for errors that usually clear on their own
+        // (network blips, rate limits, 5xx) — but never for a user-initiated
+        // stop, and never more than once, so a genuinely down provider still
+        // fails fast instead of looping.
+        if (result.error && !result.aborted && (opts.attempt ?? 0) === 0 && isTransientError(result.error)) {
+            toast.info(t.transientErrorRetrying);
+            setIsStreaming(false);
+            window.api.app.setBusy(false);
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            return runCompletion(history, baseMessages, { ...opts, attempt: 1 });
+        }
 
         if (result.error) {
             setMessages((m) => {
@@ -999,6 +1021,7 @@ export default function Chat() {
             done: Boolean((s as { done?: unknown })?.done),
         }));
         setPlanSteps(steps);
+        if (sessionId) window.api.sessions.update(sessionId, { planSteps: steps });
         resolveToolCall(call, "Plan updated.");
     }
 
@@ -1098,6 +1121,7 @@ export default function Chat() {
         setImageAttachments([]);
         setAgentStepCount(0);
         setPlanSteps([]);
+        window.api.sessions.update(sessionId, { planSteps: [] });
         await runCompletion(history, baseMessages, { isFirstMessage, titleSource });
     }
 

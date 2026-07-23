@@ -16,6 +16,9 @@ export interface ChatSession {
     systemPrompt?: string | null;
     agentMode?: boolean;
     agentWorkspace?: string | null;
+    // The agent's last set_plan checklist for this conversation, persisted so
+    // reopening a chat mid-task shows where the plan stood.
+    planSteps?: { text: string; done: boolean }[];
     tags?: string[];
     createdAt: string;
     updatedAt: string;
@@ -63,7 +66,7 @@ export function updateSession(
     partial: Partial<
         Pick<
             ChatSession,
-            "title" | "model" | "messages" | "params" | "projectId" | "systemPrompt" | "agentMode" | "agentWorkspace" | "tags"
+            "title" | "model" | "messages" | "params" | "projectId" | "systemPrompt" | "agentMode" | "agentWorkspace" | "planSteps" | "tags"
         >
     >
 ): ChatSession | null {

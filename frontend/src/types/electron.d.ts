@@ -247,6 +247,7 @@ export interface ChatSession {
   systemPrompt?: string | null;
   agentMode?: boolean;
   agentWorkspace?: string | null;
+  planSteps?: { text: string; done: boolean }[];
   tags?: string[];
   createdAt: string;
   updatedAt: string;
@@ -391,6 +392,7 @@ export interface ElectronApi {
           | "systemPrompt"
           | "agentMode"
           | "agentWorkspace"
+          | "planSteps"
           | "tags"
         >
       >

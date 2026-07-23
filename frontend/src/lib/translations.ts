@@ -24,6 +24,8 @@ export interface Dictionary {
     allow: string;
     deny: string;
     toolResult: string;
+    toolFailed: string;
+    transientErrorRetrying: string;
     alwaysAllowThisSession: string;
     agentStep: string;
     agentStepTooltip: string;
@@ -320,6 +322,8 @@ export const en: Dictionary = {
     allow: "Allow",
     deny: "Deny",
     toolResult: "result",
+    toolFailed: "failed",
+    transientErrorRetrying: "Temporary provider error — retrying once...",
     alwaysAllowThisSession: "Always allow this session",
     agentStep: "Agent step",
     agentStepTooltip: "How many automatic tool-result → model-continuation round trips have happened for this turn.",
@@ -626,6 +630,8 @@ export const tr: Dictionary = {
     allow: "İzin ver",
     deny: "Reddet",
     toolResult: "sonucu",
+    toolFailed: "başarısız oldu",
+    transientErrorRetrying: "Geçici sağlayıcı hatası — bir kez yeniden deneniyor...",
     alwaysAllowThisSession: "Bu oturumda her zaman izin ver",
     agentStep: "Ajan adımı",
     agentStepTooltip: "Bu tur için kaç otomatik araç sonucu → model devamı gidiş-dönüşü gerçekleşti.",
