@@ -499,7 +499,13 @@ describe("agent-tools", () => {
     describe("git tools", () => {
         beforeEach(() => {
             execSync("git init -q", { cwd: workspace });
-            execSync('git -c user.email=test@test.com -c user.name=Test config commit.gpgsign false', { cwd: workspace });
+            // Actually persisted into the repo's config (unlike `git -c key=value`,
+            // which only overrides that one invocation) — CI runners have no global
+            // git identity to fall back on, so without this `git commit` fails with
+            // "Author identity unknown".
+            execSync('git config user.email test@test.com', { cwd: workspace });
+            execSync('git config user.name Test', { cwd: workspace });
+            execSync('git config commit.gpgsign false', { cwd: workspace });
             fs.writeFileSync(path.join(workspace, "a.txt"), "hello");
         });
 
