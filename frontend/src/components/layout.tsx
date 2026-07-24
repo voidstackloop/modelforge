@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Outlet, useNavigate, useParams } from "react-router-dom";
 import {
     BookMarked,
@@ -566,7 +566,11 @@ export default function Layout() {
         };
     }, [hasApi]);
 
-    const query = search.trim().toLowerCase();
+    // Filtering re-scans every message of every chat, which can get expensive
+    // with a large history — defer it a frame behind the input so typing in
+    // the search box never feels laggy, even while the filter itself is slow.
+    const deferredSearch = useDeferredValue(search);
+    const query = deferredSearch.trim().toLowerCase();
     const matchesSearch = (s: ChatSession) =>
         (!query ||
             s.title.toLowerCase().includes(query) ||
@@ -600,6 +604,19 @@ export default function Layout() {
         query,
         activeTags,
     ]);
+    /* eslint-disable react-hooks/exhaustive-deps --
+       matchesSearch is a plain function derived from `query`/`activeTags`, already listed below */
+    const sessionsByProject = useMemo(() => {
+        const map = new Map<string, ChatSession[]>();
+        for (const s of sessions) {
+            if (!s.projectId || !matchesSearch(s)) continue;
+            const list = map.get(s.projectId);
+            if (list) list.push(s);
+            else map.set(s.projectId, [s]);
+        }
+        return map;
+    }, [sessions, query, activeTags]);
+    /* eslint-enable react-hooks/exhaustive-deps */
 
     async function handleNewChat(projectId?: string) {
         const session = await createSession(null, projectId ?? null);
@@ -761,7 +778,7 @@ export default function Layout() {
                             <ProjectGroup
                                 key={project.id}
                                 project={project}
-                                sessions={sessions.filter((s) => s.projectId === project.id && matchesSearch(s))}
+                                sessions={sessionsByProject.get(project.id) ?? []}
                                 activeSessionId={sessionId}
                                 onOpenSession={(id) => navigate(`/chat/${id}`)}
                                 onDeleteSession={handleDelete}

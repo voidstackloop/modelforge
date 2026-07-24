@@ -302,7 +302,13 @@ const MessageBubble = memo(function MessageBubble({
                             ))}
                         </div>
                     )}
-                    {m.content ? <Markdown content={m.content} /> : isStreaming && isLastAssistant ? "…" : ""}
+                    {m.content ? (
+                        <Markdown content={m.content} isStreaming={isStreaming && isLastAssistant} />
+                    ) : isStreaming && isLastAssistant ? (
+                        "…"
+                    ) : (
+                        ""
+                    )}
                 </div>
             )}
             <div className="mt-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">

@@ -157,7 +157,7 @@ export default function Compare() {
                                     {result?.error ? (
                                         <p className="text-destructive">{result.error}</p>
                                     ) : result?.content ? (
-                                        <Markdown content={result.content} />
+                                        <Markdown content={result.content} isStreaming={!!result.streaming} />
                                     ) : result?.streaming ? (
                                         <Loader2 className="size-4 animate-spin text-muted-foreground" />
                                     ) : (
