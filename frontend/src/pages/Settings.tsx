@@ -32,6 +32,8 @@ import {
     Apple,
     Gauge,
     ExternalLink,
+    Shield,
+    ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -68,6 +70,7 @@ import type {
     AppActivity,
     LinkedAccount,
     LocalRuntimeStatus,
+    SandboxCapabilities,
 } from "@/types/electron";
 import { EXTRA_MODELS } from "@/lib/model-catalog";
 import { recommendGpuBackend, gpuBackendNote } from "@/lib/gpu";
@@ -195,6 +198,7 @@ export default function Settings() {
     const [keybindingConflict, setKeybindingConflict] = useState<string | null>(null);
     const [importMessage, setImportMessage] = useState<string | null>(null);
     const [ollamaHostInput, setOllamaHostInput] = useState("");
+    const [sandboxCapabilities, setSandboxCapabilities] = useState<SandboxCapabilities | null>(null);
     const [modelsDirStatus, setModelsDirStatus] = useState<string | null>(null);
     const [changingModelsDir, setChangingModelsDir] = useState(false);
     const [newPresetName, setNewPresetName] = useState("");
@@ -259,6 +263,7 @@ export default function Settings() {
         window.api.llamacpp.listModels().then(setLlamaCppModels);
         window.api.llamacpp.getAvailableGpuBackends().then(setLlamaCppGpuBackends);
         refreshRuntimeStatuses();
+        window.api.agent.getSandboxCapabilities().then(setSandboxCapabilities);
     }, []);
 
     useEffect(() => {
@@ -2446,6 +2451,65 @@ export default function Settings() {
                                                     </span>
                                                 </button>
                                             ))}
+                                        </div>
+                                    </SettingsRow>
+                                </SettingsSection>
+
+                                <SettingsSection title={t.sandboxSectionTitle} description={t.sandboxSectionHint} className="mt-8">
+                                    <SettingsRow label={t.networkToolsLabel} description={t.networkToolsHint}>
+                                        <Button
+                                            size="sm"
+                                            variant={(settings.networkToolsEnabled ?? true) ? "default" : "outline"}
+                                            onClick={() => saveSettings({ networkToolsEnabled: !(settings.networkToolsEnabled ?? true) })}
+                                            className="gap-1.5"
+                                        >
+                                            {(settings.networkToolsEnabled ?? true) && <Check className="size-3.5" />}
+                                            {(settings.networkToolsEnabled ?? true) ? t.enabled : t.disabled}
+                                        </Button>
+                                    </SettingsRow>
+                                    <SettingsRow label={t.sandboxMaxMemoryLabel} description={t.sandboxMaxMemoryHint}>
+                                        <Input
+                                            type="number"
+                                            min={128}
+                                            step={128}
+                                            value={settings.sandboxMaxMemoryMB ?? 2048}
+                                            onChange={(e) => saveSettings({ sandboxMaxMemoryMB: Math.max(128, Number(e.target.value)) })}
+                                            className="w-28"
+                                            aria-label={t.sandboxMaxMemoryLabel}
+                                        />
+                                    </SettingsRow>
+                                    <SettingsRow label={t.sandboxMaxCpuLabel} description={t.sandboxMaxCpuHint}>
+                                        <Input
+                                            type="number"
+                                            min={1}
+                                            max={100}
+                                            placeholder="—"
+                                            value={settings.sandboxMaxCpuPercent ?? ""}
+                                            onChange={(e) =>
+                                                saveSettings({
+                                                    sandboxMaxCpuPercent: e.target.value === "" ? undefined : Math.max(1, Math.min(100, Number(e.target.value))),
+                                                })
+                                            }
+                                            className="w-28"
+                                            aria-label={t.sandboxMaxCpuLabel}
+                                        />
+                                    </SettingsRow>
+                                    <SettingsRow label={t.sandboxStatusLabel} stacked>
+                                        <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                                            {sandboxCapabilities?.mechanism === "bubblewrap" || sandboxCapabilities?.mechanism === "sandbox-exec" ? (
+                                                <Shield className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                                            ) : (
+                                                <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                                            )}
+                                            <span>
+                                                {!sandboxCapabilities
+                                                    ? "…"
+                                                    : sandboxCapabilities.mechanism === "bubblewrap"
+                                                      ? t.sandboxStatusBubblewrap
+                                                      : sandboxCapabilities.mechanism === "sandbox-exec"
+                                                        ? t.sandboxStatusSandboxExec
+                                                        : t.sandboxStatusNone}
+                                            </span>
                                         </div>
                                     </SettingsRow>
                                 </SettingsSection>

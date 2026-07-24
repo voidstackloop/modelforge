@@ -99,6 +99,17 @@ export interface AppSettings {
     // vLLM runtime. The `vllm` executable is discovered from PATH by default.
     vllmModels?: string[];
     vllmCommand?: string;
+    // Agent-mode sandboxing. Network tools (web_search, fetch_url,
+    // http_request, capture_page_screenshot, the GitHub tools) are gated by
+    // this flag directly — 100% enforceable on every platform, since it's
+    // just refusing to run the tool at all rather than trying to block
+    // network access after the fact.
+    networkToolsEnabled?: boolean;
+    // Safety-net resource caps applied to run_command/run_code/background
+    // commands (see resource-monitor.ts) — generous defaults, meant to catch
+    // a runaway process rather than act as a real resource quota system.
+    sandboxMaxMemoryMB?: number;
+    sandboxMaxCpuPercent?: number;
 }
 
 const DEFAULTS: AppSettings = {
@@ -118,6 +129,8 @@ const DEFAULTS: AppSettings = {
     reduceMotion: false,
     agentMaxSteps: 25,
     llamaCppMaxCachedModels: 2,
+    networkToolsEnabled: true,
+    sandboxMaxMemoryMB: 2048,
 };
 
 function filePath(): string {

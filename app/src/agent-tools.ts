@@ -8,6 +8,9 @@ import type { ToolDefinition } from "./providers/types";
 import { getAccountToken } from "./accounts";
 import { capturePageScreenshot } from "./browser-capture";
 import { killProcessTree } from "./process-tree";
+import { applySandbox } from "./command-sandbox";
+import { monitorProcess } from "./resource-monitor";
+import * as settingsStore from "./settings-store";
 
 const execAsync = promisify(exec);
 
@@ -131,12 +134,13 @@ export const AGENT_TOOLS: ToolDefinition[] = [
     {
         name: "run_command",
         description:
-            "Execute a shell command in the workspace (or a subdirectory of it) and return its stdout/stderr/exit code. Use for builds, tests, git, npm, etc. Commands that could affect the system outside the workspace (deleting elsewhere, shutting down the machine, privilege escalation, etc.) are rejected.",
+            "Execute a shell command in the workspace (or a subdirectory of it) and return its stdout/stderr/exit code. Use for builds, tests, git, npm, etc. Commands that could affect the system outside the workspace (deleting elsewhere, shutting down the machine, privilege escalation, etc.) are rejected. Runs inside an OS-level sandbox confined to the workspace where the platform supports it (Linux with bubblewrap installed, macOS always) — on Windows this containment isn't available and only the command-text checks above apply.",
         parameters: {
             type: "object",
             properties: {
                 command: { type: "string", description: "The shell command to run." },
                 cwd: { type: "string", description: 'Working directory for the command, relative to the workspace root. Defaults to "."' },
+                network: { type: "boolean", description: "Whether this command needs network access (e.g. npm install, curl). Defaults to false — most commands don't need it." },
             },
             required: ["command"],
         },
@@ -144,13 +148,14 @@ export const AGENT_TOOLS: ToolDefinition[] = [
     {
         name: "run_code",
         description:
-            "Run a Python or JavaScript code snippet in the workspace and return its stdout/stderr/exit code. A convenience over run_command for multi-line code (no shell-quoting to worry about) — it is not a sandbox: the code runs with the same permissions as run_command and is subject to the same safety checks.",
+            "Run a Python or JavaScript code snippet in the workspace and return its stdout/stderr/exit code. A convenience over run_command for multi-line code (no shell-quoting to worry about) — subject to the same sandboxing (where available) and safety checks as run_command.",
         parameters: {
             type: "object",
             properties: {
                 language: { type: "string", enum: ["python", "javascript"], description: "Which interpreter to run the code with." },
                 code: { type: "string", description: "The full source code to execute." },
                 cwd: { type: "string", description: 'Working directory, relative to the workspace root. Defaults to "."' },
+                network: { type: "boolean", description: "Whether this code needs network access. Defaults to false." },
             },
             required: ["language", "code"],
         },
@@ -158,13 +163,14 @@ export const AGENT_TOOLS: ToolDefinition[] = [
     {
         name: "start_background_command",
         description:
-            "Start a long-running command (dev server, build watcher, long test run) in the background and return immediately with a task id. Use get_background_output to check on it later and stop_background_command when done — unlike run_command, this doesn't block or time out. Subject to the same safety checks as run_command.",
+            "Start a long-running command (dev server, build watcher, long test run) in the background and return immediately with a task id. Use get_background_output to check on it later and stop_background_command when done — unlike run_command, this doesn't block or time out. Subject to the same safety checks and sandboxing as run_command.",
         parameters: {
             type: "object",
             properties: {
                 command: { type: "string", description: "The shell command to run." },
                 cwd: { type: "string", description: 'Working directory, relative to the workspace root. Defaults to "."' },
                 name: { type: "string", description: "Short human-readable label for this task (e.g. \"dev server\")." },
+                network: { type: "boolean", description: "Whether this command needs network access (e.g. a dev server that fetches data). Defaults to false." },
             },
             required: ["command"],
         },
@@ -784,17 +790,36 @@ function formatCommandResult(stdout: string, stderr: string, exitCode: number | 
     return parts.join("\n\n");
 }
 
-export async function runCommand(workspaceRoot: string, command: string, relativeCwd = "."): Promise<string> {
+export async function runCommand(
+    workspaceRoot: string,
+    command: string,
+    relativeCwd = ".",
+    network = false
+): Promise<string> {
     const dangerReason = findDangerousCommandReason(command);
     if (dangerReason) throw new Error(dangerReason);
 
     const cwd = resolveSafePath(workspaceRoot, relativeCwd);
+    const wrappedCommand = applySandbox(command, { workspaceRoot, allowNetwork: network });
+    const settings = settingsStore.getSettings();
+    let stopMonitor = () => {};
     try {
-        const { stdout, stderr } = await execAsync(command, {
+        const execPromise = execAsync(wrappedCommand, {
             cwd,
             timeout: COMMAND_TIMEOUT_MS,
             maxBuffer: 10 * 1024 * 1024,
         });
+        // execPromise.child is a documented feature of promisify(exec) — the
+        // returned promise carries the underlying ChildProcess, which is the
+        // only way to get its pid for resource-monitor.ts to watch.
+        if (execPromise.child.pid) {
+            stopMonitor = monitorProcess(
+                execPromise.child.pid,
+                { maxMemoryMB: settings.sandboxMaxMemoryMB, maxCpuPercent: settings.sandboxMaxCpuPercent },
+                () => execPromise.child.kill()
+            );
+        }
+        const { stdout, stderr } = await execPromise;
         return formatCommandResult(stdout, stderr, 0);
     } catch (err) {
         const e = err as { stdout?: string; stderr?: string; code?: number; killed?: boolean; message: string };
@@ -802,6 +827,8 @@ export async function runCommand(workspaceRoot: string, command: string, relativ
             return `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s.\n\n${formatCommandResult(e.stdout ?? "", e.stderr ?? "", e.code ?? null)}`;
         }
         return formatCommandResult(e.stdout ?? "", e.stderr ?? e.message, e.code ?? null);
+    } finally {
+        stopMonitor();
     }
 }
 
@@ -815,7 +842,8 @@ export async function runCode(
     workspaceRoot: string,
     language: "python" | "javascript",
     code: string,
-    relativeCwd = "."
+    relativeCwd = ".",
+    network = false
 ): Promise<string> {
     const dangerReason = findDangerousCommandReason(code);
     if (dangerReason) throw new Error(dangerReason);
@@ -825,7 +853,7 @@ export async function runCode(
     fs.writeFileSync(tmpFile, code);
     try {
         const interpreter = language === "python" ? "python3" : "node";
-        return await runCommand(workspaceRoot, `${interpreter} "${tmpFile}"`, relativeCwd);
+        return await runCommand(workspaceRoot, `${interpreter} "${tmpFile}"`, relativeCwd, network);
     } finally {
         fs.rmSync(tmpFile, { force: true });
     }
@@ -856,7 +884,8 @@ export function startBackgroundCommand(
     workspaceRoot: string,
     command: string,
     relativeCwd = ".",
-    name?: string
+    name?: string,
+    network = false
 ): { taskId: string; name: string } {
     const dangerReason = findDangerousCommandReason(command);
     if (dangerReason) throw new Error(dangerReason);
@@ -866,12 +895,13 @@ export function startBackgroundCommand(
     }
 
     const cwd = resolveSafePath(workspaceRoot, relativeCwd);
+    const wrappedCommand = applySandbox(command, { workspaceRoot, allowNetwork: network });
     // detached so the shell becomes its own process group leader — lets
     // killProcessTree() below signal the whole group (shell + whatever it
     // spawned, e.g. `npm run dev` spawning `node`) instead of just the shell
     // itself, which is all a plain .kill() would reach. No effect on Windows,
     // where killProcessTree uses `taskkill /t` instead.
-    const child = spawn(command, {
+    const child = spawn(wrappedCommand, {
         cwd,
         shell: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -900,7 +930,16 @@ export function startBackgroundCommand(
         task.output += `\n[failed to start: ${err.message}]`;
         task.exitCode = -1;
     });
+    const settings = settingsStore.getSettings();
+    const stopMonitor = child.pid
+        ? monitorProcess(
+              child.pid,
+              { maxMemoryMB: settings.sandboxMaxMemoryMB, maxCpuPercent: settings.sandboxMaxCpuPercent },
+              (reason) => append(Buffer.from(`\n[background task stopped: ${reason}]`))
+          )
+        : () => {};
     child.on("exit", (code) => {
+        stopMonitor();
         task.exitCode = code ?? -1;
     });
     backgroundTasks.set(id, task);
@@ -1357,7 +1396,25 @@ export async function githubReadFile(repository: string, filePath: string, ref?:
     return content.length > MAX_READ_CHARS ? `${content.slice(0, MAX_READ_CHARS)}\n\n[truncated]` : content;
 }
 
+// Tools that reach the network — gated by settings.networkToolsEnabled as a
+// baseline that's 100% enforceable on every platform (refusing to run the
+// tool at all, rather than trying to block network access after the fact,
+// which is what command-sandbox.ts's per-call `network` argument does for
+// run_command/run_code/start_background_command instead).
+const NETWORK_TOOLS = new Set([
+    "web_search",
+    "fetch_url",
+    "http_request",
+    "capture_page_screenshot",
+    "github_list_repositories",
+    "github_repository_tree",
+    "github_read_file",
+]);
+
 export async function executeTool(workspaceRoot: string, name: string, args: Record<string, unknown>): Promise<unknown> {
+    if (NETWORK_TOOLS.has(name) && settingsStore.getSettings().networkToolsEnabled === false) {
+        throw new Error(`Network access for agent tools is turned off in Settings — "${name}" can't run.`);
+    }
     switch (name) {
         case "read_file":
             return readFile(
@@ -1391,17 +1448,18 @@ export async function executeTool(workspaceRoot: string, name: string, args: Rec
         case "search_files":
             return searchFiles(workspaceRoot, String(args.query ?? ""), args.path ? String(args.path) : ".");
         case "run_command":
-            return runCommand(workspaceRoot, String(args.command ?? ""), args.cwd ? String(args.cwd) : ".");
+            return runCommand(workspaceRoot, String(args.command ?? ""), args.cwd ? String(args.cwd) : ".", args.network === true);
         case "run_code": {
             const language = args.language === "python" ? "python" : "javascript";
-            return runCode(workspaceRoot, language, String(args.code ?? ""), args.cwd ? String(args.cwd) : ".");
+            return runCode(workspaceRoot, language, String(args.code ?? ""), args.cwd ? String(args.cwd) : ".", args.network === true);
         }
         case "start_background_command":
             return startBackgroundCommand(
                 workspaceRoot,
                 String(args.command ?? ""),
                 args.cwd ? String(args.cwd) : ".",
-                args.name ? String(args.name) : undefined
+                args.name ? String(args.name) : undefined,
+                args.network === true
             );
         case "get_background_output":
             return getBackgroundOutput(String(args.task_id ?? ""));

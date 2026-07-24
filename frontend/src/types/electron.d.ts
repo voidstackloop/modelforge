@@ -155,6 +155,12 @@ export interface ProjectScripts {
   format?: string;
 }
 
+export interface SandboxCapabilities {
+  filesystemConfinement: boolean;
+  networkDenial: boolean;
+  mechanism: "bubblewrap" | "sandbox-exec" | "none";
+}
+
 export interface ScreenSourceInfo {
   id: string;
   name: string;
@@ -238,6 +244,9 @@ export interface AppSettings {
   rocmServerPath?: string;
   vllmModels?: string[];
   vllmCommand?: string;
+  networkToolsEnabled?: boolean;
+  sandboxMaxMemoryMB?: number;
+  sandboxMaxCpuPercent?: number;
 }
 
 export interface ChatOptions {
@@ -512,6 +521,7 @@ export interface ElectronApi {
     rollbackLastWrite: (workspaceRoot: string) => Promise<RollbackResult | null>;
     detectScripts: (workspaceRoot: string) => Promise<ProjectScripts>;
     closeWorkspace: (workspaceRoot: string) => Promise<{ killedBackgroundTasks: number }>;
+    getSandboxCapabilities: () => Promise<SandboxCapabilities>;
   };
   mcp: {
     connect: (

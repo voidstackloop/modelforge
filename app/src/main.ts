@@ -14,6 +14,7 @@ import * as secretsStore from "./secrets-store";
 import * as dataTransfer from "./data-transfer";
 import * as rag from "./rag";
 import * as agentTools from "./agent-tools";
+import { detectSandboxCapabilities } from "./command-sandbox";
 import * as mcpClient from "./mcp-client";
 import * as figma from "./figma";
 import * as ocr from "./ocr";
@@ -764,6 +765,8 @@ function registerIpcHandlers(): void {
         const killedBackgroundTasks = agentTools.killBackgroundCommandsForWorkspace(workspaceRoot);
         return { killedBackgroundTasks };
     });
+
+    ipcMain.handle("agent:getSandboxCapabilities", () => detectSandboxCapabilities());
 
     ipcMain.handle("mcp:connect", async (_event: IpcMainInvokeEvent, config: McpServerConfig) => {
         try {

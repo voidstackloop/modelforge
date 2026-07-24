@@ -4,6 +4,7 @@ import type { AttachedFile, MediaAttachment } from "./file-reader";
 import type { ChatMessage, ChatChunk, ChatOptions, ProviderId } from "./providers/types";
 import type { McpServerConfig, McpServerStatus } from "./mcp-client";
 import type { RollbackResult, ProjectScripts } from "./agent-tools";
+import type { SandboxCapabilities } from "./command-sandbox";
 import type { PromptPreset } from "./settings-store";
 import type { LocalGgufModel, GpuBackend } from "./llamacpp-manager";
 import type { ScheduledTask } from "./scheduled-tasks-store";
@@ -232,6 +233,7 @@ contextBridge.exposeInMainWorld("api", {
             ipcRenderer.invoke("agent:detectScripts", workspaceRoot),
         closeWorkspace: (workspaceRoot: string): Promise<{ killedBackgroundTasks: number }> =>
             ipcRenderer.invoke("agent:closeWorkspace", workspaceRoot),
+        getSandboxCapabilities: (): Promise<SandboxCapabilities> => ipcRenderer.invoke("agent:getSandboxCapabilities"),
     },
 
     mcp: {

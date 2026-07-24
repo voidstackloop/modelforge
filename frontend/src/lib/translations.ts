@@ -351,6 +351,18 @@ export interface Dictionary {
     profileBalancedNote: string;
     profileAutonomous: string;
     profileAutonomousNote: string;
+    sandboxSectionTitle: string;
+    sandboxSectionHint: string;
+    networkToolsLabel: string;
+    networkToolsHint: string;
+    sandboxMaxMemoryLabel: string;
+    sandboxMaxMemoryHint: string;
+    sandboxMaxCpuLabel: string;
+    sandboxMaxCpuHint: string;
+    sandboxStatusLabel: string;
+    sandboxStatusBubblewrap: string;
+    sandboxStatusSandboxExec: string;
+    sandboxStatusNone: string;
     connectedAccountsTitle: string;
     connectedAccountsHint: string;
     accountGithubHint: string;
@@ -725,6 +737,18 @@ export const en: Dictionary = {
     profileBalancedNote: "Best default",
     profileAutonomous: "Autonomous",
     profileAutonomousNote: "Long coding tasks",
+    sandboxSectionTitle: "Sandbox & permissions",
+    sandboxSectionHint: "Controls what Agent mode's shell commands can reach — beyond the always-on blocklist for obviously destructive commands.",
+    networkToolsLabel: "Network-capable tools",
+    networkToolsHint: "Web search, page fetch/screenshot, HTTP requests, and the GitHub tools. Turning this off refuses those tool calls outright — the one restriction here that's fully enforced on every platform.",
+    sandboxMaxMemoryLabel: "Memory limit per command (MB)",
+    sandboxMaxMemoryHint: "A command that exceeds this is killed automatically. A safety net against a runaway process, not a strict quota — leave it generous.",
+    sandboxMaxCpuLabel: "CPU limit per command (%)",
+    sandboxMaxCpuHint: "Optional. Leave blank for no CPU limit.",
+    sandboxStatusLabel: "OS-level containment on this machine",
+    sandboxStatusBubblewrap: "Linux, via bubblewrap — commands run confined to the workspace, with network access denied unless a command explicitly requests it.",
+    sandboxStatusSandboxExec: "macOS, via sandbox-exec — commands run confined to the workspace, with network access denied unless a command explicitly requests it.",
+    sandboxStatusNone: "Not available on this platform — only the command blocklist and the resource limits below apply. On Linux, installing bubblewrap (bwrap) enables real filesystem and network containment.",
     connectedAccountsTitle: "Connected accounts",
     connectedAccountsHint: "Link developer services for repository analysis and access to private or gated models. Tokens stay encrypted locally when your OS credential store is available.",
     accountGithubHint: "Connect repositories for AI analysis and developer workflows.",
@@ -1100,6 +1124,18 @@ export const tr: Dictionary = {
     profileBalancedNote: "En iyi varsayılan",
     profileAutonomous: "Özerk",
     profileAutonomousNote: "Uzun kodlama görevleri",
+    sandboxSectionTitle: "Korumalı alan ve izinler",
+    sandboxSectionHint: "Ajan modunun kabuk komutlarının nelere erişebileceğini kontrol eder — açıkça yıkıcı komutlar için her zaman etkin olan engelleme listesinin ötesinde.",
+    networkToolsLabel: "Ağ erişimi olan araçlar",
+    networkToolsHint: "Web arama, sayfa getirme/ekran görüntüsü, HTTP istekleri ve GitHub araçları. Bunu kapatmak bu araç çağrılarını tamamen reddeder — burada her platformda tam olarak uygulanan tek kısıtlama budur.",
+    sandboxMaxMemoryLabel: "Komut başına bellek sınırı (MB)",
+    sandboxMaxMemoryHint: "Bu sınırı aşan bir komut otomatik olarak sonlandırılır. Kesin bir kota değil, kaçak bir sürece karşı bir güvenlik önlemidir — cömert bırakın.",
+    sandboxMaxCpuLabel: "Komut başına CPU sınırı (%)",
+    sandboxMaxCpuHint: "İsteğe bağlı. CPU sınırı olmaması için boş bırakın.",
+    sandboxStatusLabel: "Bu makinede işletim sistemi düzeyinde sınırlama",
+    sandboxStatusBubblewrap: "Linux, bubblewrap aracılığıyla — komutlar çalışma alanıyla sınırlı çalışır, bir komut açıkça talep etmedikçe ağ erişimi reddedilir.",
+    sandboxStatusSandboxExec: "macOS, sandbox-exec aracılığıyla — komutlar çalışma alanıyla sınırlı çalışır, bir komut açıkça talep etmedikçe ağ erişimi reddedilir.",
+    sandboxStatusNone: "Bu platformda mevcut değil — yalnızca komut engelleme listesi ve aşağıdaki kaynak sınırları uygulanır. Linux'ta bubblewrap (bwrap) kurmak gerçek dosya sistemi ve ağ sınırlaması sağlar.",
     connectedAccountsTitle: "Bağlı hesaplar",
     connectedAccountsHint: "Depo analizi ve özel veya kısıtlı modellere erişim için geliştirici hizmetlerini bağlayın. İşletim sistemi kimlik bilgisi deposu kullanılabildiğinde jetonlar yerel olarak şifreli kalır.",
     accountGithubHint: "Yapay zeka analizi ve geliştirici iş akışları için depoları bağlayın.",
