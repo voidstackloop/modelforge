@@ -74,6 +74,8 @@ import {
     COMPACTION_BUDGET_TOKENS,
     COMPACTION_KEEP_RECENT,
     buildSummarizationPrompt,
+    estimateMessagesTokens,
+    estimateTokens,
     planCompaction,
     shouldCompact,
 } from "@/lib/context-compaction";
@@ -1407,6 +1409,14 @@ export default function Chat() {
                 : 0,
         [messages, parsedModel]
     );
+    // Recomputed only when the conversation itself changes, not on every
+    // keystroke — draftTokens below covers the composer text separately so
+    // typing stays cheap even in a very long chat.
+    const contextTokens = useMemo(
+        () => estimateTokens(sessionSystemPrompt ?? "") + estimateMessagesTokens(messages) + (contextSummary ? estimateTokens(contextSummary) : 0),
+        [messages, sessionSystemPrompt, contextSummary]
+    );
+    const draftTokens = useMemo(() => estimateTokens(input), [input]);
 
     if (!hasApi) {
         return (
@@ -2379,6 +2389,11 @@ export default function Chat() {
                             </Button>
                         )}
                     </div>
+                    {(draftTokens > 0 || contextTokens > 0) && (
+                        <p className="mt-1 px-1 text-right text-[10px] text-muted-foreground/70">
+                            {t.contextTokensEstimate(draftTokens, contextTokens)}
+                        </p>
+                    )}
                 </div>
             </div>
             <PromptVariableDialog

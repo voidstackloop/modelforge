@@ -10,6 +10,7 @@ export interface Dictionary {
     noMatchingChats: string;
     model: string;
     sendMessage: string;
+    contextTokensEstimate: (draftTokens: number, contextTokens: number) => string;
     startConversationWith: (model: string) => string;
     showEarlierMessages: (count: number) => string;
     attach: string;
@@ -368,6 +369,10 @@ export const en: Dictionary = {
     noMatchingChats: "No matching chats.",
     model: "Model",
     sendMessage: "Send a message...",
+    contextTokensEstimate: (draftTokens, contextTokens) =>
+        draftTokens > 0
+            ? `~${draftTokens.toLocaleString()} tokens in draft · ~${contextTokens.toLocaleString()} in context`
+            : `~${contextTokens.toLocaleString()} tokens in context`,
     startConversationWith: (model) => `Start a conversation with ${model}.`,
     showEarlierMessages: (count) => `Show ${count} earlier message${count === 1 ? "" : "s"}`,
     attach: "Attach",
@@ -736,6 +741,10 @@ export const tr: Dictionary = {
     noMatchingChats: "Eşleşen sohbet yok.",
     model: "Model",
     sendMessage: "Bir mesaj gönderin...",
+    contextTokensEstimate: (draftTokens, contextTokens) =>
+        draftTokens > 0
+            ? `Taslakta ~${draftTokens.toLocaleString()} token · bağlamda ~${contextTokens.toLocaleString()}`
+            : `Bağlamda ~${contextTokens.toLocaleString()} token`,
     startConversationWith: (model) => `${model} ile sohbete başlayın.`,
     showEarlierMessages: (count) => `${count} önceki mesajı göster`,
     attach: "Ekle",
