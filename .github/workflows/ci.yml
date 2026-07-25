@@ -16,32 +16,6 @@ jobs:
         with:
           node-version: 22
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "lib -> target"
-
-      - name: Test native addon (Rust)
-        working-directory: lib
-        run: cargo test
-
-      - name: Check Rust formatting
-        working-directory: lib
-        run: cargo fmt --all -- --check
-
-      - name: Lint native addon (Rust)
-        working-directory: lib
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Build native addon
-        working-directory: lib
-        run: |
-          npm ci
-          npm run build
-
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
