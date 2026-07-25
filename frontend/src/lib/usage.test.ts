@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { summarizeSession, aggregateBy } from "./usage";
+import { summarizeSession, aggregateBy, formatEnergy } from "./usage";
 import type { ChatSession } from "@/types/electron";
 
 function makeSession(overrides: Partial<ChatSession> = {}): ChatSession {
@@ -82,5 +82,11 @@ describe("aggregateBy", () => {
         const gpt4oMini = byModel.find(([key]) => key === "gpt-4o-mini");
         expect(gpt4oMini?.[1].sessions).toBe(2);
         expect(gpt4oMini?.[1].tokens).toBe(45);
+    });
+});
+
+describe("formatEnergy", () => {
+    it("converts kWh to Wh using the correct factor", () => {
+        expect(formatEnergy(0.0005)).toBe("0.5 Wh");
     });
 });

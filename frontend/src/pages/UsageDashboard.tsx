@@ -4,12 +4,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useI18n } from "@/lib/i18n";
 import { PROVIDER_LABELS } from "@/lib/providers";
 import { formatCost } from "@/lib/pricing";
-import { summarizeSession, aggregateBy } from "@/lib/usage";
+import { summarizeSession, aggregateBy, formatEnergy } from "@/lib/usage";
 import type { ChatSession, EnergyDashboard, EnergyTotals, ProviderId } from "@/types/electron";
-
-export function formatEnergy(value: number): string {
-    return value < 0.001 ? `${(value * 1_000).toFixed(1)} Wh` : `${value.toFixed(4)} kWh`;
-}
 
 function energyCost(value: number, currency: string): string {
     try {

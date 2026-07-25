@@ -44,6 +44,10 @@ export function summarizeSession(session: ChatSession): SessionUsage {
     };
 }
 
+export function formatEnergy(value: number): string {
+    return value < 0.001 ? `${(value * 1_000).toFixed(1)} Wh` : `${value.toFixed(4)} kWh`;
+}
+
 export function aggregateBy(usages: SessionUsage[], keyOf: (u: SessionUsage) => string): [string, UsageAggregate][] {
     const map = new Map<string, UsageAggregate>();
     for (const u of usages) {
