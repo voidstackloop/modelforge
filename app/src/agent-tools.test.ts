@@ -387,6 +387,88 @@ describe("agent-tools", () => {
             const patch = ["--- /dev/null", "+++ b/../../etc/evil.txt", "@@ -0,0 +1,1 @@", "+pwned", ""].join("\n");
             expect(() => applyPatch(workspace, patch)).toThrow(/outside the workspace/);
         });
+
+        // The patch base used to come from readFile(), which caps its result
+        // at MAX_READ_CHARS and appends a "[truncated ...]" marker — so
+        // patching a file past that cap silently destroyed its tail and wrote
+        // the marker into the source.
+        it("preserves content past the read-truncation cap", () => {
+            const body = Array.from({ length: 12_000 }, (_, i) => `line ${i}`).join("\n");
+            const original = `first\n${body}\n`;
+            expect(original.length).toBeGreaterThan(100_000);
+            fs.writeFileSync(path.join(workspace, "big.txt"), original);
+
+            const patch = ["--- a/big.txt", "+++ b/big.txt", "@@ -1,1 +1,1 @@", "-first", "+FIRST", ""].join("\n");
+            applyPatch(workspace, patch);
+
+            const updated = fs.readFileSync(path.join(workspace, "big.txt"), "utf-8");
+            expect(updated).toBe(`FIRST\n${body}\n`);
+            expect(updated).not.toContain("truncated");
+        });
+
+        // Writing as we went left earlier files modified when a later file in
+        // the same patch failed to align.
+        it("leaves every file untouched when one file in the patch fails to apply", () => {
+            fs.writeFileSync(path.join(workspace, "first.txt"), "alpha\n");
+            fs.writeFileSync(path.join(workspace, "second.txt"), "actual content\n");
+            const patch = [
+                "--- a/first.txt",
+                "+++ b/first.txt",
+                "@@ -1,1 +1,1 @@",
+                "-alpha",
+                "+ALPHA",
+                "--- a/second.txt",
+                "+++ b/second.txt",
+                "@@ -1,1 +1,1 @@",
+                "-expected content",
+                "+new content",
+                "",
+            ].join("\n");
+
+            expect(() => applyPatch(workspace, patch)).toThrow(/Context mismatch/);
+            expect(fs.readFileSync(path.join(workspace, "first.txt"), "utf-8")).toBe("alpha\n");
+            expect(fs.readFileSync(path.join(workspace, "second.txt"), "utf-8")).toBe("actual content\n");
+        });
+
+        // Resolving every file before writing must not mean every file is read
+        // from disk first: two sections for one path have to chain, or the
+        // second silently discards the first.
+        it("chains two sections that touch the same file", () => {
+            fs.writeFileSync(path.join(workspace, "twice.txt"), "one\ntwo\n");
+            const patch = [
+                "--- a/twice.txt",
+                "+++ b/twice.txt",
+                "@@ -1,1 +1,1 @@",
+                "-one",
+                "+ONE",
+                "--- a/twice.txt",
+                "+++ b/twice.txt",
+                "@@ -2,1 +2,1 @@",
+                "-two",
+                "+TWO",
+                "",
+            ].join("\n");
+            const result = applyPatch(workspace, patch);
+            expect(fs.readFileSync(path.join(workspace, "twice.txt"), "utf-8")).toBe("ONE\nTWO\n");
+            expect(result.filesChanged).toEqual(["twice.txt"]);
+        });
+
+        it("patches a file the same diff created", () => {
+            const patch = [
+                "--- /dev/null",
+                "+++ b/made.txt",
+                "@@ -0,0 +1,1 @@",
+                "+hello",
+                "--- a/made.txt",
+                "+++ b/made.txt",
+                "@@ -1,1 +1,1 @@",
+                "-hello",
+                "+HELLO",
+                "",
+            ].join("\n");
+            applyPatch(workspace, patch);
+            expect(fs.readFileSync(path.join(workspace, "made.txt"), "utf-8")).toBe("HELLO");
+        });
     });
 
     describe("executeTool", () => {
