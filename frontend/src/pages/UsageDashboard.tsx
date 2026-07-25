@@ -1,20 +1,47 @@
 import { useEffect, useMemo, useState } from "react";
-import { BarChart3 } from "lucide-react";
+import { Activity, BarChart3, Leaf, Zap } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useI18n } from "@/lib/i18n";
 import { PROVIDER_LABELS } from "@/lib/providers";
 import { formatCost } from "@/lib/pricing";
 import { summarizeSession, aggregateBy } from "@/lib/usage";
-import type { ChatSession, ProviderId } from "@/types/electron";
+import type { ChatSession, EnergyDashboard, EnergyTotals, ProviderId } from "@/types/electron";
+
+export function formatEnergy(value: number): string {
+    return value < 0.001 ? `${(value * 1_000).toFixed(1)} Wh` : `${value.toFixed(4)} kWh`;
+}
+
+function energyCost(value: number, currency: string): string {
+    try {
+        return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 4 }).format(value);
+    } catch {
+        return `${value.toFixed(4)} ${currency}`;
+    }
+}
+
+function EnergyCard({ label, totals, currency }: { label: string; totals: EnergyTotals; currency: string }) {
+    return (
+        <div className="rounded-lg border border-border p-4">
+            <p className="text-xs text-muted-foreground">{label}</p>
+            <p className="mt-1 text-xl font-semibold">{energyCost(totals.cost, currency)}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{formatEnergy(totals.energyKwh)} · {totals.requestCount} requests</p>
+        </div>
+    );
+}
 
 export default function UsageDashboard() {
     const { t } = useI18n();
     const hasApi = typeof window !== "undefined" && !!window.api;
     const [sessions, setSessions] = useState<ChatSession[]>([]);
+    const [energy, setEnergy] = useState<EnergyDashboard | null>(null);
 
     useEffect(() => {
         if (!hasApi) return;
         window.api.sessions.list().then(setSessions);
+        const refreshEnergy = () => window.api.energy.getDashboard().then(setEnergy);
+        refreshEnergy();
+        const timer = window.setInterval(refreshEnergy, 2000);
+        return () => window.clearInterval(timer);
     }, [hasApi]);
 
     const usages = useMemo(
@@ -63,6 +90,91 @@ export default function UsageDashboard() {
 
             <ScrollArea className="flex-1">
                 <div className="flex flex-col gap-6 p-4">
+                    {energy && (
+                        <>
+                            <div>
+                                <div className="mb-2 flex items-center gap-2">
+                                    <Zap className="size-4 text-primary" />
+                                    <h2 className="text-sm font-semibold">Local inference energy</h2>
+                                </div>
+                                {energy.current.length > 0 ? (
+                                    <div className="mb-3 grid gap-2 sm:grid-cols-2">
+                                        {energy.current.map((runtime) => (
+                                            <div key={runtime.id} className="rounded-lg border border-primary/30 bg-primary/5 p-3">
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                                                        <Activity className="size-3.5 animate-pulse text-primary" />
+                                                        <span className="truncate">{runtime.modelId}</span>
+                                                    </span>
+                                                    <span className="text-lg font-semibold">{runtime.currentPowerWatts.toFixed(1)} W</span>
+                                                </div>
+                                                <p className="mt-1 text-xs text-muted-foreground">
+                                                    {runtime.runtime} · {runtime.backend} · CPU {(runtime.cpuUtilization * 100).toFixed(0)}%
+                                                    {runtime.gpuUtilization === null ? "" : ` · GPU ${(runtime.gpuUtilization * 100).toFixed(0)}%`}
+                                                    {runtime.processId ? ` · PID ${runtime.processId}` : ""}
+                                                </p>
+                                                <p className="mt-1 text-xs text-muted-foreground">
+                                                    Current request: {formatEnergy(runtime.energyKwh)} · {energyCost(runtime.cost, energy.currency)} · {runtime.measurement}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="mb-3 rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">No local inference is active.</p>
+                                )}
+                                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                                    <EnergyCard label="Today" totals={energy.today} currency={energy.currency} />
+                                    <EnergyCard label="Last 7 days" totals={energy.week} currency={energy.currency} />
+                                    <EnergyCard label="This month" totals={energy.month} currency={energy.currency} />
+                                    <EnergyCard label="Lifetime retained" totals={energy.lifetime} currency={energy.currency} />
+                                </div>
+                            </div>
+
+                            <div className="grid gap-4 lg:grid-cols-3">
+                                <div className="rounded-lg border border-border p-4">
+                                    <p className="text-xs text-muted-foreground">Cost per million generated tokens</p>
+                                    <p className="mt-1 text-xl font-semibold">{energyCost(energy.costPerMillionGeneratedTokens, energy.currency)}</p>
+                                </div>
+                                <div className="rounded-lg border border-border p-4">
+                                    <p className="text-xs text-muted-foreground">Measured versus estimated</p>
+                                    <p className="mt-1 text-xl font-semibold">{energy.measuredPercent.toFixed(1)}% measured</p>
+                                    <p className="mt-1 text-xs text-muted-foreground">{(100 - energy.measuredPercent).toFixed(1)}% estimated</p>
+                                </div>
+                                <div className="rounded-lg border border-border p-4">
+                                    <p className="flex items-center gap-1 text-xs text-muted-foreground"><Leaf className="size-3.5" /> Carbon estimate</p>
+                                    <p className="mt-1 text-xl font-semibold">{energy.lifetime.carbonGrams.toFixed(1)} gCO₂e</p>
+                                </div>
+                            </div>
+
+                            <div className="grid gap-4 lg:grid-cols-2">
+                                <div>
+                                    <h3 className="mb-2 text-sm font-semibold">Energy cost by model</h3>
+                                    <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+                                        {energy.byModel.slice(0, 12).map(({ key, totals }) => (
+                                            <div key={key} className="flex items-center justify-between gap-3 p-3 text-sm">
+                                                <span className="min-w-0 flex-1 truncate">{key}</span>
+                                                <span className="text-xs text-muted-foreground">{formatEnergy(totals.energyKwh)}</span>
+                                                <span className="font-medium">{energyCost(totals.cost, energy.currency)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div>
+                                    <h3 className="mb-2 text-sm font-semibold">Energy cost by runtime</h3>
+                                    <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+                                        {energy.byRuntime.map(({ key, totals }) => (
+                                            <div key={key} className="flex items-center justify-between gap-3 p-3 text-sm">
+                                                <span className="font-medium">{key}</span>
+                                                <span className="text-xs text-muted-foreground">{totals.completionTokens.toLocaleString()} generated tokens</span>
+                                                <span>{energyCost(totals.cost, energy.currency)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </>
+                    )}
+
                     {usages.length === 0 ? (
                         <p className="text-sm text-muted-foreground">{t.usageNoData}</p>
                     ) : (

@@ -4,6 +4,8 @@ import Chat from "./pages/Chat";
 import Settings from "./pages/Settings";
 import Compare from "./pages/Compare";
 import UsageDashboard from "./pages/UsageDashboard";
+import DownloadCenter from "./pages/DownloadCenter";
+import RuntimeManager from "./pages/RuntimeManager";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ToastProvider } from "@/components/toast";
 import { SessionsProvider } from "@/lib/sessions-context";
@@ -19,6 +21,8 @@ const router = createHashRouter([
       { path: "settings", element: <Settings /> },
       { path: "compare", element: <Compare /> },
       { path: "usage", element: <UsageDashboard /> },
+      { path: "downloads", element: <DownloadCenter /> },
+      { path: "runtimes", element: <RuntimeManager /> },
     ],
   },
 ]);

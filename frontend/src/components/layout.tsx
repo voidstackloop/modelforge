@@ -20,6 +20,8 @@ import {
     BarChart3,
     Menu,
     Sparkles,
+    Download,
+    Server,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -739,6 +741,19 @@ export default function Layout() {
                     >
                         <BarChart3 className="size-4" />
                         {t.usageDashboard}
+                    </Button>
+                    <Button
+                        onClick={() => navigate("/downloads")}
+                        size="sm"
+                        variant="ghost"
+                        className="w-full justify-start gap-2 text-muted-foreground"
+                        disabled={!hasApi}
+                    >
+                        <Download className="size-4" />
+                        Download Center
+                    </Button>
+                    <Button onClick={() => navigate("/runtimes")} size="sm" variant="ghost" className="w-full justify-start gap-2 text-muted-foreground" disabled={!hasApi}>
+                        <Server className="size-4" />Runtime Manager
                     </Button>
                 </div>
 
