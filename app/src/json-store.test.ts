@@ -34,6 +34,34 @@ describe("json-store", () => {
         expect(entries).toEqual(["data.json"]);
     });
 
+    // These files hold API keys and conversation history; the default umask
+    // would leave them readable by other accounts on the machine.
+    it.skipIf(process.platform === "win32")("writes owner-only files", () => {
+        writeJson(file, { token: "value" });
+        expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    });
+
+    it.skipIf(process.platform === "win32")("keeps the file owner-only on rewrite", () => {
+        writeJson(file, { token: "first" });
+        writeJson(file, { token: "second" });
+        expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    });
+
+    it.skipIf(process.platform === "win32")("stays owner-only when a stale temp file exists", () => {
+        const stale = `${file}.tmp-${process.pid}`;
+        fs.writeFileSync(stale, "leftover", { mode: 0o666 });
+        writeJson(file, { token: "value" });
+        expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    });
+
+    // A file written by an older build is only ever read if its contents never
+    // change, so tightening on write alone would never reach it.
+    it.skipIf(process.platform === "win32")("tightens an existing world-readable file on read", () => {
+        fs.writeFileSync(file, JSON.stringify({ token: "value" }), { mode: 0o644 });
+        expect(readJson(file, {})).toEqual({ token: "value" });
+        expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    });
+
     it("backs up and falls back to the default when the file is corrupted", () => {
         fs.writeFileSync(file, "{ not valid json");
         const result = readJson(file, { safe: true });
