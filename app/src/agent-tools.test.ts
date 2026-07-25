@@ -596,6 +596,32 @@ describe("agent-tools", () => {
             expect(log).toContain("initial commit");
         });
 
+        // `git diff -- "<path>"` and `git commit -m "<message>"` are assembled
+        // into a string that ends up at `sh -c`. Double quotes do not stop the
+        // shell from expanding `$(...)`, so a model-supplied path or message
+        // used to be able to run arbitrary commands — including when the user
+        // had granted git_diff "always allow" as a read-only tool.
+        it("git_diff does not let a path argument reach the shell", async () => {
+            const marker = path.join(workspace, "diff-injection-marker");
+            await gitDiff(workspace, false, `.$(touch ${marker})`);
+            expect(fs.existsSync(marker)).toBe(false);
+        });
+
+        it("git_commit does not let a commit message reach the shell", async () => {
+            const marker = path.join(workspace, "commit-injection-marker");
+            await gitCommit(workspace, `initial $(touch ${marker})`);
+            expect(fs.existsSync(marker)).toBe(false);
+        });
+
+        it("git_commit preserves a message containing shell metacharacters", async () => {
+            const message = "fix: handle $HOME and `backticks` and 'quotes' and \"doubles\"";
+            await gitCommit(workspace, message);
+            const log = await gitLog(workspace, 5);
+            // The whole subject, not just its prefix — quoting that drops or
+            // mangles part of the message is as wrong as quoting that executes it.
+            expect(log).toContain(message);
+        });
+
         it("git_log returns nothing unusual with no commits yet", async () => {
             const output = await gitLog(workspace);
             expect(output).toContain("Exit code:");
