@@ -25,6 +25,15 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
+export interface RagCitation {
+  path: string;
+  name: string;
+  heading: string | null;
+  page: number | null;
+  startLine: number;
+  endLine: number;
+}
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
@@ -38,6 +47,10 @@ export interface ChatMessage {
   // distinguishes it from a real tool result so the UI can render it as a
   // pass/fail checklist card instead of a generic tool-output box.
   isVerification?: boolean;
+  // RAG chunks that were retrieved and folded into this message's prompt
+  // content, kept separately so the UI can render them as source citations
+  // instead of just the flattened text that went to the model.
+  citations?: RagCitation[];
 }
 
 export interface ChatChunk {
@@ -70,6 +83,11 @@ export interface SystemSpecs {
   gpu: GpuInfo | null;
   gpus: GpuInfo[];
   totalVramGB: number | null;
+  largestGpuVramGB: number | null;
+  gpuInterconnect: "nvlink" | "pcie" | "unified" | "none" | "unknown";
+  tensorParallelSupported: boolean;
+  cpuMemoryBandwidthGBps: number;
+  cpuMemoryBandwidthMeasured: boolean;
 }
 
 export interface RecommendedModel {
@@ -81,12 +99,26 @@ export interface RecommendedModel {
   runsOnGpu: boolean;
   recommended: boolean;
   supportsTools: boolean;
+  outcome: "Runs fully on GPU" | "Runs with partial offload" | "CPU-only but usable" | "Requires tensor parallelism" | "Likely out of memory";
+  quantization: string;
+  estimatedWeightGB: number;
+  estimatedKvCacheGB: number;
+  runtimeOverheadGB: number;
+  totalRequiredGB: number;
+  expectedGpuOffloadPercent: number;
+  estimatedTokensPerSecond: number;
+  measuredTokensPerSecond?: number;
+  recommendedRuntime: "ollama" | "llamacpp" | "vllm" | "mlx";
+  reason: string;
 }
 
 export interface ModelRecommendations {
   usableRAMGB: number;
   usableVRAMGB: number;
-  effectiveGB: number;
+  largestUsableGpuGB: number;
+  aggregateUsableVramGB: number;
+  cpuMemoryBandwidthGBps: number;
+  gpuInterconnect: SystemSpecs["gpuInterconnect"];
   best: string | null;
   models: RecommendedModel[];
 }
@@ -139,13 +171,141 @@ export interface AppActivity {
   memory: { rssMB: number; heapUsedMB: number };
 }
 
+export interface BenchmarkRequest {
+  provider: ProviderId;
+  model: string;
+  maxContextLength?: number;
+  outputTokens?: number;
+  compareCpuGpu?: boolean;
+}
+
+export interface BenchmarkResources {
+  peakSystemRamMB: number;
+  peakAppRamMB: number;
+  peakVramMB: number | null;
+  vramMeasurement: "nvidia-smi" | "rocm-smi" | "unavailable";
+}
+
+export interface BenchmarkMeasurement {
+  mode: "default" | "cpu" | "gpu";
+  tokensPerSecond: number;
+  promptTokensPerSecond: number;
+  timeToFirstTokenMs: number;
+  totalTimeMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  resources: BenchmarkResources;
+}
+
+export interface BenchmarkResult {
+  schemaVersion: 1;
+  id: string;
+  createdAt: string;
+  provider: ProviderId;
+  model: string;
+  health: { healthy: boolean; latencyMs: number; error?: string };
+  primary: BenchmarkMeasurement | null;
+  comparison: { cpu?: BenchmarkMeasurement; gpu?: BenchmarkMeasurement; supported: boolean; note?: string };
+  contextTests: { requestedTokens: number; accepted: boolean; elapsedMs: number; error?: string }[];
+  warnings: string[];
+}
+
+export type EnergyRuntime = "llamacpp" | "ollama" | "vllm" | "mlx" | "transformers";
+export type EnergyMeasurement = "measured" | "estimated";
+
+export interface TimeOfUseTariff {
+  name: string;
+  startHour: number;
+  endHour: number;
+  pricePerKwh: number;
+}
+
+export interface EnergyTotals {
+  energyKwh: number;
+  cost: number;
+  carbonGrams: number;
+  requestCount: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface EnergyUsageRecord {
+  date: string;
+  runtime: EnergyRuntime;
+  modelId: string;
+  requestCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  activeSeconds: number;
+  loadingSeconds: number;
+  energyKwh: number;
+  cost: number;
+  measurement: EnergyMeasurement;
+  tariffSnapshots: { name: string; pricePerKwh: number; currency: string; energyKwh: number; cost: number }[];
+  carbonGrams: number;
+}
+
+export interface RuntimeEnergyActivity {
+  id: string;
+  runtime: EnergyRuntime;
+  modelId: string;
+  backend: string;
+  device: string;
+  processId: number | null;
+  startedAt: string;
+  promptTokens: number;
+  completionTokens: number;
+  activeSeconds: number;
+  loadingSeconds: number;
+  cpuUtilization: number;
+  gpuUtilization: number | null;
+  currentPowerWatts: number;
+  energyKwh: number;
+  cost: number;
+  measurement: EnergyMeasurement;
+}
+
+export interface EnergyDashboard {
+  current: RuntimeEnergyActivity[];
+  today: EnergyTotals;
+  week: EnergyTotals;
+  month: EnergyTotals;
+  lifetime: EnergyTotals;
+  byModel: { key: string; totals: EnergyTotals }[];
+  byRuntime: { key: string; totals: EnergyTotals }[];
+  measuredPercent: number;
+  costPerMillionGeneratedTokens: number;
+  currency: string;
+  records: EnergyUsageRecord[];
+}
+
 export interface LocalRuntimeStatus {
   backend: "rocm" | "mlx" | "vllm";
   compatible: boolean;
   installed: boolean;
   running: boolean;
+  state: "starting" | "running" | "unhealthy" | "stopped";
   model?: string;
   detail: string;
+  device?: string;
+  pid: number | null;
+  port: number | null;
+  startedAt: string | null;
+  uptimeSeconds: number;
+  ramMB: number | null;
+  vramMB: number | null;
+  logs: string[];
+  startupError?: string;
+  installCommand: string;
+  environmentIssues: string[];
+}
+
+export interface PythonEnvironmentStatus {
+  family: "mlx" | "vllm-cuda" | "vllm-rocm";
+  state: "missing" | "healthy" | "drifted" | "incompatible";
+  destination: string; pythonPath: string; pythonVersion: string | null; installedPackages: Record<string, string>; issues: string[];
+  manifest: { family: string; version: number; python: string; packages: Record<string, string>; diskRequirementBytes: number; expectedDownloadBytes: number; protocolVersion: number; compatibility: string; documentationUrl: string };
+  installCommand: string; repairCommand: string; removeCommand: string;
 }
 
 export interface RollbackResult {
@@ -212,6 +372,20 @@ export interface HfDownloadProgress {
   totalBytes: number | null;
 }
 
+export type DownloadJobState = "queued" | "resolving" | "downloading" | "paused" | "verifying" | "installing" | "ready" | "failed" | "cancelled";
+export interface DownloadShard {
+  filename: string; path: string; expectedBytes: number; receivedBytes: number; sha256?: string; state: DownloadJobState;
+}
+export interface DownloadJob {
+  id: string; kind: "huggingface" | "ollama"; modelName: string; publisher: string; quantization?: string;
+  backend: "llamacpp" | "mlx" | "vllm" | "ollama" | "transformers"; destinationDir: string; modelId: string;
+  shards: DownloadShard[]; state: DownloadJobState; retryCount: number; createdAt: string; updatedAt: string;
+  error?: { message: string; kind: string; retryable: boolean };
+  jobReceivedBytes?: number; totalBytes?: number; bytesPerSecond?: number; etaSeconds?: number; recoveredAtStartup?: boolean;
+}
+export interface DownloadControls { concurrency: number; bandwidthMbps: number }
+export interface DiskForecast { requiredBytes: number; availableBytes: number | null; enough: boolean | null }
+
 export interface LinkedAccount {
   provider: "github" | "huggingface";
   username: string;
@@ -240,6 +414,17 @@ export interface AppSettings {
   language: "en" | "tr";
   uiDensity?: "comfortable" | "compact";
   reduceMotion?: boolean;
+  energyMonitoringEnabled?: boolean;
+  electricityPricePerKwh?: number;
+  energyCurrency?: string;
+  timeOfUseTariffs?: TimeOfUseTariff[];
+  manualCpuWatts?: number;
+  manualGpuWatts?: number;
+  manualSystemIdleWatts?: number;
+  includeIdleSystemConsumption?: boolean;
+  energyUsageRetentionDays?: number;
+  energySampleIntervalSeconds?: number;
+  gridIntensityGCo2PerKwh?: number;
   agentMaxSteps?: number;
   llamaCppMaxCachedModels?: number;
   ttsVoiceURI?: string;
@@ -248,6 +433,8 @@ export interface AppSettings {
   modelsDir?: string;
   llamaCppModelsDir?: string;
   llamaCppGpuBackend?: "auto" | "vulkan" | "cuda" | "metal" | "cpu";
+  preferredRuntime?: "automatic" | "ollama" | "llamacpp" | "vllm" | "mlx";
+  ragEmbeddingModel?: string;
   customProviders?: CustomProviderConfig[];
   onboardingComplete?: boolean;
   keybindings?: Record<string, string>;
@@ -381,15 +568,26 @@ export interface LocalGgufModel {
 
 export type LlamaCppGpuBackend = "auto" | "vulkan" | "cuda" | "metal" | "cpu";
 
-export interface RagChunk {
+export interface RagResult {
   text: string;
-  source: string;
+  score: number;
+  source: { path: string; name: string };
+  heading: string | null;
+  page: number | null;
+  startLine: number;
+  endLine: number;
 }
 
-export interface IndexFilesResult {
-  indexId: string;
+export interface RagCollectionSummary {
+  collectionId: string;
+  name: string;
+  folderPath?: string;
+  documentCount: number;
   chunkCount: number;
+  embeddingModel: string;
+  updatedAt?: number;
   embedded: boolean;
+  error?: string;
 }
 
 export interface ElectronApi {
@@ -412,6 +610,13 @@ export interface ElectronApi {
   };
   localBackends: {
     getStatuses: () => Promise<LocalRuntimeStatus[]>;
+    start: (backend: "mlx" | "rocm" | "vllm", model: string) => Promise<string>;
+    stop: (backend: "mlx" | "rocm" | "vllm") => Promise<void>;
+    restart: (backend: "mlx" | "rocm" | "vllm", model: string) => Promise<string>;
+    unload: (backend: "mlx" | "rocm" | "vllm") => Promise<void>;
+  };
+  pythonRuntimes: {
+    getStatuses: () => Promise<PythonEnvironmentStatus[]>;
   };
   chat: {
     send: (
@@ -501,6 +706,29 @@ export interface ElectronApi {
     }>;
     openLogsFolder: () => Promise<void>;
   };
+  benchmark: {
+    run: (request: BenchmarkRequest) => {
+      requestId: string;
+      promise: Promise<{ result?: BenchmarkResult; error?: string; aborted?: boolean }>;
+    };
+    cancel: (requestId: string) => Promise<void>;
+    getLast: () => Promise<BenchmarkResult | null>;
+    exportReport: (result: BenchmarkResult) => Promise<{ success: boolean }>;
+  };
+  energy: {
+    getDashboard: () => Promise<EnergyDashboard>;
+    clearHistory: () => Promise<{ success: boolean }>;
+  };
+  downloads: {
+    list: () => Promise<DownloadJob[]>;
+    create: (input: { modelId: string; filename: string; expectedBytes: number; backend?: "automatic" | DownloadJob["backend"] }) => Promise<DownloadJob>;
+    pause: (id: string) => Promise<void>; resume: (id: string) => Promise<void>; retry: (id: string) => Promise<void>;
+    cancel: (id: string) => Promise<void>; delete: (id: string) => Promise<void>;
+    forecast: (id: string) => Promise<DiskForecast>;
+    recoveryStatus: () => Promise<{ recoveredJobs: number; recoveredAt: string | null }>;
+    getControls: () => Promise<DownloadControls>; setControls: (controls: DownloadControls) => Promise<DownloadControls>;
+    onUpdate: (callback: (jobs: DownloadJob[]) => void) => () => void;
+  };
   menu: {
     onNewChat: (callback: () => void) => () => void;
     onOpenSettings: (callback: () => void) => () => void;
@@ -523,8 +751,10 @@ export interface ElectronApi {
     delete: (id: string) => Promise<void>;
   };
   rag: {
-    indexFiles: (files: AttachedFile[]) => Promise<IndexFilesResult>;
-    query: (indexId: string, query: string, topK?: number) => Promise<RagChunk[]>;
+    indexFolder: (input: { folderPath: string; folderName: string; files: AttachedFile[] }) => Promise<RagCollectionSummary>;
+    query: (collectionId: string, query: string, topK?: number) => Promise<RagResult[]>;
+    listCollections: () => Promise<RagCollectionSummary[]>;
+    deleteCollection: (id: string) => Promise<void>;
   };
   agent: {
     pickWorkspace: () => Promise<string | null>;

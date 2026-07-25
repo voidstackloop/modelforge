@@ -126,6 +126,19 @@ export interface Dictionary {
     runLint: string;
     runFormat: string;
     newFile: string;
+    modelRuntime: string;
+    modelRuntimeHint: string;
+    modelRuntimeAutomatic: string;
+    modelRuntimeOllama: string;
+    modelRuntimeLlamaCpp: string;
+    modelRuntimeVllm: string;
+    modelRuntimeMlx: string;
+    ragEmbeddingModel: string;
+    ragEmbeddingModelHint: string;
+    ragCollections: string;
+    ragCollectionsHint: string;
+    ragCollectionsEmpty: string;
+    ragCollectionMeta: (docs: number, chunks: number) => string;
     modelsDir: string;
     modelsDirHint: string;
     modelsDirDefault: string;
@@ -514,6 +527,19 @@ export const en: Dictionary = {
     runLint: "Lint",
     runFormat: "Format",
     newFile: "New file",
+    modelRuntime: "Model runtime",
+    modelRuntimeHint: "Which backend runs your models. Automatic picks per model based on its format (GGUF, safetensors, MLX) and your detected hardware (NVIDIA/AMD/Intel/Apple GPU, Apple Silicon) — GGUF goes to llama.cpp, safetensors on an NVIDIA/AMD GPU goes to vLLM, MLX-format models on Apple Silicon go to MLX, and anything else falls back to Transformers.",
+    modelRuntimeAutomatic: "Automatic (recommended)",
+    modelRuntimeOllama: "Ollama",
+    modelRuntimeLlamaCpp: "llama.cpp",
+    modelRuntimeVllm: "vLLM",
+    modelRuntimeMlx: "MLX",
+    ragEmbeddingModel: "RAG embedding model",
+    ragEmbeddingModelHint: "Used to index newly attached folders for retrieval. Existing collections keep whatever model they were created with — changing this only affects new ones.",
+    ragCollections: "Indexed collections",
+    ragCollectionsHint: "Folders you've attached for retrieval, persisted so re-attaching the same folder only re-embeds files that changed.",
+    ragCollectionsEmpty: "No folders indexed yet.",
+    ragCollectionMeta: (docs, chunks) => `${docs} document${docs === 1 ? "" : "s"} · ${chunks} chunk${chunks === 1 ? "" : "s"}`,
     modelsDir: "Model storage location",
     modelsDirHint: "Where Ollama downloads and stores model files. Changing this restarts Ollama (only if this app started it) — running downloads will be interrupted.",
     modelsDirDefault: "Default (Ollama's own location)",
@@ -911,6 +937,19 @@ export const tr: Dictionary = {
     runLint: "Lint",
     runFormat: "Biçimlendir",
     newFile: "Yeni dosya",
+    modelRuntime: "Model çalışma zamanı",
+    modelRuntimeHint: "Modellerinizi hangi arka ucun çalıştıracağı. Otomatik, her modeli formatına (GGUF, safetensors, MLX) ve algılanan donanımınıza (NVIDIA/AMD/Intel/Apple GPU, Apple Silicon) göre seçer — GGUF llama.cpp'ye, NVIDIA/AMD GPU'da safetensors vLLM'e, Apple Silicon'da MLX formatındaki modeller MLX'e gider; geri kalan her şey Transformers'a düşer.",
+    modelRuntimeAutomatic: "Otomatik (önerilen)",
+    modelRuntimeOllama: "Ollama",
+    modelRuntimeLlamaCpp: "llama.cpp",
+    modelRuntimeVllm: "vLLM",
+    modelRuntimeMlx: "MLX",
+    ragEmbeddingModel: "RAG gömme modeli",
+    ragEmbeddingModelHint: "Yeni eklenen klasörleri erişim için indekslemek üzere kullanılır. Mevcut koleksiyonlar oluşturuldukları modeli korur — bunu değiştirmek yalnızca yenilerini etkiler.",
+    ragCollections: "İndekslenmiş koleksiyonlar",
+    ragCollectionsHint: "Erişim için eklediğiniz klasörler, kalıcı olarak saklanır — aynı klasörü tekrar eklemek yalnızca değişen dosyaları yeniden gömer.",
+    ragCollectionsEmpty: "Henüz indekslenmiş klasör yok.",
+    ragCollectionMeta: (docs, chunks) => `${docs} belge · ${chunks} parça`,
     modelsDir: "Model depolama konumu",
     modelsDirHint: "Ollama'nın model dosyalarını indirdiği ve sakladığı yer. Bunu değiştirmek Ollama'yı yeniden başlatır (yalnızca bu uygulama başlattıysa) — devam eden indirmeler kesintiye uğrar.",
     modelsDirDefault: "Varsayılan (Ollama'nın kendi konumu)",

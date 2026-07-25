@@ -71,8 +71,10 @@ import type {
     LinkedAccount,
     LocalRuntimeStatus,
     SandboxCapabilities,
+    BenchmarkResult,
+    RagCollectionSummary,
 } from "@/types/electron";
-import { EXTRA_MODELS } from "@/lib/model-catalog";
+import { EXTRA_MODELS, EMBEDDING_MODELS } from "@/lib/model-catalog";
 import { recommendGpuBackend, gpuBackendNote } from "@/lib/gpu";
 import { useToast } from "@/components/toast";
 import {
@@ -83,7 +85,7 @@ import {
     notifyKeybindingsChanged,
     type KeybindingAction,
 } from "@/lib/keybindings";
-import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, formatModelRef, CUSTOM_PROVIDER_PRESETS } from "@/lib/providers";
+import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, formatModelRef, parseModelRef, CUSTOM_PROVIDER_PRESETS } from "@/lib/providers";
 import { useSessions } from "@/lib/sessions-context";
 import { useI18n } from "@/lib/i18n";
 import type { Locale } from "@/lib/translations";
@@ -159,6 +161,7 @@ export default function Settings() {
     const [running, setRunning] = useState<boolean | null>(null);
     const [specs, setSpecs] = useState<SystemSpecs | null>(null);
     const [recommendations, setRecommendations] = useState<ModelRecommendations | null>(null);
+    const [ragCollections, setRagCollections] = useState<RagCollectionSummary[]>([]);
     const [installed, setInstalled] = useState<OllamaModel[]>([]);
     const [pulling, setPulling] = useState<Record<string, number>>({});
     const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -189,6 +192,16 @@ export default function Settings() {
     const [userDataPath, setUserDataPath] = useState<string | null>(null);
     const [activity, setActivity] = useState<AppActivity | null>(null);
     const [activityLoading, setActivityLoading] = useState(false);
+    const [benchmarkModel, setBenchmarkModel] = useState("");
+    const [benchmarkContext, setBenchmarkContext] = useState(8192);
+    const [benchmarkCompare, setBenchmarkCompare] = useState(true);
+    const [benchmarkRunning, setBenchmarkRunning] = useState(false);
+    const [benchmarkRequestId, setBenchmarkRequestId] = useState<string | null>(null);
+    const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
+    const [tariffName, setTariffName] = useState("");
+    const [tariffStartHour, setTariffStartHour] = useState(17);
+    const [tariffEndHour, setTariffEndHour] = useState(22);
+    const [tariffPrice, setTariffPrice] = useState(0.3);
     const [keybindings, setKeybindings] = useState<Record<KeybindingAction, string>>(DEFAULT_KEYBINDINGS);
     const [localModelInput, setLocalModelInput] = useState("");
     const [localModelBackend, setLocalModelBackend] = useState<"mlx" | "vllm">("vllm");
@@ -210,6 +223,10 @@ export default function Settings() {
     const toast = useToast();
     const activePullCount = useRef(0);
     const loadedTabs = useRef(new Set<SettingsTab>());
+
+    useEffect(() => {
+        window.api.benchmark.getLast().then(setBenchmarkResult).catch(() => undefined);
+    }, []);
 
     const [mcpStatuses, setMcpStatuses] = useState<Record<string, McpServerStatus>>({});
     const [mcpConnecting, setMcpConnecting] = useState<Record<string, boolean>>({});
@@ -254,6 +271,7 @@ export default function Settings() {
         window.api.ollama.status().then(setRunning);
         window.api.system.getSpecs().then(setSpecs);
         window.api.system.getRecommendations().then(setRecommendations);
+        window.api.rag.listCollections().then(setRagCollections);
         window.api.settings.get().then((s) => {
             setSettings(s);
             setOllamaHostInput(s.ollamaHost);
@@ -329,21 +347,16 @@ export default function Settings() {
         setHfFilesLoading(false);
     }
 
-    async function downloadForLlamaCpp(modelId: string, filename: string) {
+    async function downloadForLlamaCpp(modelId: string, filename: string, expectedBytes: number | null) {
         const key = `${modelId}/${filename}`;
         setHfDownloading((d) => ({ ...d, [key]: 0 }));
-        const res = await window.api.huggingface.downloadFile(modelId, filename, (progress) => {
-            if (progress.totalBytes) {
-                setHfDownloading((d) => ({ ...d, [key]: Math.round((progress.receivedBytes / progress.totalBytes!) * 100) }));
-            }
-        });
+        await window.api.downloads.create({ modelId, filename, expectedBytes: expectedBytes ?? 0 });
         setHfDownloading((d) => {
             const next = { ...d };
             delete next[key];
             return next;
         });
-        if (res.error) toast.error(res.error);
-        else window.api.llamacpp.listModels().then(setLlamaCppModels);
+        toast.success("Added to Download Center");
     }
 
     async function deleteLlamaCppModel(name: string) {
@@ -495,6 +508,66 @@ export default function Settings() {
         await navigator.clipboard.writeText(text);
         setDiagnosticsCopied(true);
         setTimeout(() => setDiagnosticsCopied(false), 1500);
+    }
+
+    async function runHardwareBenchmark() {
+        const parsed = parseModelRef(benchmarkModel);
+        if (!parsed) {
+            toast.error("Select a local model to benchmark.");
+            return;
+        }
+        setBenchmarkRunning(true);
+        const { requestId, promise } = window.api.benchmark.run({
+            provider: parsed.provider,
+            model: parsed.modelId,
+            maxContextLength: benchmarkContext,
+            outputTokens: 96,
+            compareCpuGpu: benchmarkCompare,
+        });
+        setBenchmarkRequestId(requestId);
+        try {
+            const response = await promise;
+            if (response.result) {
+                setBenchmarkResult(response.result);
+                toast.success("Benchmark completed.");
+            } else if (response.error) {
+                toast.error(response.error);
+            }
+        } finally {
+            setBenchmarkRunning(false);
+            setBenchmarkRequestId(null);
+        }
+    }
+
+    async function cancelHardwareBenchmark() {
+        if (benchmarkRequestId) await window.api.benchmark.cancel(benchmarkRequestId);
+    }
+
+    async function exportHardwareDiagnostic() {
+        if (!benchmarkResult) return;
+        const result = await window.api.benchmark.exportReport(benchmarkResult);
+        if (result.success) toast.success("Diagnostic report exported.");
+    }
+
+    async function addTimeOfUseTariff() {
+        if (!settings || !tariffName.trim() || tariffPrice < 0) return;
+        await saveSettings({
+            timeOfUseTariffs: [
+                ...(settings.timeOfUseTariffs ?? []),
+                {
+                    name: tariffName.trim(),
+                    startHour: Math.max(0, Math.min(24, tariffStartHour)),
+                    endHour: Math.max(0, Math.min(24, tariffEndHour)),
+                    pricePerKwh: tariffPrice,
+                },
+            ],
+        });
+        setTariffName("");
+    }
+
+    async function removeTimeOfUseTariff(index: number) {
+        if (!settings) return;
+        await saveSettings({ timeOfUseTariffs: (settings.timeOfUseTariffs ?? []).filter((_, itemIndex) => itemIndex !== index) });
     }
 
     async function saveOpenaiKey() {
@@ -683,6 +756,11 @@ export default function Settings() {
     async function deleteModel(name: string) {
         await window.api.ollama.deleteModel(name);
         refreshInstalled();
+    }
+
+    async function deleteRagCollection(id: string) {
+        await window.api.rag.deleteCollection(id);
+        setRagCollections((prev) => prev.filter((c) => c.collectionId !== id));
     }
 
     async function saveSettings(partial: Partial<AppSettings>) {
@@ -1015,6 +1093,66 @@ export default function Settings() {
                                 </div>
                                 {modelsDirStatus && <p className="text-xs text-muted-foreground">{modelsDirStatus}</p>}
                             </SettingsRow>
+                            <SettingsRow label={t.modelRuntime} description={t.modelRuntimeHint} stacked>
+                                <Select
+                                    value={settings?.preferredRuntime ?? "automatic"}
+                                    onValueChange={async (v) => {
+                                        await saveSettings({ preferredRuntime: v as AppSettings["preferredRuntime"] });
+                                        window.api.system.getRecommendations().then(setRecommendations);
+                                    }}
+                                >
+                                    <SelectTrigger size="sm" className="w-56">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="automatic">{t.modelRuntimeAutomatic}</SelectItem>
+                                        <SelectItem value="ollama">{t.modelRuntimeOllama}</SelectItem>
+                                        <SelectItem value="llamacpp">{t.modelRuntimeLlamaCpp}</SelectItem>
+                                        <SelectItem value="vllm">{t.modelRuntimeVllm}</SelectItem>
+                                        <SelectItem value="mlx">{t.modelRuntimeMlx}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </SettingsRow>
+                            <SettingsRow label={t.ragEmbeddingModel} description={t.ragEmbeddingModelHint} stacked>
+                                <Select
+                                    value={settings?.ragEmbeddingModel ?? "nomic-embed-text"}
+                                    onValueChange={(v) => v && saveSettings({ ragEmbeddingModel: v })}
+                                >
+                                    <SelectTrigger size="sm" className="w-56">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {EMBEDDING_MODELS.map((m) => (
+                                            <SelectItem key={m.name} value={m.name}>{m.label}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </SettingsRow>
+                        </SettingsSection>
+
+                        <SettingsSection title={t.ragCollections} description={t.ragCollectionsHint} className="mt-8">
+                            {ragCollections.length === 0 ? (
+                                <p className="text-xs text-muted-foreground">{t.ragCollectionsEmpty}</p>
+                            ) : (
+                                <div className="flex flex-col gap-2">
+                                    {ragCollections.map((c) => (
+                                        <div
+                                            key={c.collectionId}
+                                            className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm"
+                                        >
+                                            <div className="min-w-0">
+                                                <div className="truncate font-medium">{c.name}</div>
+                                                <div className="truncate text-xs text-muted-foreground">
+                                                    {c.folderPath} · {t.ragCollectionMeta(c.documentCount, c.chunkCount)} · {c.embeddingModel}
+                                                </div>
+                                            </div>
+                                            <Button size="sm" variant="ghost" className="shrink-0 text-xs text-destructive" onClick={() => deleteRagCollection(c.collectionId)}>
+                                                {t.delete}
+                                            </Button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </SettingsSection>
 
                         {settings && (
@@ -1486,11 +1624,16 @@ export default function Settings() {
                                                                   🔧 Tool calling
                                                               </Badge>
                                                           )}
-                                                          {m.runsOnGpu && <Badge variant="secondary">Runs on GPU</Badge>}
-                                                          {!m.fits && <Badge variant="secondary">May be too large</Badge>}
+                                                          <Badge variant={m.outcome === "Likely out of memory" ? "destructive" : "secondary"}>{m.outcome}</Badge>
                                                       </div>
                                                       <p className="text-xs text-muted-foreground">{m.description}</p>
-                                                      <p className="text-xs text-muted-foreground">Needs ~{m.minRAMGB} GB RAM</p>
+                                                      <p className="text-xs text-muted-foreground">{m.reason}</p>
+                                                      <p className="text-xs text-muted-foreground">
+                                                          {m.quantization} · weights {m.estimatedWeightGB} GB · KV cache {m.estimatedKvCacheGB} GB · overhead {m.runtimeOverheadGB} GB · {m.expectedGpuOffloadPercent}% GPU offload
+                                                      </p>
+                                                      <p className="text-xs text-muted-foreground">
+                                                          Runtime: {m.recommendedRuntime} · estimated {m.estimatedTokensPerSecond} tok/s{m.measuredTokensPerSecond !== undefined ? ` · measured ${m.measuredTokensPerSecond} tok/s` : ""}
+                                                      </p>
                                                   </div>
                                                   {isInstalled ? (
                                                       <Button
@@ -1608,7 +1751,7 @@ export default function Settings() {
                                                                         size="sm"
                                                                         variant="outline"
                                                                         disabled={progress !== undefined}
-                                                                        onClick={() => downloadForLlamaCpp(r.id, f.path)}
+                                                                            onClick={() => downloadForLlamaCpp(r.id, f.path, f.sizeBytes)}
                                                                     >
                                                                         {t.downloadForLlamaCpp}
                                                                     </Button>
@@ -2717,6 +2860,108 @@ export default function Settings() {
                             )}
                         </SettingsSection>
 
+                        {settings && (
+                            <SettingsSection
+                                title="Energy and cost monitoring"
+                                description="Integrates measured or estimated power while local models are active. Historical records retain the tariff used at calculation time."
+                            >
+                                <SettingsRow label="Enable monitoring" description="Sample every 1–5 seconds only while a local inference request is active.">
+                                    <input
+                                        type="checkbox"
+                                        checked={settings.energyMonitoringEnabled ?? false}
+                                        onChange={(event) => saveSettings({ energyMonitoringEnabled: event.target.checked })}
+                                        className="size-4 accent-primary"
+                                    />
+                                </SettingsRow>
+                                <SettingsRow label="Electricity price and currency">
+                                    <div className="flex gap-2">
+                                        <Input
+                                            type="number" min={0} step={0.01}
+                                            value={settings.electricityPricePerKwh ?? 0.2}
+                                            onChange={(event) => saveSettings({ electricityPricePerKwh: Math.max(0, Number(event.target.value)) })}
+                                            className="w-28" aria-label="Electricity price per kWh"
+                                        />
+                                        <Input
+                                            value={settings.energyCurrency ?? "USD"}
+                                            onChange={(event) => saveSettings({ energyCurrency: event.target.value.toUpperCase().slice(0, 4) })}
+                                            className="w-24" aria-label="Currency"
+                                        />
+                                    </div>
+                                </SettingsRow>
+                                <SettingsRow label="Sampling and retention">
+                                    <div className="flex gap-2">
+                                        <Input
+                                            type="number" min={1} max={5}
+                                            value={settings.energySampleIntervalSeconds ?? 2}
+                                            onChange={(event) => saveSettings({ energySampleIntervalSeconds: Math.max(1, Math.min(5, Number(event.target.value))) })}
+                                            className="w-24" aria-label="Sample interval seconds" title="Sample interval in seconds"
+                                        />
+                                        <Input
+                                            type="number" min={1} max={3650}
+                                            value={settings.energyUsageRetentionDays ?? 365}
+                                            onChange={(event) => saveSettings({ energyUsageRetentionDays: Math.max(1, Number(event.target.value)) })}
+                                            className="w-28" aria-label="Retention days" title="Usage retention in days"
+                                        />
+                                    </div>
+                                </SettingsRow>
+                                <SettingsRow label="Manual wattage estimates" description="Optional maximum CPU/GPU wattage and idle system draw, used when hardware telemetry is unavailable." stacked>
+                                    <div className="grid gap-2 sm:grid-cols-3">
+                                        <Input
+                                            type="number" min={0} placeholder="CPU max W"
+                                            value={settings.manualCpuWatts ?? ""}
+                                            onChange={(event) => saveSettings({ manualCpuWatts: event.target.value ? Math.max(0, Number(event.target.value)) : undefined })}
+                                        />
+                                        <Input
+                                            type="number" min={0} placeholder="GPU max W"
+                                            value={settings.manualGpuWatts ?? ""}
+                                            onChange={(event) => saveSettings({ manualGpuWatts: event.target.value ? Math.max(0, Number(event.target.value)) : undefined })}
+                                        />
+                                        <Input
+                                            type="number" min={0} placeholder="System idle W"
+                                            value={settings.manualSystemIdleWatts ?? ""}
+                                            onChange={(event) => saveSettings({ manualSystemIdleWatts: event.target.value ? Math.max(0, Number(event.target.value)) : undefined })}
+                                        />
+                                    </div>
+                                </SettingsRow>
+                                <SettingsRow label="Include idle system consumption">
+                                    <input
+                                        type="checkbox"
+                                        checked={settings.includeIdleSystemConsumption ?? true}
+                                        onChange={(event) => saveSettings({ includeIdleSystemConsumption: event.target.checked })}
+                                        className="size-4 accent-primary"
+                                    />
+                                </SettingsRow>
+                                <SettingsRow label="Grid carbon intensity" description="Optional grams of CO₂ equivalent per kWh.">
+                                    <Input
+                                        type="number" min={0} placeholder="gCO₂e/kWh"
+                                        value={settings.gridIntensityGCo2PerKwh ?? ""}
+                                        onChange={(event) => saveSettings({ gridIntensityGCo2PerKwh: event.target.value ? Math.max(0, Number(event.target.value)) : undefined })}
+                                        className="w-36"
+                                    />
+                                </SettingsRow>
+                                <SettingsRow label="Time-of-use tariffs" description="A tariff can cross midnight when its end hour is earlier than its start hour." stacked>
+                                    <div className="space-y-2">
+                                        {(settings.timeOfUseTariffs ?? []).map((tariff, index) => (
+                                            <div key={`${tariff.name}-${index}`} className="flex items-center gap-2 rounded-lg border border-border/70 p-2 text-xs">
+                                                <span className="min-w-0 flex-1 truncate font-medium">{tariff.name}</span>
+                                                <span className="text-muted-foreground">{tariff.startHour}:00–{tariff.endHour}:00 · {tariff.pricePerKwh} {settings.energyCurrency ?? "USD"}/kWh</span>
+                                                <Button size="icon" variant="ghost" onClick={() => removeTimeOfUseTariff(index)} aria-label={`Remove ${tariff.name}`}>
+                                                    <Trash2 className="size-3.5" />
+                                                </Button>
+                                            </div>
+                                        ))}
+                                        <div className="grid gap-2 sm:grid-cols-[1fr_80px_80px_110px_auto]">
+                                            <Input value={tariffName} onChange={(event) => setTariffName(event.target.value)} placeholder="Tariff name" />
+                                            <Input type="number" min={0} max={24} value={tariffStartHour} onChange={(event) => setTariffStartHour(Number(event.target.value))} aria-label="Start hour" />
+                                            <Input type="number" min={0} max={24} value={tariffEndHour} onChange={(event) => setTariffEndHour(Number(event.target.value))} aria-label="End hour" />
+                                            <Input type="number" min={0} step={0.01} value={tariffPrice} onChange={(event) => setTariffPrice(Number(event.target.value))} aria-label="Tariff price" />
+                                            <Button size="sm" onClick={addTimeOfUseTariff} disabled={!tariffName.trim()}><Plus className="size-3.5" /> Add</Button>
+                                        </div>
+                                    </div>
+                                </SettingsRow>
+                            </SettingsSection>
+                        )}
+
                         <SettingsSection
                             title={t.appActivity}
                             description={t.appActivityDescription}
@@ -2773,6 +3018,153 @@ export default function Settings() {
                                         </span>
                                     </SettingsRow>
                                 </>
+                            )}
+                        </SettingsSection>
+
+                        <SettingsSection
+                            title="Diagnostics & performance benchmark"
+                            description="Measure the selected runtime on this PC. Context tests send progressively larger prompts and can take several minutes."
+                            action={
+                                benchmarkRunning ? (
+                                    <Button size="sm" variant="destructive" onClick={cancelHardwareBenchmark}>
+                                        <Loader2 className="size-3.5 animate-spin" /> Cancel
+                                    </Button>
+                                ) : (
+                                    <Button size="sm" onClick={runHardwareBenchmark} disabled={!benchmarkModel}>
+                                        <Gauge className="size-3.5" /> Run benchmark
+                                    </Button>
+                                )
+                            }
+                        >
+                            <div className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_180px_auto]">
+                                <Select value={benchmarkModel} onValueChange={(value) => value && setBenchmarkModel(value)}>
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue placeholder="Select a local model" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {installed.length > 0 && (
+                                            <SelectGroup>
+                                                <SelectLabel>Ollama</SelectLabel>
+                                                {installed.map((model) => (
+                                                    <SelectItem key={`bench-ollama-${model.name}`} value={formatModelRef("ollama", model.name)}>
+                                                        {model.name}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectGroup>
+                                        )}
+                                        {llamaCppModels.length > 0 && (
+                                            <SelectGroup>
+                                                <SelectLabel>llama.cpp / ROCm</SelectLabel>
+                                                {llamaCppModels.map((model) => (
+                                                    <SelectItem key={`bench-llama-${model.name}`} value={formatModelRef("llamacpp", model.name)}>
+                                                        {model.name}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectGroup>
+                                        )}
+                                        {(settings?.mlxModels ?? []).map((model) => (
+                                            <SelectItem key={`bench-mlx-${model}`} value={formatModelRef("mlx", model)}>
+                                                MLX · {model}
+                                            </SelectItem>
+                                        ))}
+                                        {(settings?.vllmModels ?? []).map((model) => (
+                                            <SelectItem key={`bench-vllm-${model}`} value={formatModelRef("vllm", model)}>
+                                                vLLM · {model}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                <Input
+                                    type="number"
+                                    min={2048}
+                                    max={131072}
+                                    step={2048}
+                                    value={benchmarkContext}
+                                    onChange={(event) => setBenchmarkContext(Math.max(2048, Math.min(131072, Number(event.target.value) || 2048)))}
+                                    aria-label="Maximum context length to test"
+                                    title="Maximum context length to test"
+                                />
+                                <label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
+                                    <input
+                                        type="checkbox"
+                                        checked={benchmarkCompare}
+                                        onChange={(event) => setBenchmarkCompare(event.target.checked)}
+                                        className="size-4 accent-primary"
+                                    />
+                                    Compare CPU/GPU
+                                </label>
+                            </div>
+
+                            {benchmarkResult && (
+                                <div className="border-t border-border/60 p-4">
+                                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2">
+                                            <Badge variant={benchmarkResult.health.healthy ? "default" : "destructive"}>
+                                                {benchmarkResult.health.healthy ? "Runtime healthy" : "Runtime failed"}
+                                            </Badge>
+                                            <span className="truncate font-mono text-xs text-muted-foreground">{benchmarkResult.model}</span>
+                                        </div>
+                                        <Button size="sm" variant="outline" onClick={exportHardwareDiagnostic}>
+                                            <FileDown className="size-3.5" /> Export report
+                                        </Button>
+                                    </div>
+
+                                    {benchmarkResult.primary ? (
+                                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                            {[
+                                                ["Generation", `${benchmarkResult.primary.tokensPerSecond.toLocaleString()} tok/s`],
+                                                ["Prompt processing", `${benchmarkResult.primary.promptTokensPerSecond.toLocaleString()} tok/s`],
+                                                ["Time to first token", `${benchmarkResult.primary.timeToFirstTokenMs.toLocaleString()} ms`],
+                                                ["Total response", `${benchmarkResult.primary.totalTimeMs.toLocaleString()} ms`],
+                                                ["Peak system RAM", `${benchmarkResult.primary.resources.peakSystemRamMB.toLocaleString()} MB`],
+                                                ["Peak app RAM", `${benchmarkResult.primary.resources.peakAppRamMB.toLocaleString()} MB`],
+                                                ["Peak VRAM", benchmarkResult.primary.resources.peakVramMB === null ? "Unavailable" : `${benchmarkResult.primary.resources.peakVramMB.toLocaleString()} MB`],
+                                                ["Measured by", benchmarkResult.primary.resources.vramMeasurement],
+                                            ].map(([label, value]) => (
+                                                <div key={label} className="rounded-xl border border-border/70 bg-muted/25 p-3">
+                                                    <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+                                                    <p className="mt-1 text-sm font-semibold">{value}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                                            {benchmarkResult.health.error ?? "The runtime did not complete the health check."}
+                                        </p>
+                                    )}
+
+                                    {benchmarkResult.comparison.supported && benchmarkResult.comparison.cpu && benchmarkResult.comparison.gpu && (
+                                        <div className="mt-4 overflow-hidden rounded-xl border border-border/70">
+                                            <div className="grid grid-cols-3 bg-muted/40 px-3 py-2 text-xs font-semibold">
+                                                <span>Mode</span><span>Generation</span><span>First token</span>
+                                            </div>
+                                            {([benchmarkResult.comparison.cpu, benchmarkResult.comparison.gpu] as const).map((measurement) => (
+                                                <div key={measurement.mode} className="grid grid-cols-3 border-t border-border/60 px-3 py-2 text-sm">
+                                                    <span className="font-medium uppercase">{measurement.mode}</span>
+                                                    <span>{measurement.tokensPerSecond} tok/s</span>
+                                                    <span>{measurement.timeToFirstTokenMs} ms</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {benchmarkResult.comparison.note && <p className="mt-3 text-xs text-muted-foreground">{benchmarkResult.comparison.note}</p>}
+
+                                    {benchmarkResult.contextTests.length > 0 && (
+                                        <div className="mt-4">
+                                            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Context-length tests</p>
+                                            <div className="flex flex-wrap gap-2">
+                                                {benchmarkResult.contextTests.map((test) => (
+                                                    <Badge key={test.requestedTokens} variant={test.accepted ? "secondary" : "destructive"} title={test.error}>
+                                                        {(test.requestedTokens / 1024).toLocaleString()}K · {test.accepted ? "passed" : "failed"} · {test.elapsedMs} ms
+                                                    </Badge>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                    {benchmarkResult.warnings.map((warning) => (
+                                        <p key={warning} className="mt-2 text-xs text-muted-foreground">{warning}</p>
+                                    ))}
+                                </div>
                             )}
                         </SettingsSection>
 

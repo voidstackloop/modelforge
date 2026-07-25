@@ -28,3 +28,11 @@ export const EXTRA_MODELS: CatalogEntry[] = [
     { name: "qwen2.5:1.5b", label: "Qwen 2.5 1.5B", description: "Small, fast general-purpose model." },
     { name: "gemma2:27b", label: "Gemma 2 27B", description: "Larger Gemma 2 for higher-quality responses." },
 ];
+
+// Ollama embedding models offered in the RAG "Model runtime" settings picker —
+// separate from EXTRA_MODELS since these aren't chat models at all.
+export const EMBEDDING_MODELS: CatalogEntry[] = [
+    { name: "nomic-embed-text", label: "Nomic Embed Text", description: "Text embedding model, not for chat — used for search/RAG." },
+    { name: "mxbai-embed-large", label: "MxBai Embed Large", description: "Larger, higher-quality embedding model — slower to index and query." },
+    { name: "all-minilm", label: "All-MiniLM", description: "Small, fast embedding model — good for low-resource machines." },
+];

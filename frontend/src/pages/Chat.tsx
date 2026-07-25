@@ -17,6 +17,7 @@ import {
     FileDown,
     BookMarked,
     Database,
+    FileText,
     Loader2,
     Image as ImageIcon,
     Bot,
@@ -95,6 +96,7 @@ import type {
     PromptPreset,
     ProjectScripts,
     LocalGgufModel,
+    RagCitation,
 } from "@/types/electron";
 
 type Attachment = AttachedFile & { folder?: string };
@@ -102,7 +104,7 @@ type Attachment = AttachedFile & { folder?: string };
 interface RagFolder {
     folderPath: string;
     folderName: string;
-    indexId: string;
+    collectionId: string;
     chunkCount: number;
 }
 
@@ -332,6 +334,21 @@ const MessageBubble = memo(function MessageBubble({
                     ) : (
                         ""
                     )}
+                </div>
+            )}
+            {m.citations && m.citations.length > 0 && (
+                <div className={cn("mt-1 flex max-w-[82%] flex-wrap gap-1 sm:max-w-[75%]", m.role === "user" ? "justify-end" : "justify-start")}>
+                    {m.citations.map((c, citeIdx) => (
+                        <span
+                            key={citeIdx}
+                            className="flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+                            title={c.heading ? `${c.name} — ${c.heading}` : c.name}
+                        >
+                            <FileText className="size-3" />
+                            <span className="max-w-[140px] truncate">{c.name}</span>
+                            <span className="text-muted-foreground/70">{c.page ? `p.${c.page}` : `L${c.startLine}-${c.endLine}`}</span>
+                        </span>
+                    ))}
                 </div>
             )}
             <div className="mt-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -825,15 +842,17 @@ export default function Chat() {
         const totalChars = result.files.reduce((sum, f) => sum + f.content.length, 0);
         if (totalChars > RAG_THRESHOLD_CHARS) {
             setIndexingFolder(true);
-            const indexResult = await window.api.rag.indexFiles(result.files);
+            const indexResult = await window.api.rag.indexFolder({
+                folderPath: result.folderPath, folderName: result.folderName, files: result.files,
+            });
             setIndexingFolder(false);
             if (indexResult.embedded) {
                 setRagFolders((prev) => [
-                    ...prev,
+                    ...prev.filter((f) => f.folderPath !== result.folderPath),
                     {
                         folderPath: result.folderPath,
                         folderName: result.folderName,
-                        indexId: indexResult.indexId,
+                        collectionId: indexResult.collectionId,
                         chunkCount: indexResult.chunkCount,
                     },
                 ]);
@@ -1311,16 +1330,22 @@ export default function Chat() {
         setNewPresetName("");
     }
 
-    async function queryRagFolders(queryText: string): Promise<string> {
-        if (ragFolders.length === 0) return "";
+    async function queryRagFolders(queryText: string): Promise<{ content: string; citations: RagCitation[] }> {
+        if (ragFolders.length === 0) return { content: "", citations: [] };
         const blocks: string[] = [];
+        const citations: RagCitation[] = [];
         for (const folder of ragFolders) {
-            const chunks = await window.api.rag.query(folder.indexId, queryText || folder.folderName, 8);
-            for (const chunk of chunks) {
-                blocks.push(`File: ${chunk.source} (from ${folder.folderName})\n\`\`\`\n${chunk.text}\n\`\`\``);
+            const results = await window.api.rag.query(folder.collectionId, queryText || folder.folderName, 8);
+            for (const result of results) {
+                const location = result.page ? `page ${result.page}` : `lines ${result.startLine}-${result.endLine}`;
+                blocks.push(`File: ${result.source.name} (from ${folder.folderName}, ${location})\n\`\`\`\n${result.text}\n\`\`\``);
+                citations.push({
+                    path: result.source.path, name: result.source.name, heading: result.heading,
+                    page: result.page, startLine: result.startLine, endLine: result.endLine,
+                });
             }
         }
-        return blocks.join("\n\n");
+        return { content: blocks.join("\n\n"), citations };
     }
 
     async function handleSend() {
@@ -1332,14 +1357,14 @@ export default function Chat() {
             return;
         }
 
-        const ragContent = await queryRagFolders(text);
+        const { content: ragContent, citations } = await queryRagFolders(text);
         const content = buildMessageContent(text, attachments, ragContent);
         const titleSource =
             text || attachments[0]?.name || ragFolders[0]?.folderName || imageAttachments[0]?.name || "New chat";
         const images = imageAttachments.map((img) => ({ mimeType: img.mimeType, data: img.dataBase64 }));
         const baseMessages: ChatMessage[] = [
             ...messages,
-            { role: "user", content, ...(images.length > 0 ? { images } : {}) },
+            { role: "user", content, ...(images.length > 0 ? { images } : {}), ...(citations.length > 0 ? { citations } : {}) },
         ];
         const history: ChatMessage[] = [...buildSystemMessages(), ...baseMessages];
 

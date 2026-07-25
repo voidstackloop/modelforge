@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { app } from "electron";
 import { readJson, writeJson } from "./json-store";
 import type { McpServerConfig } from "./mcp-client";
+import type { TimeOfUseTariff } from "./energy-types";
 
 export interface PromptVersion {
     prompt: string;
@@ -73,6 +74,15 @@ export interface AppSettings {
     // directory) since the two backends use incompatible on-disk layouts.
     llamaCppModelsDir?: string;
     llamaCppGpuBackend?: "auto" | "vulkan" | "cuda" | "metal" | "cpu";
+    // Embedding model used to index new RAG collections. Existing collections
+    // keep whatever model they were created with (stored per-collection in
+    // rag.db) — this only governs newly created ones.
+    ragEmbeddingModel?: string;
+    // Which backend runs a model. "automatic" (the default) picks per-model
+    // based on file format and detected hardware — see resolveAutomaticRuntime
+    // in system-specs.ts. Any other value pins every recommendation/download
+    // to that one backend regardless of format/hardware fit.
+    preferredRuntime?: "automatic" | "ollama" | "llamacpp" | "vllm" | "mlx";
     // User-added OpenAI-compatible endpoints (Groq, Mistral, DeepSeek, xAI,
     // OpenRouter, or anything else that speaks the same API) — each one's
     // API key is stored separately via secretsStore, keyed by its id.
@@ -122,6 +132,19 @@ export interface AppSettings {
     // Distinct from agentMaxSteps — bounds verify-fail-retry cycles
     // specifically, so a persistently failing check can't loop forever.
     verificationMaxRetries?: number;
+    energyMonitoringEnabled?: boolean;
+    electricityPricePerKwh?: number;
+    energyCurrency?: string;
+    timeOfUseTariffs?: TimeOfUseTariff[];
+    manualCpuWatts?: number;
+    manualGpuWatts?: number;
+    manualSystemIdleWatts?: number;
+    includeIdleSystemConsumption?: boolean;
+    energyUsageRetentionDays?: number;
+    energySampleIntervalSeconds?: number;
+    downloadGlobalConcurrency?: number;
+    downloadBandwidthMbps?: number;
+    gridIntensityGCo2PerKwh?: number;
 }
 
 const DEFAULTS: AppSettings = {
@@ -145,6 +168,15 @@ const DEFAULTS: AppSettings = {
     sandboxMaxMemoryMB: 2048,
     verificationEnabled: false,
     verificationMaxRetries: 3,
+    energyMonitoringEnabled: false,
+    electricityPricePerKwh: 0.2,
+    energyCurrency: "USD",
+    timeOfUseTariffs: [],
+    includeIdleSystemConsumption: true,
+    energyUsageRetentionDays: 365,
+    energySampleIntervalSeconds: 2,
+    downloadGlobalConcurrency: 2,
+    downloadBandwidthMbps: 0,
 };
 
 function filePath(): string {

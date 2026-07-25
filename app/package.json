@@ -10,7 +10,8 @@
     "dev:main": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "dev:electron": "wait-on tcp:5173 dist/main.js && cross-env NODE_ENV=development electron .",
     "dev": "concurrently -k -s first \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
-    "build:all": "npm --prefix ../frontend run build && npm run build",
+    "build:native": "npm --prefix ../lib install && npm --prefix ../lib run build",
+    "build:all": "npm run build:native && npm --prefix ../frontend run build && npm run build",
     "package": "npm run build:all && electron-builder"
   },
   "keywords": [],
@@ -25,6 +26,7 @@
     },
     "files": [
       "dist/**/*",
+      "native/**/*",
       "node_modules/**/*",
       "package.json"
     ],
@@ -34,12 +36,18 @@
       "**/node_modules/tesseract.js-core/**",
       "**/node_modules/node-llama-cpp/**",
       "**/node_modules/@node-llama-cpp/**",
-      "**/node_modules/node-pty/**"
+      "**/node_modules/node-pty/**",
+      "**/node_modules/better-sqlite3/**",
+      "native/**"
     ],
     "extraResources": [
       {
         "from": "../frontend/dist",
         "to": "frontend-dist"
+      },
+      {
+        "from": "python",
+        "to": "python"
       }
     ],
     "win": {
@@ -77,6 +85,7 @@
     }
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.1",
     "@types/pdf-parse": "^1.1.5",
     "@types/pidusage": "^2.0.5",
@@ -89,6 +98,7 @@
     "wait-on": "^9.0.10"
   },
   "dependencies": {
+    "better-sqlite3": "^11.10.0",
     "electron-updater": "^6.6.2",
     "ffmpeg-static": "^5.3.0",
     "node-llama-cpp": "^3.19.1",

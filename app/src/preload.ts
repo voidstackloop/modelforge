@@ -104,6 +104,14 @@ contextBridge.exposeInMainWorld("api", {
 
     localBackends: {
         getStatuses: (): Promise<LocalRuntimeStatus[]> => ipcRenderer.invoke("localBackends:getStatuses"),
+        start: (backend: "mlx" | "rocm" | "vllm", model: string) => ipcRenderer.invoke("localBackends:start", { backend, model }),
+        stop: (backend: "mlx" | "rocm" | "vllm") => ipcRenderer.invoke("localBackends:stop", backend),
+        restart: (backend: "mlx" | "rocm" | "vllm", model: string) => ipcRenderer.invoke("localBackends:restart", { backend, model }),
+        unload: (backend: "mlx" | "rocm" | "vllm") => ipcRenderer.invoke("localBackends:unload", backend),
+    },
+
+    pythonRuntimes: {
+        getStatuses: () => ipcRenderer.invoke("pythonRuntimes:getStatuses"),
     },
 
     chat: {
@@ -190,6 +198,40 @@ contextBridge.exposeInMainWorld("api", {
         openLogsFolder: () => ipcRenderer.invoke("app:openLogsFolder"),
     },
 
+    benchmark: {
+        run: (request: unknown) => {
+            const requestId = crypto.randomUUID();
+            return { requestId, promise: ipcRenderer.invoke("benchmark:run", { requestId, request }) };
+        },
+        cancel: (requestId: string) => ipcRenderer.invoke("benchmark:cancel", requestId),
+        getLast: () => ipcRenderer.invoke("benchmark:getLast"),
+        exportReport: (result: unknown) => ipcRenderer.invoke("benchmark:exportReport", result),
+    },
+
+    energy: {
+        getDashboard: () => ipcRenderer.invoke("energy:getDashboard"),
+        clearHistory: () => ipcRenderer.invoke("energy:clearHistory"),
+    },
+
+    downloads: {
+        list: () => ipcRenderer.invoke("downloads:list"),
+        create: (input: { modelId: string; filename: string; expectedBytes: number; backend?: string }) => ipcRenderer.invoke("downloads:create", input),
+        pause: (id: string) => ipcRenderer.invoke("downloads:pause", id),
+        resume: (id: string) => ipcRenderer.invoke("downloads:resume", id),
+        retry: (id: string) => ipcRenderer.invoke("downloads:retry", id),
+        cancel: (id: string) => ipcRenderer.invoke("downloads:cancel", id),
+        delete: (id: string) => ipcRenderer.invoke("downloads:delete", id),
+        forecast: (id: string) => ipcRenderer.invoke("downloads:forecast", id),
+        recoveryStatus: () => ipcRenderer.invoke("downloads:recoveryStatus"),
+        getControls: () => ipcRenderer.invoke("downloads:getControls"),
+        setControls: (controls: { concurrency: number; bandwidthMbps: number }) => ipcRenderer.invoke("downloads:setControls", controls),
+        onUpdate: (callback: (jobs: unknown[]) => void) => {
+            const listener = (_event: unknown, jobs: unknown[]) => callback(jobs);
+            ipcRenderer.on("downloads:update", listener);
+            return () => ipcRenderer.removeListener("downloads:update", listener);
+        },
+    },
+
     menu: {
         onNewChat: (callback: () => void) => {
             const listener = () => callback();
@@ -225,9 +267,12 @@ contextBridge.exposeInMainWorld("api", {
     },
 
     rag: {
-        indexFiles: (files: AttachedFile[]) => ipcRenderer.invoke("rag:indexFiles", files),
-        query: (indexId: string, query: string, topK?: number) =>
-            ipcRenderer.invoke("rag:query", { indexId, query, topK }),
+        indexFolder: (input: { folderPath: string; folderName: string; files: AttachedFile[] }) =>
+            ipcRenderer.invoke("rag:indexFolder", input),
+        query: (collectionId: string, query: string, topK?: number) =>
+            ipcRenderer.invoke("rag:query", { collectionId, query, topK }),
+        listCollections: () => ipcRenderer.invoke("rag:listCollections"),
+        deleteCollection: (id: string) => ipcRenderer.invoke("rag:deleteCollection", id),
     },
 
     agent: {

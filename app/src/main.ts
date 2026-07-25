@@ -26,6 +26,11 @@ import * as llamacpp from "./llamacpp-manager";
 import * as scheduledTasksStore from "./scheduled-tasks-store";
 import * as scheduler from "./scheduler";
 import * as localServers from "./local-server-manager";
+import * as benchmarkRunner from "./benchmark-runner";
+import * as powerMonitor from "./power-monitor";
+import * as energyUsageStore from "./energy-usage-store";
+import * as pythonRuntimes from "./python-runtime-manager";
+import type { EnergyMonitorSettings } from "./energy-types";
 import type { McpServerConfig } from "./mcp-client";
 import type { AttachedFile } from "./file-reader";
 import * as openaiProvider from "./providers/openai";
@@ -47,6 +52,7 @@ function customProviderSecretKey(customProviderId: string): string {
 }
 
 const activeChatRequests = new Map<string, AbortController>();
+const activeBenchmarkRequests = new Map<string, AbortController>();
 let isBusy = false;
 let forceClose = false;
 
@@ -68,6 +74,28 @@ function getLlamaCppModelsDir(): string {
     const dir = configured || path.join(app.getPath("userData"), "llamacpp-models");
     fs.mkdirSync(dir, { recursive: true });
     return dir;
+}
+
+function getLocalRuntimeConfig(): localServers.LocalBackendConfig {
+    const settings = settingsStore.getSettings();
+    return { mlxPythonPath: settings.mlxPythonPath, rocmServerPath: settings.rocmServerPath, vllmCommand: settings.vllmCommand };
+}
+
+function getEnergyMonitorSettings(): EnergyMonitorSettings {
+    const settings = settingsStore.getSettings();
+    return {
+        enabled: settings.energyMonitoringEnabled ?? false,
+        electricityPricePerKwh: Math.max(0, settings.electricityPricePerKwh ?? 0.2),
+        currency: settings.energyCurrency?.trim() || "USD",
+        timeOfUseTariffs: settings.timeOfUseTariffs ?? [],
+        manualCpuWatts: settings.manualCpuWatts,
+        manualGpuWatts: settings.manualGpuWatts,
+        manualSystemIdleWatts: settings.manualSystemIdleWatts,
+        includeIdleSystemConsumption: settings.includeIdleSystemConsumption ?? true,
+        retentionDays: Math.max(1, settings.energyUsageRetentionDays ?? 365),
+        sampleIntervalSeconds: Math.max(1, Math.min(5, settings.energySampleIntervalSeconds ?? 2)),
+        gridIntensityGCo2PerKwh: settings.gridIntensityGCo2PerKwh,
+    };
 }
 
 // Without these, an unexpected error anywhere in the main process (a bad file
@@ -202,6 +230,23 @@ async function dispatchChat(
     signal?: AbortSignal,
     tools?: ToolDefinition[]
 ): Promise<void> {
+    const currentSettings = settingsStore.getSettings();
+    const customLocal = provider === "custom"
+        && currentSettings.customProviders?.find((item) => model.startsWith(`${item.id}::`))?.localGpuBackend;
+    const localProvider = ["ollama", "llamacpp", "mlx", "rocm", "vllm"].includes(provider) || !!customLocal;
+    const energySettings = getEnergyMonitorSettings();
+    energySettings.enabled = energySettings.enabled && localProvider;
+    const backend = provider === "llamacpp"
+        ? currentSettings.llamaCppGpuBackend ?? "auto"
+        : provider === "rocm" ? "rocm" : provider;
+    const initialPromptTokens = Math.max(1, Math.ceil(messages.reduce((sum, message) => sum + message.content.length, 0) / 4));
+    const activity = powerMonitor.beginRequest(provider, model, backend, energySettings, initialPromptTokens);
+    const downstreamToken = onToken;
+    onToken = (chunk) => {
+        activity.onChunk(chunk);
+        downstreamToken(chunk);
+    };
+    try {
     if (provider === "ollama") {
         await ollama.chat(model, messages, options, onToken, signal, tools);
     } else if (provider === "llamacpp") {
@@ -282,6 +327,9 @@ async function dispatchChat(
             provider === "openai" ? openaiProvider.chat : provider === "anthropic" ? anthropicProvider.chat : geminiProvider.chat;
         await providerFn(apiKey, model, messages, options, onToken, signal, tools);
     }
+    } finally {
+        await activity.finish();
+    }
 }
 
 // Runs a single-turn prompt to completion and returns the full text —
@@ -293,6 +341,79 @@ async function completePrompt(provider: ProviderId, model: string, prompt: strin
         text += chunk.message?.content ?? "";
     });
     return text;
+}
+
+function benchmarkResultPath(): string {
+    const dir = path.join(app.getPath("userData"), "benchmarks");
+    fs.mkdirSync(dir, { recursive: true });
+    return path.join(dir, "latest.json");
+}
+
+function benchmarkHistoryPath(): string { return path.join(path.dirname(benchmarkResultPath()), "history.json"); }
+
+function saveBenchmarkResult(result: benchmarkRunner.BenchmarkResult): void {
+    const destination = benchmarkResultPath();
+    const temporary = `${destination}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(result, null, 2));
+    fs.renameSync(temporary, destination);
+    let history: benchmarkRunner.BenchmarkResult[] = [];
+    try { history = JSON.parse(fs.readFileSync(benchmarkHistoryPath(), "utf-8")); } catch { /* first benchmark */ }
+    history.push(result);
+    fs.writeFileSync(benchmarkHistoryPath(), JSON.stringify(history.slice(-100), null, 2));
+}
+
+function getBenchmarkObservations(): systemSpecs.BenchmarkObservation[] {
+    try {
+        const history = JSON.parse(fs.readFileSync(benchmarkHistoryPath(), "utf-8")) as benchmarkRunner.BenchmarkResult[];
+        return history.flatMap((result) => result.primary ? [{ model: result.model, tokensPerSecond: result.primary.tokensPerSecond, promptTokensPerSecond: result.primary.promptTokensPerSecond, timeToFirstTokenMs: result.primary.timeToFirstTokenMs }] : []);
+    } catch {
+        const latest = getLastBenchmarkResult();
+        return latest?.primary ? [{ model: latest.model, tokensPerSecond: latest.primary.tokensPerSecond, promptTokensPerSecond: latest.primary.promptTokensPerSecond, timeToFirstTokenMs: latest.primary.timeToFirstTokenMs }] : [];
+    }
+}
+
+function getLastBenchmarkResult(): benchmarkRunner.BenchmarkResult | null {
+    try {
+        return JSON.parse(fs.readFileSync(benchmarkResultPath(), "utf-8")) as benchmarkRunner.BenchmarkResult;
+    } catch {
+        return null;
+    }
+}
+
+async function exportDiagnosticReport(result: benchmarkRunner.BenchmarkResult): Promise<{ success: boolean }> {
+    const specs = await systemSpecs.getSpecs();
+    const settings = settingsStore.getSettings();
+    const runtimes = await localServers.getRuntimeStatuses({
+        mlxPythonPath: settings.mlxPythonPath,
+        rocmServerPath: settings.rocmServerPath,
+        vllmCommand: settings.vllmCommand,
+    });
+    const report = {
+        schemaVersion: 1,
+        exportedAt: new Date().toISOString(),
+        application: {
+            version: app.getVersion(),
+            electron: process.versions.electron,
+            chrome: process.versions.chrome,
+            node: process.versions.node,
+            platform: process.platform,
+            arch: process.arch,
+        },
+        system: specs,
+        runtimeHealth: runtimes,
+        benchmark: result,
+        energyUsage: powerMonitor.getDashboard(getEnergyMonitorSettings()),
+        recentLogs: getLogTail(),
+    };
+    const date = new Date().toISOString().replace(/[:.]/g, "-");
+    const options = {
+        defaultPath: `modelforge-diagnostic-${date}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+    };
+    const dialogResult = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+    if (dialogResult.canceled || !dialogResult.filePath) return { success: false };
+    fs.writeFileSync(dialogResult.filePath, JSON.stringify(report, null, 2));
+    return { success: true };
 }
 
 function registerIpcHandlers(): void {
@@ -338,13 +459,17 @@ function registerIpcHandlers(): void {
     });
     ipcMain.handle("llamacpp:getAvailableGpuBackends", () => llamacpp.getAvailableGpuBackends());
     ipcMain.handle("localBackends:getStatuses", () => {
-        const settings = settingsStore.getSettings();
-        return localServers.getRuntimeStatuses({
-            mlxPythonPath: settings.mlxPythonPath,
-            rocmServerPath: settings.rocmServerPath,
-            vllmCommand: settings.vllmCommand,
-        });
+        return localServers.getRuntimeStatuses(getLocalRuntimeConfig());
     });
+    ipcMain.handle("localBackends:start", (_event, { backend, model }: { backend: localServers.LocalBackendId; model: string }) =>
+        localServers.startServer(backend, requireString(model, "runtime model"), getLocalRuntimeConfig())
+    );
+    ipcMain.handle("localBackends:stop", (_event, backend: localServers.LocalBackendId) => localServers.stopServer(backend));
+    ipcMain.handle("localBackends:restart", (_event, { backend, model }: { backend: localServers.LocalBackendId; model: string }) =>
+        localServers.restartServer(backend, requireString(model, "runtime model"), getLocalRuntimeConfig())
+    );
+    ipcMain.handle("localBackends:unload", (_event, backend: localServers.LocalBackendId) => localServers.stopServer(backend));
+    ipcMain.handle("pythonRuntimes:getStatuses", () => pythonRuntimes.getPythonEnvironmentStatuses());
     ipcMain.handle("llamacpp:setGpuBackend", async (_event: IpcMainInvokeEvent, backend: llamacpp.GpuBackend) => {
         await llamacpp.setGpuBackend(backend);
         settingsStore.saveSettings({ llamaCppGpuBackend: backend });
@@ -420,7 +545,8 @@ function registerIpcHandlers(): void {
     ipcMain.handle("system:getSpecs", () => systemSpecs.getSpecs());
     ipcMain.handle("system:getRecommendations", async () => {
         const specs = await systemSpecs.getSpecs();
-        return systemSpecs.recommendModels(specs);
+        const settings = settingsStore.getSettings();
+        return systemSpecs.recommendModels(specs, { contextLength: settings.contextLength, quantization: "Q4_K_M", runtime: settings.preferredRuntime ?? "automatic" }, getBenchmarkObservations());
     });
     ipcMain.handle("system:getActivity", async () => {
         const ollamaRunning = await ollama.isRunning();
@@ -438,11 +564,81 @@ function registerIpcHandlers(): void {
         };
     });
 
+    ipcMain.handle(
+        "benchmark:run",
+        async (
+            _event: IpcMainInvokeEvent,
+            { requestId, request }: { requestId: string; request: benchmarkRunner.BenchmarkRequest }
+        ) => {
+            requireString(requestId, "benchmark request id");
+            requireString(request?.provider, "benchmark provider");
+            requireString(request?.model, "benchmark model");
+            const controller = new AbortController();
+            activeBenchmarkRequests.set(requestId, controller);
+            try {
+                const result = await benchmarkRunner.runBenchmark(
+                    (provider, model, messages, options, onToken, signal) =>
+                        dispatchChat(provider, model, messages, options, onToken, signal),
+                    request,
+                    controller.signal
+                );
+                saveBenchmarkResult(result);
+                return { result };
+            } catch (error) {
+                if ((error as Error).name === "AbortError") return { aborted: true };
+                logger.error(`Benchmark failed (provider=${request.provider}, model=${request.model}): ${(error as Error).message}`);
+                return { error: (error as Error).message };
+            } finally {
+                activeBenchmarkRequests.delete(requestId);
+            }
+        }
+    );
+    ipcMain.handle("benchmark:cancel", (_event: IpcMainInvokeEvent, requestId: string) => {
+        activeBenchmarkRequests.get(requireString(requestId, "benchmark request id"))?.abort();
+    });
+    ipcMain.handle("benchmark:getLast", () => getLastBenchmarkResult());
+    ipcMain.handle("benchmark:exportReport", (_event: IpcMainInvokeEvent, result: benchmarkRunner.BenchmarkResult) =>
+        exportDiagnosticReport(result)
+    );
+    ipcMain.handle("energy:getDashboard", () => powerMonitor.getDashboard(getEnergyMonitorSettings()));
+    ipcMain.handle("energy:clearHistory", () => {
+        energyUsageStore.clearRecords();
+        return { success: true };
+    });
+
+    ipcMain.handle("downloads:list", () => downloadQueue.getJobs());
+    ipcMain.handle("downloads:create", (_event, input: { modelId: string; filename: string; expectedBytes: number; backend?: Parameters<typeof downloadQueue.createHuggingFaceJob>[0]["backend"] }) =>
+        downloadQueue.createHuggingFaceJob({
+            ...input,
+            backend: input.backend ?? settingsStore.getSettings().preferredRuntime ?? "automatic",
+            destinationDir: getLlamaCppModelsDir(),
+        })
+    );
+    ipcMain.handle("downloads:pause", (_event, id: string) => downloadQueue.pauseJob(requireString(id, "download id")));
+    ipcMain.handle("downloads:resume", (_event, id: string) => downloadQueue.resumeJob(requireString(id, "download id")));
+    ipcMain.handle("downloads:retry", (_event, id: string) => downloadQueue.retryJob(requireString(id, "download id")));
+    ipcMain.handle("downloads:cancel", (_event, id: string) => downloadQueue.cancelJob(requireString(id, "download id")));
+    ipcMain.handle("downloads:delete", (_event, id: string) => downloadQueue.removeJob(requireString(id, "download id")));
+    ipcMain.handle("downloads:forecast", (_event, id: string) => downloadQueue.diskForecast(requireString(id, "download id")));
+    ipcMain.handle("downloads:recoveryStatus", () => downloadQueue.getRecoveryStatus());
+    ipcMain.handle("downloads:getControls", () => {
+        const settings = settingsStore.getSettings();
+        return { concurrency: settings.downloadGlobalConcurrency ?? 2, bandwidthMbps: settings.downloadBandwidthMbps ?? 0 };
+    });
+    ipcMain.handle("downloads:setControls", (_event, controls: downloadQueue.DownloadControls) => {
+        const normalized = downloadQueue.configure(controls);
+        settingsStore.saveSettings({ downloadGlobalConcurrency: normalized.concurrency, downloadBandwidthMbps: normalized.bandwidthMbps });
+        return normalized;
+    });
+
     ipcMain.handle("settings:get", () => settingsStore.getSettings());
     ipcMain.handle("settings:save", (_event: IpcMainInvokeEvent, partial) => {
         const saved = settingsStore.saveSettings(partial);
         if (partial.ollamaHost !== undefined) ollama.setHost(saved.ollamaHost);
         if (partial.llamaCppMaxCachedModels !== undefined) llamacpp.setModelCacheLimit(saved.llamaCppMaxCachedModels ?? 2);
+        if (partial.downloadGlobalConcurrency !== undefined || partial.downloadBandwidthMbps !== undefined) {
+            downloadQueue.configure({ concurrency: saved.downloadGlobalConcurrency ?? 2, bandwidthMbps: saved.downloadBandwidthMbps ?? 0 });
+        }
         if (partial.keybindings !== undefined) {
             setupMenu(() => mainWindow, () => checkForUpdatesManually(() => mainWindow), saved.keybindings);
         }
@@ -612,12 +808,18 @@ function registerIpcHandlers(): void {
     );
     ipcMain.handle("data:importPromptPresets", () => dataTransfer.importPromptPresets(mainWindow));
 
-    ipcMain.handle("rag:indexFiles", (_event: IpcMainInvokeEvent, files: AttachedFile[]) => rag.indexFiles(files));
+    ipcMain.handle(
+        "rag:indexFolder",
+        (_event: IpcMainInvokeEvent, input: { folderPath: string; folderName: string; files: AttachedFile[] }) =>
+            rag.indexFolder({ ...input, embeddingModel: settingsStore.getSettings().ragEmbeddingModel })
+    );
     ipcMain.handle(
         "rag:query",
-        (_event: IpcMainInvokeEvent, { indexId, query, topK }: { indexId: string; query: string; topK?: number }) =>
-            rag.query(indexId, query, topK)
+        (_event: IpcMainInvokeEvent, { collectionId, query, topK }: { collectionId: string; query: string; topK?: number }) =>
+            rag.query(collectionId, query, topK)
     );
+    ipcMain.handle("rag:listCollections", () => rag.listCollections());
+    ipcMain.handle("rag:deleteCollection", (_event: IpcMainInvokeEvent, id: string) => rag.deleteCollection(requireString(id, "collection id")));
 
     ipcMain.handle("hf:search", async (_event: IpcMainInvokeEvent, query: string) => {
         try {
@@ -854,6 +1056,10 @@ app.whenReady().then(async () => {
     await llamacpp.setGpuBackend(settingsStore.getSettings().llamaCppGpuBackend ?? "auto");
     setupAutoUpdater(() => mainWindow);
     downloadQueue.init(() => mainWindow);
+    downloadQueue.configure({
+        concurrency: settingsStore.getSettings().downloadGlobalConcurrency ?? 2,
+        bandwidthMbps: settingsStore.getSettings().downloadBandwidthMbps ?? 0,
+    });
     void downloadQueue.resumeInterruptedJobs();
     void connectEnabledMcpServers();
     scheduler.init((provider, model, prompt) => completePrompt(provider as ProviderId, model, prompt));
@@ -869,6 +1075,7 @@ app.on("window-all-closed", () => {
     agentTools.killAllBackgroundCommands();
     terminalManager.closeAll();
     mcpClient.disconnectAll();
+    powerMonitor.stopAll();
     if (process.platform !== "darwin") app.quit();
 });
 
@@ -878,4 +1085,5 @@ app.on("before-quit", () => {
     agentTools.killAllBackgroundCommands();
     terminalManager.closeAll();
     void llamacpp.dispose();
+    powerMonitor.stopAll();
 });

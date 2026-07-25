@@ -24,6 +24,12 @@ jobs:
         with:
           node-version: 22
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "lib -> target"
+
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci

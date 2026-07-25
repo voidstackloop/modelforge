@@ -1,4 +1,6 @@
 *node_modules/
 app/dist/
 app/release/
+app/native/
 frontend/dist/
+lib/target/
