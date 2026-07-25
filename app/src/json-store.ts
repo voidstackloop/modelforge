@@ -30,6 +30,8 @@ export function readJson<T>(filePath: string, fallback: T): T {
         return fallback;
     }
 
+    restrictExistingPermissions(filePath);
+
     try {
         return JSON.parse(raw) as T;
     } catch (err) {
@@ -43,9 +45,48 @@ export function readJson<T>(filePath: string, fallback: T): T {
     }
 }
 
+// These files hold provider API keys (secrets.json) and full conversation
+// history. Written with the process umask they land as 0644 — or 0664 under
+// the umask 002 several distributions ship — leaving their contents readable
+// to anything that reaches them: another account on a shared machine, a
+// backup or sync tool, an archive unpacked somewhere else. The userData
+// directory is usually restrictive enough to cover that on a single-user
+// desktop, but a stored credential shouldn't depend on its parent directory's
+// mode.
+const PRIVATE_FILE_MODE = 0o600;
+
+// Files written before this existed keep the mode they were created with, and
+// writeJson alone would never reach them: a key set once and never changed is
+// only ever read. So the mode is also tightened on first read, once per path
+// per run to keep it off the hot path.
+const permissionsChecked = new Set<string>();
+
+function restrictExistingPermissions(filePath: string): void {
+    if (process.platform === "win32" || permissionsChecked.has(filePath)) return;
+    permissionsChecked.add(filePath);
+    try {
+        if ((fs.statSync(filePath).mode & 0o777) !== PRIVATE_FILE_MODE) {
+            fs.chmodSync(filePath, PRIVATE_FILE_MODE);
+        }
+    } catch (err) {
+        // Best effort — unusual ownership or an exotic filesystem must not
+        // stop the app from reading its own data.
+        logger.error(`Failed to restrict permissions on ${filePath}: ${(err as Error).message}`);
+    }
+}
+
 export function writeJson(filePath: string, data: unknown): void {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const tmpPath = `${filePath}.tmp-${process.pid}`;
-    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+    // The mode goes on the temp file, because the rename below replaces the
+    // destination inode and takes the temp file's mode with it. Chmod'ing the
+    // destination afterwards would leave a window where the contents are
+    // readable, and would be undone by the next write.
+    //
+    // Removed first so writeFileSync always creates the file and so always
+    // applies `mode` — it ignores the option for a path that already exists,
+    // and an interrupted earlier write can leave one behind under this pid.
+    fs.rmSync(tmpPath, { force: true });
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: PRIVATE_FILE_MODE });
     fs.renameSync(tmpPath, filePath);
 }
