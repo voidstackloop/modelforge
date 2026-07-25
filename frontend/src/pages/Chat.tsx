@@ -73,6 +73,7 @@ import { speakText, stopSpeaking } from "@/lib/tts";
 import { computeLineDiff } from "@/lib/diff";
 import { useToast } from "@/components/toast";
 import { isTransientError } from "@/lib/transient-errors";
+import { canAlwaysAllow } from "@/lib/tool-approval";
 import {
     COMPACTION_BUDGET_TOKENS,
     COMPACTION_KEEP_RECENT,
@@ -118,35 +119,11 @@ const RAG_THRESHOLD_CHARS = 20_000;
 // the most recent window renders by default, with older ones revealed a
 // window at a time on request rather than all at once.
 const RENDER_WINDOW_SIZE = 60;
-// Read-only tools are safe to let the model call repeatedly without a fresh
-// click each time — write_file and run_command always require explicit
-// per-call approval since they have real, potentially irreversible effects.
+
 interface PlanStep {
     text: string;
     done: boolean;
 }
-
-const READ_ONLY_TOOLS = new Set([
-    "read_file",
-    "find_files",
-    "file_info",
-    "list_dir",
-    "search_files",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "web_search",
-    "fetch_url",
-    "read_notes",
-    "github_list_repositories",
-    "github_repository_tree",
-    "github_read_file",
-    "get_background_output",
-    "list_background_commands",
-    "capture_page_screenshot",
-    "find_symbol_references",
-    "read_terminal_output",
-]);
 
 // Vision models can already reason over any attached image — these just save
 // re-typing a good prompt for the common "I attached a diagram/wireframe"
@@ -2258,7 +2235,7 @@ export default function Chat() {
                                     >
                                         <X className="size-3.5" /> {t.deny}
                                     </Button>
-                                    {READ_ONLY_TOOLS.has(call.name) && (
+                                    {canAlwaysAllow(call.name) && (
                                         <Button
                                             size="sm"
                                             variant="ghost"

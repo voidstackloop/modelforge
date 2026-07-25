@@ -158,12 +158,27 @@ function buildMacSandboxProfile(workspaceRoot: string, allowNetwork: boolean): s
     ].join("\n");
 }
 
-// POSIX shell single-quoting: wraps in '...', escaping any embedded single
-// quote as '\''. Used to fold a wrapped {command, args} back into the single
-// shell-command string that `child_process.exec`/`spawn(..., {shell:true})`
-// expect, without needing to change how the rest of agent-tools.ts invokes
-// commands.
-function shellQuote(arg: string): string {
+// Quotes a single argument so the shell that will run it treats it as one
+// literal value. Used both to fold a wrapped {command, args} back into the
+// single shell-command string that `child_process.exec`/`spawn(...,
+// {shell:true})` expect, and by agent-tools.ts when it builds a fixed command
+// around a *value* the model supplied (a path for `git diff`, a message for
+// `git commit`).
+//
+// The two shells need different treatment, and getting this wrong in either
+// direction is a bug:
+//
+//  - POSIX `sh`: single quotes, with an embedded quote written as '\''.
+//    Double quotes would not be enough, because `$(...)` and backticks are
+//    still expanded inside them.
+//  - Windows `cmd.exe`: single quotes are not quote characters at all, so
+//    POSIX quoting there would corrupt ordinary arguments rather than protect
+//    them. Double quotes are the right tool: `&`, `|`, `<` and `>` are
+//    literal inside them, and `$(...)`/backticks mean nothing to cmd.exe.
+//    An embedded double quote is written as "" — the convention both cmd.exe
+//    and the argv parser of the program being launched understand.
+export function shellQuote(arg: string, platform: NodeJS.Platform = process.platform): string {
+    if (platform === "win32") return `"${arg.replace(/"/g, '""')}"`;
     return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -180,5 +195,5 @@ export function applySandbox(
 ): string {
     const wrapped = wrapCommand(command, opts, platform, hasCommand);
     if (!wrapped) return command;
-    return [wrapped.command, ...wrapped.args].map(shellQuote).join(" ");
+    return [wrapped.command, ...wrapped.args].map((arg) => shellQuote(arg, platform)).join(" ");
 }

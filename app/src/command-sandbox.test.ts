@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectSandboxCapabilities, wrapCommand, applySandbox } from "./command-sandbox";
+import { detectSandboxCapabilities, wrapCommand, applySandbox, shellQuote } from "./command-sandbox";
 
 const has = (available: string[]) => (cmd: string) => available.includes(cmd);
 
@@ -101,6 +101,27 @@ describe("wrapCommand", () => {
         const wrapped = wrapCommand("npm test", { workspaceRoot: "/home/user/project", allowNetwork: false }, "linux", has(["bwrap"]));
         const chdirIndex = wrapped!.args.indexOf("--chdir");
         expect(wrapped!.args[chdirIndex + 1]).toBe("/home/user/project");
+    });
+});
+
+describe("shellQuote", () => {
+    it("single-quotes for POSIX shells so substitutions stay inert", () => {
+        expect(shellQuote("simple.txt", "linux")).toBe("'simple.txt'");
+        // The whole point: a POSIX shell expands these inside double quotes.
+        expect(shellQuote("$(id)", "linux")).toBe("'$(id)'");
+        expect(shellQuote("`id`", "linux")).toBe("'`id`'");
+        expect(shellQuote("it's", "linux")).toBe("'it'\\''s'");
+        expect(shellQuote("", "linux")).toBe("''");
+    });
+
+    // cmd.exe does not treat ' as a quote character, so POSIX quoting there
+    // would split ordinary arguments on their spaces instead of protecting
+    // them. It has no $(...) or backtick substitution to defend against.
+    it("double-quotes for cmd.exe, where single quotes are not quoting", () => {
+        expect(shellQuote("a message with spaces", "win32")).toBe('"a message with spaces"');
+        expect(shellQuote('say "hi"', "win32")).toBe('"say ""hi"""');
+        expect(shellQuote("a & b", "win32")).toBe('"a & b"');
+        expect(shellQuote("", "win32")).toBe('""');
     });
 });
 

@@ -8,7 +8,7 @@ import type { ToolDefinition } from "./providers/types";
 import { getAccountToken } from "./accounts";
 import { capturePageScreenshot } from "./browser-capture";
 import { killProcessTree } from "./process-tree";
-import { applySandbox } from "./command-sandbox";
+import { applySandbox, shellQuote } from "./command-sandbox";
 import { monitorProcess } from "./resource-monitor";
 import * as settingsStore from "./settings-store";
 import { resolveSafePath } from "./workspace-path";
@@ -1028,7 +1028,7 @@ export function gitStatus(workspaceRoot: string): Promise<string> {
 }
 
 export function gitDiff(workspaceRoot: string, staged = false, relativePath?: string): Promise<string> {
-    const target = relativePath ? ` -- "${relativePath}"` : "";
+    const target = relativePath ? ` -- ${shellQuote(relativePath)}` : "";
     return gitCommand(workspaceRoot, `diff${staged ? " --staged" : ""}${target}`);
 }
 
@@ -1038,7 +1038,9 @@ export function gitLog(workspaceRoot: string, count = 10): Promise<string> {
 
 export async function gitCommit(workspaceRoot: string, message: string): Promise<string> {
     await gitCommand(workspaceRoot, "add -A");
-    return gitCommand(workspaceRoot, `commit -m ${JSON.stringify(message)}`);
+    // JSON.stringify escapes `"` and `\` but not `$` or backticks, and the
+    // result is handed to `sh -c` — so it is not a shell-quoting function.
+    return gitCommand(workspaceRoot, `commit -m ${shellQuote(message)}`);
 }
 
 const WEB_FETCH_TIMEOUT_MS = 15_000;
