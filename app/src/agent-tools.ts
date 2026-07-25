@@ -1235,25 +1235,59 @@ function applyHunksToContent(content: string, hunks: PatchHunk[], filePath: stri
     return result.join("\n");
 }
 
+// Reads a file's complete content for use as the base of an edit. readFile()
+// is display-oriented — it caps its result at MAX_READ_CHARS and appends a
+// "[truncated ...]" marker — which makes it unsafe to write back: everything
+// past the cap would be destroyed and the marker itself saved into the file.
+function readFileForEdit(workspaceRoot: string, relativePath: string): string {
+    const target = resolveSafePath(workspaceRoot, relativePath);
+    if (fs.statSync(target).isDirectory()) throw new Error(`"${relativePath}" is a directory, not a file.`);
+    return fs.readFileSync(target, "utf-8");
+}
+
 export function applyPatch(workspaceRoot: string, patchText: string): { filesChanged: string[] } {
     const files = parseUnifiedDiff(patchText);
     if (files.length === 0) throw new Error("No valid file patches found in the given diff.");
 
-    const filesChanged: string[] = [];
+    // Every file's outcome is resolved in memory before anything is written.
+    // Writing as we went meant a patch whose later file failed to align left
+    // the earlier ones already modified — a half-applied patch, which is the
+    // exact outcome this parser's refusal to fuzzy-match exists to avoid.
+    //
+    // `pending` (rather than a plain list) keeps resolution sequential: a diff
+    // with two sections for the same path, or one that creates a file and then
+    // patches it, has to see the earlier section's result instead of the stale
+    // copy on disk. null means the path is pending deletion.
+    const pending = new Map<string, string | null>();
+    const order: string[] = [];
+    const remember = (relativePath: string, content: string | null): void => {
+        if (!pending.has(relativePath)) order.push(relativePath);
+        pending.set(relativePath, content);
+    };
+
     for (const file of files) {
         if (file.newPath === null) {
             if (!file.oldPath) throw new Error("Patch deletes a file but its path (/dev/null on both sides) is missing.");
-            deletePath(workspaceRoot, file.oldPath, false);
-            filesChanged.push(file.oldPath);
+            remember(file.oldPath, null);
             continue;
         }
-        const isNewFile = file.oldPath === null;
-        const existingContent = isNewFile ? "" : readFile(workspaceRoot, file.newPath);
-        const newContent = applyHunksToContent(existingContent, file.hunks, file.newPath);
-        writeFile(workspaceRoot, file.newPath, newContent);
-        filesChanged.push(file.newPath);
+        let existingContent: string;
+        if (pending.has(file.newPath)) {
+            // Already touched by an earlier section of this same patch — a
+            // pending deletion reads back as empty, i.e. as a fresh file.
+            existingContent = pending.get(file.newPath) ?? "";
+        } else {
+            existingContent = file.oldPath === null ? "" : readFileForEdit(workspaceRoot, file.newPath);
+        }
+        remember(file.newPath, applyHunksToContent(existingContent, file.hunks, file.newPath));
     }
-    return { filesChanged };
+
+    for (const relativePath of order) {
+        const content = pending.get(relativePath) ?? null;
+        if (content === null) deletePath(workspaceRoot, relativePath, false);
+        else writeFile(workspaceRoot, relativePath, content);
+    }
+    return { filesChanged: order };
 }
 
 export interface WebSearchResult {
