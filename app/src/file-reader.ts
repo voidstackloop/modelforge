@@ -241,6 +241,38 @@ function walkDir(rootDir: string, dir: string, files: AttachedFile[], state: Wal
     }
 }
 
+const MAX_PDF_FILES = 50;
+
+// Folder attach (openFolderAndRead/walkDir) skips .pdf entirely — it's a
+// binary format the generic "dump raw content" attach flow can't use safely.
+// RAG indexing wants PDFs too (for page-numbered citations), so this walks
+// the same tree with the same ignored-dirs convention, collecting .pdf paths
+// only, separately from the general attach path above.
+export function findPdfFiles(rootDir: string): string[] {
+    const found: string[] = [];
+    function walk(dir: string): void {
+        if (found.length >= MAX_PDF_FILES) return;
+        let entries: fs.Dirent[];
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            if (found.length >= MAX_PDF_FILES) return;
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (entry.name.startsWith(".") || IGNORED_DIRS.has(entry.name)) continue;
+                walk(fullPath);
+            } else if (entry.isFile() && path.extname(entry.name).toLowerCase() === ".pdf") {
+                found.push(fullPath);
+            }
+        }
+    }
+    walk(rootDir);
+    return found;
+}
+
 export async function openFolderAndRead(win: BrowserWindow | null): Promise<OpenFolderResult | null> {
     const result = win
         ? await dialog.showOpenDialog(win, { properties: ["openDirectory"] })

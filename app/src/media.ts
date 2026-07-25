@@ -53,6 +53,26 @@ export async function extractPdfText(filePath: string): Promise<string> {
     }
 }
 
+export interface PdfPage {
+    num: number;
+    text: string;
+}
+
+// Same extraction as extractPdfText, but keeps text broken down per page —
+// getText() already returns this (TextResult.pages), no extra per-page calls
+// needed. Used by RAG folder-indexing to attach page numbers to chunks.
+export async function extractPdfPages(filePath: string): Promise<{ text: string; pages: PdfPage[] }> {
+    const { PDFParse } = require("pdf-parse");
+    const buffer = fs.readFileSync(filePath);
+    const parser = new PDFParse({ data: buffer });
+    try {
+        const result = await parser.getText();
+        return { text: result.text as string, pages: (result.pages ?? []).map((p: { num: number; text: string }) => ({ num: p.num, text: p.text })) };
+    } finally {
+        await parser.destroy();
+    }
+}
+
 function ffmpegBinaryPath(): string {
     // electron-builder's asarUnpack keeps this binary outside the asar archive
     // (asar-packed files can't be exec'd directly); this swap finds it there
