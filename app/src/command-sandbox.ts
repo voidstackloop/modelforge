@@ -73,6 +73,14 @@ export function detectSandboxCapabilities(
 export interface WrapCommandOptions {
     workspaceRoot: string;
     allowNetwork: boolean;
+    // Directory the command should start in. Defaults to the workspace root.
+    // bubblewrap is passed --chdir, which takes precedence over the working
+    // directory inherited from the spawning process, so a caller that resolved
+    // a subdirectory has to pass it through here — setting it only on the
+    // spawn options would be silently overridden. Callers are responsible for
+    // confining this to the workspace (they go through resolveSafePath); it is
+    // not re-validated here.
+    cwd?: string;
 }
 
 export interface WrappedCommand {
@@ -92,6 +100,7 @@ export function wrapCommand(
 ): WrappedCommand | null {
     const caps = detectSandboxCapabilities(platform, hasCommand);
     const root = path.resolve(opts.workspaceRoot);
+    const startDir = opts.cwd ? path.resolve(opts.cwd) : root;
 
     if (caps.mechanism === "bubblewrap") {
         const args = [
@@ -113,7 +122,7 @@ export function wrapCommand(
             root,
             root,
             "--chdir",
-            root,
+            startDir,
             "--die-with-parent",
             "--unshare-all",
         ];

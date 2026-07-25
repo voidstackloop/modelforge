@@ -79,6 +79,29 @@ describe("wrapCommand", () => {
         expect(wrapped?.args[1]).toContain("(allow network*)");
         expect(wrapped?.args[1]).not.toContain("(deny network*)");
     });
+
+    // --chdir takes precedence over the working directory bwrap inherits from
+    // the spawning process, so pinning it to the workspace root silently
+    // overrode the subdirectory the caller had already resolved.
+    it("chdirs to the requested subdirectory, not just the workspace root", () => {
+        const wrapped = wrapCommand(
+            "npm test",
+            { workspaceRoot: "/home/user/project", allowNetwork: false, cwd: "/home/user/project/packages/api" },
+            "linux",
+            has(["bwrap"])
+        );
+        const chdirIndex = wrapped!.args.indexOf("--chdir");
+        expect(chdirIndex).toBeGreaterThan(-1);
+        expect(wrapped!.args[chdirIndex + 1]).toBe("/home/user/project/packages/api");
+        // The workspace root is still what gets bound writable.
+        expect(wrapped!.args).toEqual(expect.arrayContaining(["--bind", "/home/user/project", "/home/user/project"]));
+    });
+
+    it("falls back to the workspace root when no cwd is given", () => {
+        const wrapped = wrapCommand("npm test", { workspaceRoot: "/home/user/project", allowNetwork: false }, "linux", has(["bwrap"]));
+        const chdirIndex = wrapped!.args.indexOf("--chdir");
+        expect(wrapped!.args[chdirIndex + 1]).toBe("/home/user/project");
+    });
 });
 
 describe("applySandbox", () => {
