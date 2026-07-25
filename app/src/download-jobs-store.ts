@@ -46,13 +46,18 @@ export interface DownloadJob {
     modelName: string;
     publisher: string;
     quantization?: string;
-    backend: "llamacpp" | "mlx" | "vllm" | "ollama";
+    backend: "llamacpp" | "mlx" | "vllm" | "ollama" | "transformers";
     destinationDir: string;
     modelId: string;
     shards: DownloadShard[];
     state: DownloadJobState;
     error?: DownloadJobError;
     retryCount: number;
+    jobReceivedBytes?: number;
+    totalBytes?: number;
+    bytesPerSecond?: number;
+    etaSeconds?: number;
+    recoveredAtStartup?: boolean;
     createdAt: string;
     updatedAt: string;
 }
@@ -95,7 +100,7 @@ export function createJob(
 // benefit.
 export function updateJob(
     id: string,
-    partial: Partial<Pick<DownloadJob, "state" | "error" | "retryCount" | "shards">>
+    partial: Partial<Pick<DownloadJob, "state" | "error" | "retryCount" | "shards" | "jobReceivedBytes" | "totalBytes" | "bytesPerSecond" | "etaSeconds" | "recoveredAtStartup">>
 ): DownloadJob | null {
     const all = listJobs();
     const idx = all.findIndex((j) => j.id === id);
