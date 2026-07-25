@@ -1,0 +1,24 @@
+{
+  "name": "modelforge-native",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "binaryName": "modelforge-native",
+    "targets": [
+      "x86_64-pc-windows-msvc",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu"
+    ]
+  },
+  "scripts": {
+    "build": "napi build --platform --release --output-dir ../app/native",
+    "build:debug": "napi build --platform --output-dir ../app/native",
+    "test": "cargo test"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3"
+  }
+}

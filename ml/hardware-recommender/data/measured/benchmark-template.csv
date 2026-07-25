@@ -1,0 +1,2 @@
+model_id,model_params_b,quantization,ram_gb,vram_gb,cpu_cores,platform,gpu_backend,recommended_runtime,context_tokens,tokens_per_second,prompt_tokens_per_second,time_to_first_token_ms,peak_ram_gb,peak_vram_gb,fit_status
+example/model-7b,7,Q4_K_M,16,8,8,linux,cuda,llama.cpp-cuda,8192,38.5,210.0,320.0,10.4,6.8,Runs comfortably

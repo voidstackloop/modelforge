@@ -1,0 +1,17 @@
+{
+ "generated_at": "2026-07-08T02:54:48Z",
+ "run_count": 220,
+ "model_count": 52,
+ "hardware_count": 10,
+ "suite_versions": [
+  "suite-v1"
+ ],
+ "license": "CC BY 4.0",
+ "license_url": "https://creativecommons.org/licenses/by/4.0/",
+ "source": "https://llm-speed.com/data",
+ "files": [
+  "runs.json",
+  "runs.jsonl",
+  "runs.csv"
+ ]
+}
