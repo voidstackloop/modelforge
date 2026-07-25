@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyGpuVendor, detectModelFormat, recommendModels, resolveAutomaticRuntime, type SystemSpecs } from "./system-specs";
+import { classifyGpuVendor, detectModelFormat, recommendModels, recommendModelsWithML, resolveAutomaticRuntime, type SystemSpecs } from "./system-specs";
 
 function baseSpecs(overrides: Partial<SystemSpecs> = {}): SystemSpecs {
     return {
@@ -162,4 +162,19 @@ describe("resolveAutomaticRuntime", () => {
     it("falls back to Transformers for unrecognized formats", () => {
         expect(resolveAutomaticRuntime("unknown", linuxNvidia)).toBe("transformers");
     });
+});
+
+describe("recommendModelsWithML", () => {
+    // The managed Python worker isn't installed in the test environment (no
+    // venv under the mocked userData dir), so every model's ML prediction
+    // rejects and recommendModelsWithML must fall back to the pure heuristic
+    // result rather than throwing or hanging.
+    it("falls back to the heuristic recommendModels() output when the ML worker is unavailable", async () => {
+        const specs = baseSpecs({ totalRAMGB: 16 });
+        const heuristic = recommendModels(specs);
+        const withMl = await recommendModelsWithML(specs);
+        expect(withMl.models.map((m) => m.name)).toEqual(heuristic.models.map((m) => m.name));
+        expect(withMl.models.map((m) => m.recommendedRuntime)).toEqual(heuristic.models.map((m) => m.recommendedRuntime));
+        expect(withMl.best).toBe(heuristic.best);
+    }, 15_000);
 });

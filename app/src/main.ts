@@ -546,7 +546,7 @@ function registerIpcHandlers(): void {
     ipcMain.handle("system:getRecommendations", async () => {
         const specs = await systemSpecs.getSpecs();
         const settings = settingsStore.getSettings();
-        return systemSpecs.recommendModels(specs, { contextLength: settings.contextLength, quantization: "Q4_K_M", runtime: settings.preferredRuntime ?? "automatic" }, getBenchmarkObservations());
+        return systemSpecs.recommendModelsWithML(specs, { contextLength: settings.contextLength, quantization: "Q4_K_M", runtime: settings.preferredRuntime ?? "automatic" }, getBenchmarkObservations());
     });
     ipcMain.handle("system:getActivity", async () => {
         const ollamaRunning = await ollama.isRunning();

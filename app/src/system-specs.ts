@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import { execFile } from "node:child_process";
+import { ManagedPythonWorker } from "./python-runtime-manager";
 
 export interface GpuInfo {
     name: string;
@@ -343,4 +344,101 @@ export function recommendModels(specs: SystemSpecs, options: RecommendationOptio
     if (best) best.recommended = true;
     return { usableRAMGB, usableVRAMGB: aggregateUsableVramGB, largestUsableGpuGB, aggregateUsableVramGB,
         cpuMemoryBandwidthGBps: specs.cpuMemoryBandwidthGBps, gpuInterconnect: specs.gpuInterconnect, best: best?.name ?? null, models };
+}
+
+// Mixture-of-experts models need extra expert-memory accounting the trained
+// recommender doesn't have leaderboard metadata for (see ml/hardware-recommender
+// README) — flagging them lets the model at least apply its is_moe adjustment.
+const MOE_MODELS = new Set(["qwen3:30b-a3b"]);
+
+function mlPlatform(platform: NodeJS.Platform): "windows" | "linux" | "macos" {
+    return platform === "win32" ? "windows" : platform === "darwin" ? "macos" : "linux";
+}
+
+// Mirrors the vendor -> backend convention used elsewhere in this app
+// (frontend/src/lib/gpu.ts's recommendGpuBackend): AMD goes through ROCm on
+// Linux (native driver support) but Vulkan on Windows (no ROCm llama.cpp
+// prebuilds there), Intel always through Vulkan.
+function mlGpuBackend(specs: SystemSpecs): "none" | "cuda" | "rocm" | "metal" | "vulkan" | "directml" {
+    const vendors = new Set(specs.gpus.map((gpu) => gpu.vendor));
+    if (vendors.has("apple")) return "metal";
+    if (vendors.has("nvidia")) return "cuda";
+    if (vendors.has("amd")) return specs.platform === "linux" ? "rocm" : "vulkan";
+    if (vendors.has("intel")) return "vulkan";
+    return "none";
+}
+
+const ML_RUNTIME_MAP: Record<string, RecommendedModel["recommendedRuntime"]> = {
+    "llama.cpp-cpu": "llamacpp", "llama.cpp-cuda": "llamacpp", "llama.cpp-rocm": "llamacpp",
+    "llama.cpp-metal": "llamacpp", "llama.cpp-vulkan": "llamacpp", mlx: "mlx", vllm: "vllm",
+};
+
+const ML_OUTCOME_MAP: Record<string, RecommendationOutcome> = {
+    "Runs comfortably": "Runs fully on GPU",
+    "May require partial GPU offload": "Runs with partial offload",
+    "CPU only": "CPU-only but usable",
+    "Insufficient memory": "Likely out of memory",
+};
+
+interface MlRecommendation {
+    quantization: string;
+    fit: string;
+    runtime: string;
+    estimatedContextTokens: number;
+    estimatedTokensPerSecond: number;
+}
+
+let recommenderWorker: ManagedPythonWorker | null = null;
+function getRecommenderWorker(): ManagedPythonWorker {
+    if (!recommenderWorker) recommenderWorker = new ManagedPythonWorker("hardware-recommender");
+    return recommenderWorker;
+}
+
+async function predictWithML(model: ModelCatalogEntry, specs: SystemSpecs): Promise<MlRecommendation | null> {
+    try {
+        const result = await getRecommenderWorker().request("recommend", {
+            model_params_b: modelParametersB(model),
+            quality_score: 30,
+            is_moe: MOE_MODELS.has(model.name),
+            ram_gb: specs.totalRAMGB,
+            vram_gb: specs.largestGpuVramGB ?? 0,
+            cpu_cores: specs.cpuCores,
+            platform: mlPlatform(specs.platform),
+            gpu_backend: mlGpuBackend(specs),
+        });
+        return result as MlRecommendation;
+    } catch {
+        // Worker not installed, or install unhealthy/drifted — caller keeps
+        // the heuristic result for this model rather than failing the whole
+        // recommendation request over one optional dependency.
+        return null;
+    }
+}
+
+// Enhances recommendModels()'s heuristic output with predictions from the
+// trained hardware-recommender model (ml/hardware-recommender/) wherever the
+// managed Python worker is available, falling back to the pure heuristic per
+// model otherwise — the ML worker being absent (not yet installed) or briefly
+// unhealthy never blocks a recommendation from being returned.
+export async function recommendModelsWithML(specs: SystemSpecs, options: RecommendationOptions = {}, history: BenchmarkObservation[] = []): Promise<ModelRecommendations> {
+    const baseline = recommendModels(specs, options, history);
+    const predictions = await Promise.all(baseline.models.map((model) => predictWithML(model, specs)));
+
+    const models = baseline.models.map((model, index) => {
+        const prediction = predictions[index];
+        if (!prediction) return model;
+        const recommendedRuntime = ML_RUNTIME_MAP[prediction.runtime] ?? model.recommendedRuntime;
+        const outcome = ML_OUTCOME_MAP[prediction.fit] ?? model.outcome;
+        return {
+            ...model,
+            recommendedRuntime,
+            outcome,
+            fits: outcome !== "Likely out of memory",
+            estimatedTokensPerSecond: prediction.estimatedTokensPerSecond,
+            reason: `ML-predicted: ${prediction.fit.toLowerCase()} at ${prediction.quantization}, ~${prediction.estimatedContextTokens.toLocaleString()}-token context.`,
+        };
+    });
+    const best = [...models].filter((model) => model.fits).sort((a, b) => modelParametersB(b) - modelParametersB(a))[0];
+    for (const model of models) model.recommended = best ? model.name === best.name : false;
+    return { ...baseline, models, best: best?.name ?? null };
 }
