@@ -20,6 +20,7 @@ import * as mcpClient from "./mcp-client";
 import * as figma from "./figma";
 import * as ocr from "./ocr";
 import * as huggingface from "./huggingface";
+import * as downloadQueue from "./download-queue";
 import * as accounts from "./accounts";
 import * as llamacpp from "./llamacpp-manager";
 import * as scheduledTasksStore from "./scheduled-tasks-store";
@@ -852,6 +853,8 @@ app.whenReady().then(async () => {
     llamacpp.setModelCacheLimit(settingsStore.getSettings().llamaCppMaxCachedModels ?? 2);
     await llamacpp.setGpuBackend(settingsStore.getSettings().llamaCppGpuBackend ?? "auto");
     setupAutoUpdater(() => mainWindow);
+    downloadQueue.init(() => mainWindow);
+    void downloadQueue.resumeInterruptedJobs();
     void connectEnabledMcpServers();
     scheduler.init((provider, model, prompt) => completePrompt(provider as ProviderId, model, prompt));
 
