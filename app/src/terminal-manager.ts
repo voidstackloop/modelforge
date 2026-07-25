@@ -59,7 +59,7 @@ export function createTerminal(
     // ordinary shell use (curl, ping, package managers) confusingly fail.
     // Filesystem confinement to the workspace still applies where the
     // platform supports it.
-    const wrapped = wrapCommand(shell, { workspaceRoot, allowNetwork: true });
+    const wrapped = wrapCommand(shell, { workspaceRoot, allowNetwork: true, cwd });
     const ptyOptions = { name: "xterm-256color", cols: 80, rows: 24, cwd, env: process.env };
     const ptyProcess = wrapped ? pty.spawn(wrapped.command, wrapped.args, ptyOptions) : pty.spawn(shell, [], ptyOptions);
 

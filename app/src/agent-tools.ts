@@ -818,7 +818,7 @@ export async function runCommand(
     if (dangerReason) throw new Error(dangerReason);
 
     const cwd = resolveSafePath(workspaceRoot, relativeCwd);
-    const wrappedCommand = applySandbox(command, { workspaceRoot, allowNetwork: network });
+    const wrappedCommand = applySandbox(command, { workspaceRoot, allowNetwork: network, cwd });
     const settings = settingsStore.getSettings();
     let stopMonitor = () => {};
     try {
@@ -913,7 +913,7 @@ export function startBackgroundCommand(
     }
 
     const cwd = resolveSafePath(workspaceRoot, relativeCwd);
-    const wrappedCommand = applySandbox(command, { workspaceRoot, allowNetwork: network });
+    const wrappedCommand = applySandbox(command, { workspaceRoot, allowNetwork: network, cwd });
     // detached so the shell becomes its own process group leader — lets
     // killProcessTree() below signal the whole group (shell + whatever it
     // spawned, e.g. `npm run dev` spawning `node`) instead of just the shell
