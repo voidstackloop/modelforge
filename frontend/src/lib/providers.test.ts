@@ -25,6 +25,15 @@ describe("formatModelRef / parseModelRef", () => {
         expect(parseModelRef(formatModelRef("gemini", "gemini-2.5-pro"))?.provider).toBe("gemini");
         expect(parseModelRef(formatModelRef("custom", "abc::model-x"))?.provider).toBe("custom");
     });
+
+    it("round-trips every managed local runtime", () => {
+        for (const provider of ["mlx", "rocm", "vllm"] as const) {
+            expect(parseModelRef(formatModelRef(provider, "publisher/model"))).toEqual({
+                provider,
+                modelId: "publisher/model",
+            });
+        }
+    });
 });
 
 describe("formatCustomModelRef / parseCustomModelId", () => {

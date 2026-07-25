@@ -20,6 +20,11 @@ export interface SystemSpecs {
     gpu: GpuInfo | null;
     gpus: GpuInfo[];
     totalVramGB: number | null;
+    largestGpuVramGB: number | null;
+    gpuInterconnect: "nvlink" | "pcie" | "unified" | "none" | "unknown";
+    tensorParallelSupported: boolean;
+    cpuMemoryBandwidthGBps: number;
+    cpuMemoryBandwidthMeasured: boolean;
 }
 
 export interface ModelCatalogEntry {
@@ -38,12 +43,31 @@ export interface RecommendedModel extends ModelCatalogEntry {
     fits: boolean;
     runsOnGpu: boolean;
     recommended: boolean;
+    outcome: RecommendationOutcome;
+    quantization: string;
+    estimatedWeightGB: number;
+    estimatedKvCacheGB: number;
+    runtimeOverheadGB: number;
+    totalRequiredGB: number;
+    expectedGpuOffloadPercent: number;
+    estimatedTokensPerSecond: number;
+    measuredTokensPerSecond?: number;
+    reason: string;
+    recommendedRuntime: "ollama" | "llamacpp" | "vllm" | "mlx";
 }
+
+export type RecommendationOutcome = "Runs fully on GPU" | "Runs with partial offload" | "CPU-only but usable" | "Requires tensor parallelism" | "Likely out of memory";
+export const QUANTIZATION_BITS = { Q2_K: 2.625, Q3_K_M: 3.5, Q4_K_M: 4.75, Q5_K_M: 5.5, Q6_K: 6.56, Q8_0: 8.5 } as const;
+export interface RecommendationOptions { quantization?: keyof typeof QUANTIZATION_BITS; contextLength?: number; runtime?: "automatic" | "ollama" | "llamacpp" | "vllm" | "mlx" }
+export interface BenchmarkObservation { model: string; tokensPerSecond: number; promptTokensPerSecond?: number; timeToFirstTokenMs?: number }
 
 export interface ModelRecommendations {
     usableRAMGB: number;
     usableVRAMGB: number;
-    effectiveGB: number;
+    largestUsableGpuGB: number;
+    aggregateUsableVramGB: number;
+    cpuMemoryBandwidthGBps: number;
+    gpuInterconnect: SystemSpecs["gpuInterconnect"];
     best: string | null;
     models: RecommendedModel[];
 }
@@ -81,6 +105,46 @@ export function classifyGpuVendor(name: string): GpuVendor {
     if (/intel|\barc\b|iris|uhd graphics|hd graphics/i.test(name)) return "intel";
     if (/apple/i.test(name)) return "apple";
     return "unknown";
+}
+
+// The five backends the app can actually load a model with.
+export type ConcreteRuntime = "ollama" | "llamacpp" | "vllm" | "mlx" | "transformers";
+
+// A model's on-disk/distribution format, inferred from a filename or HF repo
+// id — this is what "Automatic" branches on, alongside detected hardware.
+export type ModelFormat = "gguf" | "safetensors" | "mlx" | "ollama" | "unknown";
+
+// Infers format from a filename or Hugging Face repo id. GGUF and
+// safetensors are identified by file extension; MLX has no extension of its
+// own (it's a directory of .safetensors plus an mlx-flavored config.json),
+// so it's identified by the `mlx-community/` publisher convention that
+// mlx-lm's own conversion tooling uses.
+export function detectModelFormat(identifier: string): ModelFormat {
+    const lower = identifier.toLowerCase();
+    if (lower.endsWith(".gguf")) return "gguf";
+    if (lower.endsWith(".safetensors") || lower.endsWith(".safetensors.index.json")) return "safetensors";
+    if (/(^|\/)mlx-community\//.test(lower) || /-mlx(-|$)/.test(lower)) return "mlx";
+    return "unknown";
+}
+
+// The policy behind the "Automatic" runtime: given a model's format and this
+// machine's hardware, pick the concrete backend to run it with.
+//   GGUF                              -> llama.cpp (runs on any vendor, or CPU-only)
+//   Safetensors + NVIDIA/AMD (ROCm)   -> vLLM
+//   MLX-format model + Apple Silicon  -> MLX
+//   Ollama-library model              -> Ollama (MLX on Apple Silicon, which
+//                                        has the edge over llama.cpp there)
+//   Anything else (safetensors with no supported GPU, MLX format off Apple
+//   Silicon, an unrecognized format) -> Transformers, the universal fallback
+//   for architectures the other backends can't load.
+export function resolveAutomaticRuntime(format: ModelFormat, specs: Pick<SystemSpecs, "platform" | "arch" | "gpus">): ConcreteRuntime {
+    const isAppleSilicon = specs.platform === "darwin" && specs.arch === "arm64";
+    const hasVllmGpu = specs.gpus.some((gpu) => gpu.vendor === "nvidia" || gpu.vendor === "amd");
+    if (format === "ollama") return isAppleSilicon ? "mlx" : "ollama";
+    if (format === "gguf") return "llamacpp";
+    if (format === "mlx" && isAppleSilicon) return "mlx";
+    if (format === "safetensors" && hasVllmGpu) return "vllm";
+    return "transformers";
 }
 
 function execFileP(cmd: string, args: string[]): Promise<string | null> {
@@ -175,44 +239,108 @@ async function detectGpus(): Promise<GpuInfo[]> {
     return [];
 }
 
+async function detectGpuInterconnect(gpus: GpuInfo[]): Promise<SystemSpecs["gpuInterconnect"]> {
+    if (gpus.length < 2) return gpus.some((gpu) => gpu.vendor === "apple") ? "unified" : "none";
+    if (gpus.every((gpu) => gpu.vendor === "apple")) return "unified";
+    if (gpus.every((gpu) => gpu.vendor === "nvidia")) {
+        const topology = await execFileP("nvidia-smi", ["topo", "-m"]);
+        return topology && /NV\d+|NVLink/i.test(topology) ? "nvlink" : "pcie";
+    }
+    return "unknown";
+}
+
+function estimateCpuMemoryBandwidthGBps(cpuModel: string, cores: number, platform: NodeJS.Platform): number {
+    if (platform === "darwin" && /Apple M[1-9]/i.test(cpuModel)) return /Ultra/i.test(cpuModel) ? 600 : /Max/i.test(cpuModel) ? 400 : /Pro/i.test(cpuModel) ? 200 : 100;
+    if (/EPYC|Xeon.*Max/i.test(cpuModel)) return Math.min(350, Math.max(100, cores * 4));
+    if (/Threadripper|Xeon/i.test(cpuModel)) return Math.min(220, Math.max(70, cores * 3));
+    return Math.min(120, Math.max(25, cores * 4));
+}
+
 export async function getSpecs(): Promise<SystemSpecs> {
     const cpus = os.cpus() || [];
     const gpus = await detectGpus();
     const knownVram = gpus.map((g) => g.vramGB).filter((v): v is number => v !== null);
     const totalVramGB = knownVram.length > 0 ? +knownVram.reduce((a, b) => a + b, 0).toFixed(1) : null;
+    const largestGpuVramGB = knownVram.length > 0 ? Math.max(...knownVram) : null;
+    const gpuInterconnect = await detectGpuInterconnect(gpus);
+    const cpuModel = cpus[0] ? cpus[0].model : "Unknown CPU";
 
     return {
         totalRAMGB: +(os.totalmem() / 1e9).toFixed(1),
         freeRAMGB: +(os.freemem() / 1e9).toFixed(1),
-        cpuModel: cpus[0] ? cpus[0].model : "Unknown CPU",
+        cpuModel,
         cpuCores: cpus.length,
         platform: os.platform(),
         arch: os.arch(),
         gpu: gpus[0] ?? null,
         gpus,
         totalVramGB,
+        largestGpuVramGB,
+        gpuInterconnect,
+        tensorParallelSupported: gpus.length > 1 && gpus.every((gpu) => gpu.vendor === "nvidia") && gpuInterconnect !== "unknown",
+        cpuMemoryBandwidthGBps: estimateCpuMemoryBandwidthGBps(cpuModel, cpus.length, os.platform()),
+        cpuMemoryBandwidthMeasured: false,
     };
 }
 
-export function recommendModels(specs: SystemSpecs): ModelRecommendations {
-    // Leave headroom for the OS and the app itself on both RAM and VRAM.
-    const usableRAMGB = +(specs.totalRAMGB * 0.7).toFixed(1);
-    const usableVRAMGB = specs.totalVramGB ? +(specs.totalVramGB * 0.9).toFixed(1) : 0;
-    const effectiveGB = Math.max(usableRAMGB, usableVRAMGB);
+const PARAMETER_OVERRIDES: Record<string, number> = { "phi3.5": 3.8, "mistral-nemo": 12, "gemma2:9b": 9, "devstral-small": 24, "qwen3:30b-a3b": 30, "command-r-plus": 104 };
 
-    const fitting = MODEL_CATALOG.filter((m) => m.minRAMGB <= effectiveGB);
-    const best = fitting.sort((a, b) => b.minRAMGB - a.minRAMGB)[0];
+function modelParametersB(model: ModelCatalogEntry): number {
+    return PARAMETER_OVERRIDES[model.name] ?? Number(model.name.match(/(\d+(?:\.\d+)?)b/i)?.[1] ?? model.minRAMGB);
+}
+function runtimeOverhead(weightGB: number, runtime: NonNullable<RecommendationOptions["runtime"]>): number {
+    const base = runtime === "vllm" ? 1.6 : runtime === "mlx" ? 0.9 : 0.7;
+    return base + weightGB * (runtime === "vllm" ? 0.12 : 0.08);
+}
+function observationFor(model: string, history: BenchmarkObservation[]): BenchmarkObservation | undefined {
+    const normalized = model.toLowerCase().split(":")[0];
+    return [...history].reverse().find((item) => item.model.toLowerCase().includes(normalized) || normalized.includes(item.model.toLowerCase().split(":")[0]));
+}
 
-    return {
-        usableRAMGB,
-        usableVRAMGB,
-        effectiveGB: +effectiveGB.toFixed(1),
-        best: best ? best.name : null,
-        models: MODEL_CATALOG.map((m) => ({
-            ...m,
-            fits: m.minRAMGB <= effectiveGB,
-            runsOnGpu: usableVRAMGB > 0 && m.minRAMGB <= usableVRAMGB,
-            recommended: best ? m.name === best.name : false,
-        })),
-    };
+export function recommendModels(specs: SystemSpecs, options: RecommendationOptions = {}, history: BenchmarkObservation[] = []): ModelRecommendations {
+    const quantization = options.quantization ?? "Q4_K_M"; const bits = QUANTIZATION_BITS[quantization];
+    const contextLength = Math.max(2_048, Math.min(131_072, options.contextLength ?? 8_192));
+    // "automatic" (the default) resolves via resolveAutomaticRuntime, which for
+    // this Ollama-library catalog only ever yields "mlx" or "ollama" — hence
+    // the narrowing cast.
+    const selectedRuntime = options.runtime && options.runtime !== "automatic" ? options.runtime : (resolveAutomaticRuntime("ollama", specs) as "ollama" | "mlx");
+    const usableRAMGB = +Math.max(0, Math.min(specs.totalRAMGB * 0.72, specs.freeRAMGB > 2 ? specs.freeRAMGB - 2 : specs.totalRAMGB * 0.55)).toFixed(1);
+    const knownGpuMemory = specs.gpus.map((gpu) => gpu.vramGB).filter((value): value is number => value !== null);
+    const largestUsableGpuGB = +(Math.max(0, specs.largestGpuVramGB ?? (knownGpuMemory.length ? Math.max(...knownGpuMemory) : 0)) * 0.88).toFixed(1);
+    const aggregateUsableVramGB = +(knownGpuMemory.reduce((sum, value) => sum + value * 0.88, 0)).toFixed(1);
+    const smallestUsableGpuGB = knownGpuMemory.length ? Math.min(...knownGpuMemory) * 0.88 : 0;
+
+    const models = MODEL_CATALOG.map((model) => {
+        const parametersB = modelParametersB(model);
+        const estimatedWeightGB = parametersB * bits / 8 * 1.12 + 0.35;
+        const estimatedKvCacheGB = Math.max(0.12, 0.17 * Math.sqrt(parametersB / 7)) * contextLength / 1024;
+        const overhead = runtimeOverhead(estimatedWeightGB, selectedRuntime);
+        const totalRequiredGB = estimatedWeightGB + estimatedKvCacheGB + overhead;
+        const gpuBudgetForWeights = Math.max(0, largestUsableGpuGB - estimatedKvCacheGB - overhead);
+        const expectedGpuOffloadPercent = Math.max(0, Math.min(100, gpuBudgetForWeights / estimatedWeightGB * 100));
+        const cpuRemainingGB = estimatedWeightGB * (1 - expectedGpuOffloadPercent / 100) + Math.min(overhead, 1.2);
+        const fullGpu = totalRequiredGB <= largestUsableGpuGB;
+        const tensorParallel = !fullGpu && specs.tensorParallelSupported && knownGpuMemory.length > 1 &&
+            estimatedWeightGB / knownGpuMemory.length + estimatedKvCacheGB + overhead <= smallestUsableGpuGB && totalRequiredGB <= aggregateUsableVramGB;
+        const partial = !fullGpu && !tensorParallel && expectedGpuOffloadPercent >= 5 && cpuRemainingGB <= usableRAMGB;
+        const cpuOnly = !fullGpu && !tensorParallel && !partial && totalRequiredGB <= usableRAMGB;
+        let outcome: RecommendationOutcome; let reason: string; let recommendedRuntime = selectedRuntime;
+        if (fullGpu) { outcome = "Runs fully on GPU"; reason = `Weights, ${contextLength.toLocaleString()}-token KV cache, and runtime overhead fit the largest GPU.`; }
+        else if (tensorParallel) { outcome = "Requires tensor parallelism"; recommendedRuntime = "vllm"; reason = `Does not fit one GPU; estimated shards fit ${knownGpuMemory.length} GPUs using ${specs.gpuInterconnect}.`; }
+        else if (partial) { outcome = "Runs with partial offload"; recommendedRuntime = "llamacpp"; reason = `${expectedGpuOffloadPercent.toFixed(0)}% GPU offload estimated; remaining weights fit usable system RAM.`; }
+        else if (cpuOnly) { outcome = "CPU-only but usable"; recommendedRuntime = "llamacpp"; reason = `Fits usable RAM; speed is constrained by approximately ${specs.cpuMemoryBandwidthGBps} GB/s CPU memory bandwidth.`; }
+        else { outcome = "Likely out of memory"; reason = `Needs approximately ${totalRequiredGB.toFixed(1)} GB after KV cache and runtime overhead; neither GPU nor RAM/offload layouts fit safely.`; }
+        const cpuTps = specs.cpuMemoryBandwidthGBps / Math.max(estimatedWeightGB, 0.5) * 0.65;
+        const gpuTps = 42 * Math.sqrt(7 / Math.max(parametersB, 0.5)) * (4.75 / bits);
+        const estimatedTokensPerSecond = outcome === "Likely out of memory" ? 0 : outcome === "Runs fully on GPU" || outcome === "Requires tensor parallelism" ? gpuTps : outcome === "Runs with partial offload" ? cpuTps + (gpuTps - cpuTps) * expectedGpuOffloadPercent / 100 : cpuTps;
+        const measured = observationFor(model.name, history);
+        return { ...model, fits: outcome !== "Likely out of memory", runsOnGpu: fullGpu, recommended: false, outcome, quantization,
+            estimatedWeightGB: +estimatedWeightGB.toFixed(2), estimatedKvCacheGB: +estimatedKvCacheGB.toFixed(2), runtimeOverheadGB: +overhead.toFixed(2),
+            totalRequiredGB: +totalRequiredGB.toFixed(2), expectedGpuOffloadPercent: +expectedGpuOffloadPercent.toFixed(0),
+            estimatedTokensPerSecond: +estimatedTokensPerSecond.toFixed(1), measuredTokensPerSecond: measured?.tokensPerSecond, reason, recommendedRuntime };
+    });
+    const best = [...models].filter((model) => model.fits).sort((a, b) => modelParametersB(b) - modelParametersB(a))[0];
+    if (best) best.recommended = true;
+    return { usableRAMGB, usableVRAMGB: aggregateUsableVramGB, largestUsableGpuGB, aggregateUsableVramGB,
+        cpuMemoryBandwidthGBps: specs.cpuMemoryBandwidthGBps, gpuInterconnect: specs.gpuInterconnect, best: best?.name ?? null, models };
 }

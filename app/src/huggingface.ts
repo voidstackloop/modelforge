@@ -47,20 +47,12 @@ export interface DownloadProgress {
     totalBytes: number | null;
 }
 
-// Suffix for in-progress downloads. Writing directly to the final .gguf name
-// would let a truncated file — from a network drop, a crash, or the app
-// being force-quit mid-download, none of which run our error-path cleanup —
-// sit there indistinguishable from a real model, so listModels() would offer
-// it and loading it would fail with a confusing "corrupt GGUF" error instead
-// of the app just not knowing about it.
-export const PARTIAL_DOWNLOAD_SUFFIX = ".part";
-
-function parseContentRangeTotal(headerValue: string | null): number | null {
-    // "bytes 12345-67890/98765" — the part after the slash is the full size.
-    const match = headerValue?.match(/\/(\d+)$/);
-    return match ? Number(match[1]) : null;
-}
-
+// The actual HTTP + resume/verify logic lives in the native Rust addon
+// (lib/) for speed — a plain single-stream port wouldn't outperform this,
+// but splitting large files across several parallel Range-request
+// connections meaningfully does. This wrapper keeps the exact signature the
+// rest of the app (main.ts's hf:downloadFile handler) already calls, so
+// nothing downstream needed to change.
 export async function downloadGgufFile(
     modelId: string,
     filename: string,
@@ -68,77 +60,9 @@ export async function downloadGgufFile(
     onProgress: (progress: DownloadProgress) => void,
     token?: string | null
 ): Promise<void> {
-    const fs = await import("node:fs");
-    const url = `https://huggingface.co/${modelId}/resolve/main/${encodeURIComponent(filename)}`;
-    const partPath = destPath + PARTIAL_DOWNLOAD_SUFFIX;
-
-    // A .part file left over from a dropped connection or a force-quit is
-    // real progress, not garbage — resume it with a Range request instead of
-    // re-downloading from byte zero every time.
-    let existingBytes = fs.existsSync(partPath) ? fs.statSync(partPath).size : 0;
-    const headers: Record<string, string> = {};
-    if (token) headers.Authorization = `Bearer ${token}`;
-    if (existingBytes > 0) headers.Range = `bytes=${existingBytes}-`;
-
-    let res: Response;
-    try {
-        res = await fetch(url, { headers });
-    } catch (err) {
-        throw new Error(`Couldn't reach Hugging Face: ${(err as Error).message}`);
-    }
-
-    if (existingBytes > 0 && res.status === 416) {
-        // Our partial is already >= what the server has now (stale, or the
-        // remote file changed) — it can't be resumed, so start clean once.
-        fs.rmSync(partPath, { force: true });
-        return downloadGgufFile(modelId, filename, destPath, onProgress, token);
-    }
-    let resuming = existingBytes > 0 && res.status === 206;
-    if (existingBytes > 0 && !resuming) {
-        // Server ignored the Range request and is sending the whole file
-        // from the start — appending that to the stale partial would
-        // corrupt it, so discard the partial and treat this as fresh.
-        existingBytes = 0;
-    }
-
-    if (!res.ok || !res.body) throw new Error(`Failed to download "${filename}" (HTTP ${res.status}).`);
-
-    const contentLength = Number(res.headers.get("content-length")) || null;
-    const totalBytes = resuming
-        ? (parseContentRangeTotal(res.headers.get("content-range")) ?? (contentLength !== null ? existingBytes + contentLength : null))
-        : contentLength;
-
-    let receivedBytes = existingBytes;
-    const writeStream = fs.createWriteStream(partPath, { flags: resuming ? "a" : "w" });
-    const reader = res.body.getReader();
-    onProgress({ receivedBytes, totalBytes });
-
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            receivedBytes += value.byteLength;
-            onProgress({ receivedBytes, totalBytes });
-            await new Promise<void>((resolve, reject) => {
-                writeStream.write(value, (err) => (err ? reject(err) : resolve()));
-            });
-        }
-    } catch (err) {
-        // Deliberately not deleting partPath — a dropped connection here
-        // leaves real, resumable progress on disk for the next attempt.
-        // Waited out rather than fire-and-forget so the partial bytes are
-        // actually flushed to disk before this function returns.
-        await new Promise<void>((resolve) => writeStream.end(() => resolve()));
-        throw err;
-    }
-    await new Promise<void>((resolve, reject) => {
-        writeStream.once("error", reject);
-        writeStream.end(() => resolve());
+    const { downloadGgufFileNative } = await import("./native-downloader");
+    await downloadGgufFileNative(modelId, filename, destPath, token ?? undefined, (err, progress) => {
+        if (err) return; // fatal errors surface via the returned promise's rejection instead
+        onProgress({ receivedBytes: progress.receivedBytes, totalBytes: progress.totalBytes ?? null });
     });
-    if (totalBytes !== null && receivedBytes !== totalBytes) {
-        throw new Error(
-            `Download of "${filename}" was incomplete (got ${receivedBytes} of ${totalBytes} bytes) — try downloading it again to resume.`
-        );
-    }
-    fs.renameSync(partPath, destPath);
 }

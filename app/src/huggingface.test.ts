@@ -1,117 +1,76 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { downloadGgufFile } from "./huggingface";
+import { downloadGgufFileNative } from "./native-downloader";
 
-function fakeResponse(opts: { status: number; headers?: Record<string, string>; chunks?: string[] }) {
-    const chunks = (opts.chunks ?? []).map((c) => new TextEncoder().encode(c));
-    let i = 0;
-    return {
-        ok: opts.status >= 200 && opts.status < 300,
-        status: opts.status,
-        headers: { get: (name: string) => opts.headers?.[name.toLowerCase()] ?? null },
-        body: {
-            getReader: () => ({
-                read: async () => (i < chunks.length ? { done: false, value: chunks[i++] } : { done: true, value: undefined }),
-            }),
-        },
-    } as unknown as Response;
-}
+// The actual HTTP/resume/verify logic now lives in the Rust native addon
+// (lib/), covered by its own test suite there (mock-HTTP-server-based, see
+// lib/src/download/tests.rs) — a JS-side `vi.stubGlobal("fetch", ...)` can't
+// reach code that no longer runs in JS. What's left to verify from the TS
+// side is just this file's adapter: does it call the native function with
+// the right arguments, and does it translate the native progress/error
+// shapes into what callers (main.ts's hf:downloadFile handler) expect.
+vi.mock("./native-downloader", () => ({
+    downloadGgufFileNative: vi.fn(),
+}));
 
-describe("downloadGgufFile", () => {
-    let dir: string;
-    let destPath: string;
+const nativeMock = vi.mocked(downloadGgufFileNative);
 
+describe("downloadGgufFile (native adapter)", () => {
     beforeEach(() => {
-        dir = fs.mkdtempSync(path.join(os.tmpdir(), "hf-download-test-"));
-        destPath = path.join(dir, "model.gguf");
+        nativeMock.mockReset();
     });
 
-    afterEach(() => {
-        vi.unstubAllGlobals();
+    it("calls the native addon with modelId/filename/destPath and no token when none is given", async () => {
+        nativeMock.mockResolvedValue(undefined);
+
+        await downloadGgufFile("org/model", "model.gguf", "/tmp/model.gguf", () => {});
+
+        expect(nativeMock).toHaveBeenCalledWith(
+            "org/model",
+            "model.gguf",
+            "/tmp/model.gguf",
+            undefined,
+            expect.any(Function)
+        );
     });
 
-    it("downloads fresh, reports progress, and renames the .part file to the final name on success", async () => {
+    it("passes a null token through as undefined, matching the native addon's Option<String> signature", async () => {
+        nativeMock.mockResolvedValue(undefined);
+
+        await downloadGgufFile("org/model", "model.gguf", "/tmp/model.gguf", () => {}, null);
+
+        expect(nativeMock.mock.calls[0][3]).toBeUndefined();
+    });
+
+    it("passes a real token through unchanged", async () => {
+        nativeMock.mockResolvedValue(undefined);
+
+        await downloadGgufFile("org/model", "model.gguf", "/tmp/model.gguf", () => {}, "secret-token");
+
+        expect(nativeMock.mock.calls[0][3]).toBe("secret-token");
+    });
+
+    it("adapts native progress events, mapping a missing totalBytes to null", async () => {
         const progress: { receivedBytes: number; totalBytes: number | null }[] = [];
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async () => fakeResponse({ status: 200, headers: { "content-length": "10" }, chunks: ["hello", "world"] }))
-        );
-
-        await downloadGgufFile("org/model", "model.gguf", destPath, (p) => progress.push(p));
-
-        expect(fs.existsSync(destPath)).toBe(true);
-        expect(fs.existsSync(destPath + ".part")).toBe(false);
-        expect(fs.readFileSync(destPath, "utf8")).toBe("helloworld");
-        expect(progress.at(-1)).toEqual({ receivedBytes: 10, totalBytes: 10 });
-    });
-
-    it("resumes from an existing .part file using a Range request instead of starting over", async () => {
-        fs.writeFileSync(destPath + ".part", "hello");
-        const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-            expect((init?.headers as Record<string, string>).Range).toBe("bytes=5-");
-            return fakeResponse({ status: 206, headers: { "content-range": "bytes 5-9/10" }, chunks: ["world"] });
+        nativeMock.mockImplementation(async (_modelId, _filename, _dest, _token, onProgress) => {
+            onProgress(null, { receivedBytes: 5, totalBytes: undefined });
+            onProgress(null, { receivedBytes: 10, totalBytes: 10 });
         });
-        vi.stubGlobal("fetch", fetchMock);
 
-        await downloadGgufFile("org/model", "model.gguf", destPath, () => {});
+        await downloadGgufFile("org/model", "model.gguf", "/tmp/model.gguf", (p) => progress.push(p));
 
-        expect(fs.readFileSync(destPath, "utf8")).toBe("helloworld");
+        expect(progress).toEqual([
+            { receivedBytes: 5, totalBytes: null },
+            { receivedBytes: 10, totalBytes: 10 },
+        ]);
     });
 
-    it("discards a stale partial and starts over when the server ignores the Range request", async () => {
-        fs.writeFileSync(destPath + ".part", "OLD-STALE-DATA");
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async () => fakeResponse({ status: 200, headers: { "content-length": "5" }, chunks: ["fresh"] }))
+    it("propagates the native call's rejection unchanged, so callers' error logging keeps working", async () => {
+        const nativeError = new Error(
+            'Download of "model.gguf" was incomplete (got 5 of 10 bytes) — try downloading it again to resume.'
         );
+        nativeMock.mockRejectedValue(nativeError);
 
-        await downloadGgufFile("org/model", "model.gguf", destPath, () => {});
-
-        expect(fs.readFileSync(destPath, "utf8")).toBe("fresh");
-    });
-
-    it("keeps the .part file (doesn't delete it) when the connection drops mid-stream, so a retry can resume", async () => {
-        vi.stubGlobal("fetch", vi.fn(async () => ({
-            ok: true,
-            status: 200,
-            headers: { get: () => "20" },
-            body: {
-                getReader: () => ({
-                    read: async () => {
-                        throw new Error("connection reset");
-                    },
-                }),
-            },
-        } as unknown as Response)));
-
-        await expect(downloadGgufFile("org/model", "model.gguf", destPath, () => {})).rejects.toThrow("connection reset");
-        expect(fs.existsSync(destPath + ".part")).toBe(true);
-        expect(fs.existsSync(destPath)).toBe(false);
-    });
-
-    it("keeps the .part file and throws when the stream ends short of the expected size", async () => {
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async () => fakeResponse({ status: 200, headers: { "content-length": "100" }, chunks: ["short"] }))
-        );
-
-        await expect(downloadGgufFile("org/model", "model.gguf", destPath, () => {})).rejects.toThrow(/incomplete/);
-        expect(fs.existsSync(destPath + ".part")).toBe(true);
-    });
-
-    it("discards a partial and retries once when the server responds 416 (range no longer satisfiable)", async () => {
-        fs.writeFileSync(destPath + ".part", "stale");
-        const fetchMock = vi
-            .fn()
-            .mockResolvedValueOnce(fakeResponse({ status: 416 }))
-            .mockResolvedValueOnce(fakeResponse({ status: 200, headers: { "content-length": "5" }, chunks: ["fresh"] }));
-        vi.stubGlobal("fetch", fetchMock);
-
-        await downloadGgufFile("org/model", "model.gguf", destPath, () => {});
-
-        expect(fs.readFileSync(destPath, "utf8")).toBe("fresh");
-        expect(fetchMock).toHaveBeenCalledTimes(2);
+        await expect(downloadGgufFile("org/model", "model.gguf", "/tmp/model.gguf", () => {})).rejects.toBe(nativeError);
     });
 });

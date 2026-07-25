@@ -82,7 +82,7 @@ export function parseCustomModelId(modelId: string): { customProviderId: string;
     return { customProviderId: modelId.slice(0, sep), actualModel: modelId.slice(sep + 2) };
 }
 
-const VALID_PROVIDERS: ProviderId[] = ["ollama", "openai", "anthropic", "llamacpp", "gemini", "custom", "mlx", "rocm"];
+const VALID_PROVIDERS: ProviderId[] = ["ollama", "openai", "anthropic", "llamacpp", "gemini", "custom", "mlx", "rocm", "vllm"];
 
 export function parseModelRef(ref: string): { provider: ProviderId; modelId: string } | null {
     const sepIndex = ref.indexOf(":");
