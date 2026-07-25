@@ -67,7 +67,10 @@ describe("recommendModels", () => {
         });
         const result = recommendModels(specs);
         // 48GB aggregate remains visible, but is not treated as one pool.
-        expect(result.usableVRAMGB).toBeCloseTo(42.24);
+        // aggregateUsableVramGB is rounded to 1 decimal place (same precision
+        // as every other GB figure this function reports), so the raw
+        // 21.12 * 2 = 42.24 product displays as 42.2, not 42.24.
+        expect(result.usableVRAMGB).toBeCloseTo(42.2, 1);
     });
 
     it("does not treat aggregate VRAM as one GPU", () => {

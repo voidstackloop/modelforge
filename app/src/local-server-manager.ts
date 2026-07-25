@@ -60,9 +60,9 @@ export function installCommand(backend: LocalBackendId): string {
 }
 
 export function describeSpawnFailure(backend: LocalBackendId): string {
-    if (backend === "mlx") return "Couldn't launch MLX. Install mlx-lm on an Apple Silicon Mac and verify the configured Python interpreter.";
-    if (backend === "vllm") return "Couldn't launch vLLM. Install vLLM in Linux/WSL and verify that its CUDA or ROCm requirements match the GPU driver.";
-    return "Couldn't launch ROCm llama-server. Configure a working ROCm/HIP llama-server executable and verify ROCm device access.";
+    if (backend === "mlx") return `Couldn't launch MLX. Install mlx-lm on an Apple Silicon Mac (${installCommand("mlx")}) and verify the configured Python interpreter.`;
+    if (backend === "vllm") return `Couldn't launch vLLM. Install it in Linux/WSL (${installCommand("vllm")}) and verify that its CUDA or ROCm requirements match the GPU driver.`;
+    return `Couldn't launch ROCm llama-server. ${installCommand("rocm")} and verify ROCm device access.`;
 }
 
 async function commandSucceeds(command: string, args: string[]): Promise<boolean> {
