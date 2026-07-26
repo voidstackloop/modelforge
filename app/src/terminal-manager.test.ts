@@ -13,7 +13,10 @@ import {
     listTerminals,
 } from "./terminal-manager";
 
-function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+// 5000ms was tight enough that a slow PTY spawn on Windows CI could still
+// hit vitest's outer testTimeout (see app/vitest.config.ts) before this
+// helper's own, more descriptive error had a chance to fire.
+function waitFor(predicate: () => boolean, timeoutMs = 12_000): Promise<void> {
     const start = Date.now();
     return new Promise((resolve, reject) => {
         const check = () => {
