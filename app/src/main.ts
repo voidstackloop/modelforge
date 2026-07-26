@@ -1,102 +1,35 @@
 import * as path from "node:path";
-import * as fs from "node:fs";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, dialog, shell, desktopCapturer } from "electron";
+import { app, BrowserWindow, dialog, shell } from "electron";
 import * as ollama from "./ollama-manager";
-import { logger, getLogPath, getLogTail } from "./logger";
-import * as systemSpecs from "./system-specs";
+import { logger } from "./logger";
 import * as settingsStore from "./settings-store";
-import type { PromptPreset } from "./settings-store";
-import * as sessionsStore from "./sessions-store";
-import * as projectsStore from "./projects-store";
-import * as fileReader from "./file-reader";
-import * as secretsStore from "./secrets-store";
-import * as dataTransfer from "./data-transfer";
-import * as rag from "./rag";
 import * as agentTools from "./agent-tools";
-import { detectSandboxCapabilities } from "./command-sandbox";
 import * as terminalManager from "./terminal-manager";
 import * as mcpClient from "./mcp-client";
-import * as figma from "./figma";
-import * as ocr from "./ocr";
-import * as huggingface from "./huggingface";
 import * as downloadQueue from "./download-queue";
-import * as accounts from "./accounts";
 import * as llamacpp from "./llamacpp-manager";
-import * as scheduledTasksStore from "./scheduled-tasks-store";
 import * as scheduler from "./scheduler";
 import * as localServers from "./local-server-manager";
-import * as benchmarkRunner from "./benchmark-runner";
 import * as powerMonitor from "./power-monitor";
-import * as energyUsageStore from "./energy-usage-store";
-import * as pythonRuntimes from "./python-runtime-manager";
-import type { EnergyMonitorSettings } from "./energy-types";
-import type { McpServerConfig } from "./mcp-client";
-import type { AttachedFile } from "./file-reader";
-import * as openaiProvider from "./providers/openai";
-import * as anthropicProvider from "./providers/anthropic";
-import * as geminiProvider from "./providers/gemini";
-import { createOpenAiCompatibleChat } from "./providers/openai-compatible";
 import { setupMenu } from "./menu";
 import { setupAutoUpdater, checkForUpdatesManually } from "./updater";
-import type { ChatMessage, ChatChunk, ChatOptions, ProviderId, ToolDefinition } from "./providers/types";
-
-const PROVIDER_SECRET_KEYS: Record<Exclude<ProviderId, "ollama" | "llamacpp" | "custom" | "mlx" | "rocm" | "vllm">, string> = {
-    openai: "openai_api_key",
-    anthropic: "anthropic_api_key",
-    gemini: "gemini_api_key",
-};
-
-function customProviderSecretKey(customProviderId: string): string {
-    return `custom_${customProviderId}_api_key`;
-}
-
-const activeChatRequests = new Map<string, AbortController>();
-const activeBenchmarkRequests = new Map<string, AbortController>();
-let isBusy = false;
-let forceClose = false;
-
-// Every ipcMain.handle callback below is only reachable from this app's own
-// preload-bridged renderer (contextIsolation is on, nodeIntegration is off),
-// so this isn't a hostile-input boundary in the way a public API would be.
-// Still, a malformed/undefined argument reaching a store function as `id`
-// would throw a raw TypeError several layers deep — validating up front
-// turns that into one clear, loggable error instead.
-function requireString(value: unknown, label: string): string {
-    if (typeof value !== "string" || !value) {
-        throw new Error(`Invalid ${label}: expected a non-empty string`);
-    }
-    return value;
-}
-
-function getLlamaCppModelsDir(): string {
-    const configured = settingsStore.getSettings().llamaCppModelsDir;
-    const dir = configured || path.join(app.getPath("userData"), "llamacpp-models");
-    fs.mkdirSync(dir, { recursive: true });
-    return dir;
-}
-
-function getLocalRuntimeConfig(): localServers.LocalBackendConfig {
-    const settings = settingsStore.getSettings();
-    return { mlxPythonPath: settings.mlxPythonPath, rocmServerPath: settings.rocmServerPath, vllmCommand: settings.vllmCommand };
-}
-
-function getEnergyMonitorSettings(): EnergyMonitorSettings {
-    const settings = settingsStore.getSettings();
-    return {
-        enabled: settings.energyMonitoringEnabled ?? false,
-        electricityPricePerKwh: Math.max(0, settings.electricityPricePerKwh ?? 0.2),
-        currency: settings.energyCurrency?.trim() || "USD",
-        timeOfUseTariffs: settings.timeOfUseTariffs ?? [],
-        manualCpuWatts: settings.manualCpuWatts,
-        manualGpuWatts: settings.manualGpuWatts,
-        manualSystemIdleWatts: settings.manualSystemIdleWatts,
-        includeIdleSystemConsumption: settings.includeIdleSystemConsumption ?? true,
-        retentionDays: Math.max(1, settings.energyUsageRetentionDays ?? 365),
-        sampleIntervalSeconds: Math.max(1, Math.min(5, settings.energySampleIntervalSeconds ?? 2)),
-        gridIntensityGCo2PerKwh: settings.gridIntensityGCo2PerKwh,
-    };
-}
+import type { ProviderId } from "./providers/types";
+import { getMainWindow, setMainWindow, getIsBusy, setIsBusy, getForceClose, setForceClose } from "./app-state";
+import { completePrompt } from "./chat-dispatch";
+import { registerOllamaIpc } from "./ipc/ollama-handlers";
+import { registerChatIpc } from "./ipc/chat-handlers";
+import { registerSystemIpc } from "./ipc/system-handlers";
+import { registerDownloadsIpc } from "./ipc/downloads-handlers";
+import { registerSettingsIpc } from "./ipc/settings-handlers";
+import { registerSessionsIpc } from "./ipc/sessions-handlers";
+import { registerFilesIpc } from "./ipc/files-handlers";
+import { registerAppIpc } from "./ipc/app-handlers";
+import { registerRagIpc } from "./ipc/rag-handlers";
+import { registerMediaIpc } from "./ipc/media-handlers";
+import { registerAgentIpc } from "./ipc/agent-handlers";
+import { registerTerminalIpc } from "./ipc/terminal-handlers";
+import { registerMcpIpc } from "./ipc/mcp-handlers";
 
 // Without these, an unexpected error anywhere in the main process (a bad file
 // parse, a network hiccup, a third-party library throwing) would crash the
@@ -115,16 +48,14 @@ if (process.env.DISABLE_GPU === "1") {
     app.disableHardwareAcceleration();
 }
 
-let mainWindow: BrowserWindow | null = null;
-
 function createWindow(): void {
     // Reset so a fresh window (e.g. re-created via macOS "activate" after all
     // windows closed) gets its own busy-quit confirmation instead of
     // inheriting a stale bypass from a previously confirmed close.
-    forceClose = false;
-    isBusy = false;
+    setForceClose(false);
+    setIsBusy(false);
 
-    mainWindow = new BrowserWindow({
+    const mainWindow = new BrowserWindow({
         width: 1280,
         height: 820,
         minWidth: 820,
@@ -140,6 +71,7 @@ function createWindow(): void {
             nodeIntegration: false,
         },
     });
+    setMainWindow(mainWindow);
 
     // Start maximized (normal windowed maximize, not OS-level fullscreen/kiosk
     // mode) so the app makes good use of the screen by default while still
@@ -150,7 +82,7 @@ function createWindow(): void {
     });
 
     mainWindow.on("close", (event) => {
-        if (isBusy && !forceClose) {
+        if (getIsBusy() && !getForceClose()) {
             event.preventDefault();
             dialog
                 .showMessageBox(mainWindow!, {
@@ -163,7 +95,7 @@ function createWindow(): void {
                 })
                 .then(({ response }) => {
                     if (response === 0) {
-                        forceClose = true;
+                        setForceClose(true);
                         mainWindow?.close();
                     }
                 });
@@ -218,817 +150,20 @@ function createWindow(): void {
     mainWindow.loadURL(homeUrl);
 }
 
-// Shared by chat:send (renderer-driven, streams tokens back over IPC) and
-// the scheduled-task runner (background, wants the full text once done) —
-// same provider dispatch and error handling either way.
-async function dispatchChat(
-    provider: ProviderId,
-    model: string,
-    messages: ChatMessage[],
-    options: ChatOptions | undefined,
-    onToken: (chunk: ChatChunk) => void,
-    signal?: AbortSignal,
-    tools?: ToolDefinition[]
-): Promise<void> {
-    const currentSettings = settingsStore.getSettings();
-    const customLocal = provider === "custom"
-        && currentSettings.customProviders?.find((item) => model.startsWith(`${item.id}::`))?.localGpuBackend;
-    const localProvider = ["ollama", "llamacpp", "mlx", "rocm", "vllm"].includes(provider) || !!customLocal;
-    const energySettings = getEnergyMonitorSettings();
-    energySettings.enabled = energySettings.enabled && localProvider;
-    const backend = provider === "llamacpp"
-        ? currentSettings.llamaCppGpuBackend ?? "auto"
-        : provider === "rocm" ? "rocm" : provider;
-    const initialPromptTokens = Math.max(1, Math.ceil(messages.reduce((sum, message) => sum + message.content.length, 0) / 4));
-    const activity = powerMonitor.beginRequest(provider, model, backend, energySettings, initialPromptTokens);
-    const downstreamToken = onToken;
-    onToken = (chunk) => {
-        activity.onChunk(chunk);
-        downstreamToken(chunk);
-    };
-    try {
-    if (provider === "ollama") {
-        await ollama.chat(model, messages, options, onToken, signal, tools);
-    } else if (provider === "llamacpp") {
-        // Same containment rule as the rocm branch below: the model ref is a
-        // renderer-supplied relative path (may include subfolders), and
-        // path.join would happily walk ".." segments out of the models dir.
-        const root = path.resolve(getLlamaCppModelsDir());
-        const modelPath = path.resolve(root, model);
-        if (modelPath === root || !modelPath.startsWith(root + path.sep)) {
-            throw new Error(`Model file "${model}" is outside the models directory.`);
-        }
-        await llamacpp.chat(modelPath, messages, options, onToken, signal, tools);
-    } else if (provider === "mlx" || provider === "rocm" || provider === "vllm") {
-        const settings = settingsStore.getSettings();
-        // ROCm serves the same GGUF files as the llama.cpp backend, so the
-        // model ref is a filename that must stay inside the models dir; MLX
-        // models are HF repo ids the server resolves itself.
-        let serverModel = model;
-        if (provider === "rocm") {
-            const root = path.resolve(getLlamaCppModelsDir());
-            const resolved = path.resolve(root, model);
-            // Was `resolved !== root && !startsWith(...)` (AND) — that only
-            // threw when BOTH conditions held, so a ref resolving to exactly
-            // the models dir itself (e.g. "rocm:.") satisfied neither and
-            // slipped through, handing the whole directory to llama-server
-            // -m as if it were a single model file.
-            if (resolved === root || !resolved.startsWith(root + path.sep)) {
-                throw new Error(`Model file "${model}" is outside the models directory.`);
-            }
-            serverModel = resolved;
-        }
-        const lease = await localServers.acquireServer(provider, serverModel, {
-            mlxPythonPath: settings.mlxPythonPath,
-            rocmServerPath: settings.rocmServerPath,
-            vllmCommand: settings.vllmCommand,
-        });
-        try {
-            // Managed runtimes are local and unauthenticated; the key is a
-            // compatibility placeholder for their OpenAI-shaped APIs.
-            const providerLabel = provider === "mlx" ? "MLX" : provider === "vllm" ? "vLLM" : "ROCm llama-server";
-            await createOpenAiCompatibleChat(`${lease.baseUrl}/v1`, providerLabel)(
-                "local",
-                model,
-                messages,
-                options,
-                onToken,
-                signal,
-                tools
-            );
-        } finally {
-            lease.release();
-        }
-    } else if (provider === "custom") {
-        // model is "<customProviderId>::<actual model id>" — see
-        // frontend/src/lib/providers.ts's formatCustomModelRef.
-        const sep = model.indexOf("::");
-        if (sep === -1) throw new Error(`Malformed custom model reference: ${model}`);
-        const customProviderId = model.slice(0, sep);
-        const actualModel = model.slice(sep + 2);
-        const config = settingsStore.getSettings().customProviders?.find((p) => p.id === customProviderId);
-        if (!config) throw new Error(`Custom provider "${customProviderId}" is no longer configured.`);
-        const apiKey = secretsStore.getSecret(customProviderSecretKey(customProviderId));
-        if (!apiKey && !config.localGpuBackend) throw new Error(`No API key set for ${config.name}. Add one in Settings.`);
-        await createOpenAiCompatibleChat(config.baseUrl, config.name)(
-            apiKey ?? "local-gpu-backend",
-            actualModel,
-            messages,
-            options,
-            onToken,
-            signal,
-            tools
-        );
-    } else {
-        const secretKey = PROVIDER_SECRET_KEYS[provider];
-        const apiKey = secretsStore.getSecret(secretKey);
-        if (!apiKey) throw new Error(`No API key set for ${provider}. Add one in Settings.`);
-        const providerFn =
-            provider === "openai" ? openaiProvider.chat : provider === "anthropic" ? anthropicProvider.chat : geminiProvider.chat;
-        await providerFn(apiKey, model, messages, options, onToken, signal, tools);
-    }
-    } finally {
-        await activity.finish();
-    }
-}
-
-// Runs a single-turn prompt to completion and returns the full text —
-// what the scheduled-task runner needs, as opposed to chat:send's
-// token-by-token streaming back to the renderer.
-async function completePrompt(provider: ProviderId, model: string, prompt: string): Promise<string> {
-    let text = "";
-    await dispatchChat(provider, model, [{ role: "user", content: prompt }], undefined, (chunk) => {
-        text += chunk.message?.content ?? "";
-    });
-    return text;
-}
-
-function benchmarkResultPath(): string {
-    const dir = path.join(app.getPath("userData"), "benchmarks");
-    fs.mkdirSync(dir, { recursive: true });
-    return path.join(dir, "latest.json");
-}
-
-function benchmarkHistoryPath(): string { return path.join(path.dirname(benchmarkResultPath()), "history.json"); }
-
-function saveBenchmarkResult(result: benchmarkRunner.BenchmarkResult): void {
-    const destination = benchmarkResultPath();
-    const temporary = `${destination}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(result, null, 2));
-    fs.renameSync(temporary, destination);
-    let history: benchmarkRunner.BenchmarkResult[] = [];
-    try { history = JSON.parse(fs.readFileSync(benchmarkHistoryPath(), "utf-8")); } catch { /* first benchmark */ }
-    history.push(result);
-    fs.writeFileSync(benchmarkHistoryPath(), JSON.stringify(history.slice(-100), null, 2));
-}
-
-function getBenchmarkObservations(): systemSpecs.BenchmarkObservation[] {
-    try {
-        const history = JSON.parse(fs.readFileSync(benchmarkHistoryPath(), "utf-8")) as benchmarkRunner.BenchmarkResult[];
-        return history.flatMap((result) => result.primary ? [{ model: result.model, tokensPerSecond: result.primary.tokensPerSecond, promptTokensPerSecond: result.primary.promptTokensPerSecond, timeToFirstTokenMs: result.primary.timeToFirstTokenMs }] : []);
-    } catch {
-        const latest = getLastBenchmarkResult();
-        return latest?.primary ? [{ model: latest.model, tokensPerSecond: latest.primary.tokensPerSecond, promptTokensPerSecond: latest.primary.promptTokensPerSecond, timeToFirstTokenMs: latest.primary.timeToFirstTokenMs }] : [];
-    }
-}
-
-function getLastBenchmarkResult(): benchmarkRunner.BenchmarkResult | null {
-    try {
-        return JSON.parse(fs.readFileSync(benchmarkResultPath(), "utf-8")) as benchmarkRunner.BenchmarkResult;
-    } catch {
-        return null;
-    }
-}
-
-async function exportDiagnosticReport(result: benchmarkRunner.BenchmarkResult): Promise<{ success: boolean }> {
-    const specs = await systemSpecs.getSpecs();
-    const settings = settingsStore.getSettings();
-    const runtimes = await localServers.getRuntimeStatuses({
-        mlxPythonPath: settings.mlxPythonPath,
-        rocmServerPath: settings.rocmServerPath,
-        vllmCommand: settings.vllmCommand,
-    });
-    const report = {
-        schemaVersion: 1,
-        exportedAt: new Date().toISOString(),
-        application: {
-            version: app.getVersion(),
-            electron: process.versions.electron,
-            chrome: process.versions.chrome,
-            node: process.versions.node,
-            platform: process.platform,
-            arch: process.arch,
-        },
-        system: specs,
-        runtimeHealth: runtimes,
-        benchmark: result,
-        energyUsage: powerMonitor.getDashboard(getEnergyMonitorSettings()),
-        recentLogs: getLogTail(),
-    };
-    const date = new Date().toISOString().replace(/[:.]/g, "-");
-    const options = {
-        defaultPath: `modelforge-diagnostic-${date}.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-    };
-    const dialogResult = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
-    if (dialogResult.canceled || !dialogResult.filePath) return { success: false };
-    fs.writeFileSync(dialogResult.filePath, JSON.stringify(report, null, 2));
-    return { success: true };
-}
-
 function registerIpcHandlers(): void {
-    ipcMain.handle("ollama:status", () => ollama.isRunning());
-    ipcMain.handle("ollama:start", () => ollama.start());
-    ipcMain.handle("ollama:stop", () => ollama.stop());
-    ipcMain.handle("ollama:listModels", () => ollama.listModels());
-    ipcMain.handle("ollama:pickModelsDir", async () => {
-        const result = mainWindow
-            ? await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "createDirectory"] })
-            : await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
-        return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
-    });
-
-    ipcMain.handle("ollama:setModelsDir", async (_event: IpcMainInvokeEvent, dir: string | null) => {
-        if (dir) {
-            requireString(dir, "models directory");
-            try {
-                fs.mkdirSync(dir, { recursive: true });
-                fs.accessSync(dir, fs.constants.W_OK);
-            } catch (err) {
-                return { error: `Can't use that folder: ${(err as Error).message}` };
-            }
-        }
-        settingsStore.saveSettings({ modelsDir: dir ?? undefined });
-        ollama.setModelsDir(dir);
-        try {
-            return await ollama.restartWithCurrentConfig();
-        } catch (err) {
-            const error = err as Error;
-            logger.error(`Failed to restart Ollama after changing models directory: ${error.message}`);
-            return { started: false, error: error.message };
-        }
-    });
-
-    ipcMain.handle("ollama:deleteModel", (_event: IpcMainInvokeEvent, name: string) =>
-        ollama.deleteModel(requireString(name, "model name"))
-    );
-
-    ipcMain.handle("llamacpp:listModels", () => llamacpp.listModels(getLlamaCppModelsDir()));
-    ipcMain.handle("llamacpp:deleteModel", async (_event: IpcMainInvokeEvent, name: string) => {
-        await llamacpp.deleteModel(getLlamaCppModelsDir(), requireString(name, "model name"));
-    });
-    ipcMain.handle("llamacpp:getAvailableGpuBackends", () => llamacpp.getAvailableGpuBackends());
-    ipcMain.handle("localBackends:getStatuses", () => {
-        return localServers.getRuntimeStatuses(getLocalRuntimeConfig());
-    });
-    ipcMain.handle("localBackends:start", (_event, { backend, model }: { backend: localServers.LocalBackendId; model: string }) =>
-        localServers.startServer(backend, requireString(model, "runtime model"), getLocalRuntimeConfig())
-    );
-    ipcMain.handle("localBackends:stop", (_event, backend: localServers.LocalBackendId) => localServers.stopServer(backend));
-    ipcMain.handle("localBackends:restart", (_event, { backend, model }: { backend: localServers.LocalBackendId; model: string }) =>
-        localServers.restartServer(backend, requireString(model, "runtime model"), getLocalRuntimeConfig())
-    );
-    ipcMain.handle("localBackends:unload", (_event, backend: localServers.LocalBackendId) => localServers.stopServer(backend));
-    ipcMain.handle("pythonRuntimes:getStatuses", () => pythonRuntimes.getPythonEnvironmentStatuses());
-    ipcMain.handle("llamacpp:setGpuBackend", async (_event: IpcMainInvokeEvent, backend: llamacpp.GpuBackend) => {
-        await llamacpp.setGpuBackend(backend);
-        settingsStore.saveSettings({ llamaCppGpuBackend: backend });
-    });
-    ipcMain.handle("llamacpp:pickModelsDir", async () => {
-        const result = mainWindow
-            ? await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "createDirectory"] })
-            : await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
-        if (result.canceled || result.filePaths.length === 0) return null;
-        settingsStore.saveSettings({ llamaCppModelsDir: result.filePaths[0] });
-        return result.filePaths[0];
-    });
-
-    ipcMain.handle(
-        "ollama:pull",
-        async (event: IpcMainInvokeEvent, { requestId, name }: { requestId: string; name: string }) => {
-            const channel = `ollama:pull:progress:${requestId}`;
-            try {
-                await ollama.pullModel(requireString(name, "model name"), (chunk) => event.sender.send(channel, chunk));
-                return { done: true };
-            } catch (err) {
-                logger.error(`Model pull failed for "${name}": ${(err as Error).message}`);
-                return { done: true, error: (err as Error).message };
-            }
-        }
-    );
-
-    ipcMain.handle(
-        "chat:send",
-        async (
-            event: IpcMainInvokeEvent,
-            {
-                requestId,
-                provider,
-                model,
-                messages,
-                options,
-                agentMode,
-            }: {
-                requestId: string;
-                provider: ProviderId;
-                model: string;
-                messages: ChatMessage[];
-                options?: ChatOptions;
-                agentMode?: boolean;
-            }
-        ) => {
-            const channel = `chat:chunk:${requestId}`;
-            const onToken = (chunk: ChatChunk) => event.sender.send(channel, chunk);
-            const controller = new AbortController();
-            activeChatRequests.set(requestId, controller);
-            const tools = agentMode ? [...agentTools.AGENT_TOOLS, ...mcpClient.getConnectedTools()] : undefined;
-            try {
-                await dispatchChat(provider, model, messages, options, onToken, controller.signal, tools);
-                return { done: true };
-            } catch (err) {
-                const error = err as Error;
-                if (error.name === "AbortError") {
-                    return { done: true, aborted: true };
-                }
-                logger.error(`Chat request failed (provider=${provider}, model=${model}): ${error.message}`);
-                return { done: true, error: error.message };
-            } finally {
-                activeChatRequests.delete(requestId);
-            }
-        }
-    );
-
-    ipcMain.handle("chat:cancel", (_event: IpcMainInvokeEvent, requestId: string) => {
-        activeChatRequests.get(requestId)?.abort();
-    });
-
-    ipcMain.handle("system:getSpecs", () => systemSpecs.getSpecs());
-    ipcMain.handle("system:getRecommendations", async () => {
-        const specs = await systemSpecs.getSpecs();
-        const settings = settingsStore.getSettings();
-        return systemSpecs.recommendModelsWithML(specs, { contextLength: settings.contextLength, quantization: "Q4_K_M", runtime: settings.preferredRuntime ?? "automatic" }, getBenchmarkObservations());
-    });
-    ipcMain.handle("system:getActivity", async () => {
-        const ollamaRunning = await ollama.isRunning();
-        const ollamaLoadedModels = ollamaRunning
-            ? await ollama.listRunningModels().catch(() => [])
-            : [];
-        const mem = process.memoryUsage();
-        return {
-            ollamaRunning,
-            ollamaLoadedModels,
-            llamacppLoadedModels: llamacpp.listLoadedModels(),
-            localBackendServers: localServers.getRunningBackends(),
-            mcpServers: mcpClient.getServerStatuses(),
-            memory: { rssMB: +(mem.rss / 1e6).toFixed(1), heapUsedMB: +(mem.heapUsed / 1e6).toFixed(1) },
-        };
-    });
-
-    ipcMain.handle(
-        "benchmark:run",
-        async (
-            _event: IpcMainInvokeEvent,
-            { requestId, request }: { requestId: string; request: benchmarkRunner.BenchmarkRequest }
-        ) => {
-            requireString(requestId, "benchmark request id");
-            requireString(request?.provider, "benchmark provider");
-            requireString(request?.model, "benchmark model");
-            const controller = new AbortController();
-            activeBenchmarkRequests.set(requestId, controller);
-            try {
-                const result = await benchmarkRunner.runBenchmark(
-                    (provider, model, messages, options, onToken, signal) =>
-                        dispatchChat(provider, model, messages, options, onToken, signal),
-                    request,
-                    controller.signal
-                );
-                saveBenchmarkResult(result);
-                return { result };
-            } catch (error) {
-                if ((error as Error).name === "AbortError") return { aborted: true };
-                logger.error(`Benchmark failed (provider=${request.provider}, model=${request.model}): ${(error as Error).message}`);
-                return { error: (error as Error).message };
-            } finally {
-                activeBenchmarkRequests.delete(requestId);
-            }
-        }
-    );
-    ipcMain.handle("benchmark:cancel", (_event: IpcMainInvokeEvent, requestId: string) => {
-        activeBenchmarkRequests.get(requireString(requestId, "benchmark request id"))?.abort();
-    });
-    ipcMain.handle("benchmark:getLast", () => getLastBenchmarkResult());
-    ipcMain.handle("benchmark:exportReport", (_event: IpcMainInvokeEvent, result: benchmarkRunner.BenchmarkResult) =>
-        exportDiagnosticReport(result)
-    );
-    ipcMain.handle("energy:getDashboard", () => powerMonitor.getDashboard(getEnergyMonitorSettings()));
-    ipcMain.handle("energy:clearHistory", () => {
-        energyUsageStore.clearRecords();
-        return { success: true };
-    });
-
-    ipcMain.handle("downloads:list", () => downloadQueue.getJobs());
-    ipcMain.handle("downloads:create", (_event, input: { modelId: string; filename: string; expectedBytes: number; backend?: Parameters<typeof downloadQueue.createHuggingFaceJob>[0]["backend"] }) =>
-        downloadQueue.createHuggingFaceJob({
-            ...input,
-            backend: input.backend ?? settingsStore.getSettings().preferredRuntime ?? "automatic",
-            destinationDir: getLlamaCppModelsDir(),
-        })
-    );
-    ipcMain.handle("downloads:pause", (_event, id: string) => downloadQueue.pauseJob(requireString(id, "download id")));
-    ipcMain.handle("downloads:resume", (_event, id: string) => downloadQueue.resumeJob(requireString(id, "download id")));
-    ipcMain.handle("downloads:retry", (_event, id: string) => downloadQueue.retryJob(requireString(id, "download id")));
-    ipcMain.handle("downloads:cancel", (_event, id: string) => downloadQueue.cancelJob(requireString(id, "download id")));
-    ipcMain.handle("downloads:delete", (_event, id: string) => downloadQueue.removeJob(requireString(id, "download id")));
-    ipcMain.handle("downloads:forecast", (_event, id: string) => downloadQueue.diskForecast(requireString(id, "download id")));
-    ipcMain.handle("downloads:recoveryStatus", () => downloadQueue.getRecoveryStatus());
-    ipcMain.handle("downloads:getControls", () => {
-        const settings = settingsStore.getSettings();
-        return { concurrency: settings.downloadGlobalConcurrency ?? 2, bandwidthMbps: settings.downloadBandwidthMbps ?? 0 };
-    });
-    ipcMain.handle("downloads:setControls", (_event, controls: downloadQueue.DownloadControls) => {
-        const normalized = downloadQueue.configure(controls);
-        settingsStore.saveSettings({ downloadGlobalConcurrency: normalized.concurrency, downloadBandwidthMbps: normalized.bandwidthMbps });
-        return normalized;
-    });
-
-    ipcMain.handle("settings:get", () => settingsStore.getSettings());
-    ipcMain.handle("settings:save", (_event: IpcMainInvokeEvent, partial) => {
-        const saved = settingsStore.saveSettings(partial);
-        if (partial.ollamaHost !== undefined) ollama.setHost(saved.ollamaHost);
-        if (partial.llamaCppMaxCachedModels !== undefined) llamacpp.setModelCacheLimit(saved.llamaCppMaxCachedModels ?? 2);
-        if (partial.downloadGlobalConcurrency !== undefined || partial.downloadBandwidthMbps !== undefined) {
-            downloadQueue.configure({ concurrency: saved.downloadGlobalConcurrency ?? 2, bandwidthMbps: saved.downloadBandwidthMbps ?? 0 });
-        }
-        if (partial.keybindings !== undefined) {
-            setupMenu(() => mainWindow, () => checkForUpdatesManually(() => mainWindow), saved.keybindings);
-        }
-        return saved;
-    });
-
-    ipcMain.handle("sessions:list", () => sessionsStore.listSessions());
-    ipcMain.handle("sessions:get", (_event: IpcMainInvokeEvent, id: string) =>
-        sessionsStore.getSession(requireString(id, "session id"))
-    );
-    ipcMain.handle(
-        "sessions:create",
-        (_event: IpcMainInvokeEvent, { model, projectId }: { model: string | null; projectId?: string | null }) =>
-            sessionsStore.createSession(model, projectId ?? null)
-    );
-    ipcMain.handle("sessions:update", (_event: IpcMainInvokeEvent, { id, partial }) =>
-        sessionsStore.updateSession(requireString(id, "session id"), partial)
-    );
-    ipcMain.handle("sessions:delete", (_event: IpcMainInvokeEvent, id: string) =>
-        sessionsStore.deleteSession(requireString(id, "session id"))
-    );
-    ipcMain.handle("sessions:clearAll", () => sessionsStore.clearAll());
-
-    ipcMain.handle("scheduledTasks:list", () => scheduledTasksStore.listTasks());
-
-    ipcMain.handle(
-        "scheduledTasks:create",
-        (
-            _event: IpcMainInvokeEvent,
-            {
-                name,
-                prompt,
-                model,
-                intervalMinutes,
-            }: { name: string; prompt: string; model: string; intervalMinutes: number }
-        ) => {
-            requireString(name, "task name");
-            requireString(prompt, "task prompt");
-            requireString(model, "task model");
-            // Each task gets a dedicated chat session it appends results to —
-            // created here so the task always has somewhere to write to.
-            const session = sessionsStore.createSession(model);
-            sessionsStore.updateSession(session.id, { title: name });
-            const task = scheduledTasksStore.createTask({
-                name,
-                prompt,
-                model,
-                targetSessionId: session.id,
-                intervalMinutes: Math.max(1, intervalMinutes || 60),
-            });
-            scheduler.rescheduleAll();
-            return task;
-        }
-    );
-
-    ipcMain.handle(
-        "scheduledTasks:update",
-        (_event: IpcMainInvokeEvent, { id, partial }: { id: string; partial: Record<string, unknown> }) => {
-            requireString(id, "task id");
-            const updated = scheduledTasksStore.updateTask(id, partial);
-            scheduler.rescheduleAll();
-            return updated;
-        }
-    );
-
-    ipcMain.handle("scheduledTasks:delete", (_event: IpcMainInvokeEvent, id: string) => {
-        requireString(id, "task id");
-        scheduledTasksStore.deleteTask(id);
-        scheduler.rescheduleAll();
-    });
-
-    ipcMain.handle("scheduledTasks:runNow", (_event: IpcMainInvokeEvent, id: string) => {
-        requireString(id, "task id");
-        return scheduler.runTask(id);
-    });
-
-    ipcMain.handle("projects:list", () => projectsStore.listProjects());
-    ipcMain.handle("projects:create", (_event: IpcMainInvokeEvent, name: string) =>
-        projectsStore.createProject(requireString(name, "project name"))
-    );
-    ipcMain.handle("projects:update", (_event: IpcMainInvokeEvent, { id, partial }) =>
-        projectsStore.updateProject(requireString(id, "project id"), partial)
-    );
-    ipcMain.handle("projects:delete", (_event: IpcMainInvokeEvent, id: string) => {
-        requireString(id, "project id");
-        sessionsStore.unassignProject(id);
-        projectsStore.deleteProject(id);
-    });
-
-    ipcMain.handle("files:openAndRead", () => fileReader.openAndReadFiles(mainWindow));
-    ipcMain.handle("files:openFolderAndRead", () => fileReader.openFolderAndRead(mainWindow));
-    ipcMain.handle("files:openMedia", () => fileReader.openAndReadMedia(mainWindow));
-
-    ipcMain.handle("secrets:has", (_event: IpcMainInvokeEvent, key: string) =>
-        secretsStore.hasSecret(requireString(key, "secret key"))
-    );
-    ipcMain.handle("secrets:set", (_event: IpcMainInvokeEvent, { key, value }: { key: string; value: string }) =>
-        secretsStore.setSecret(requireString(key, "secret key"), value ?? "")
-    );
-    ipcMain.handle("secrets:isEncryptionAvailable", () => secretsStore.isEncryptionAvailable());
-
-    ipcMain.handle("accounts:status", (_event: IpcMainInvokeEvent, provider: accounts.AccountProvider) =>
-        accounts.getLinkedAccount(provider)
-    );
-    ipcMain.handle("accounts:connect", async (_event: IpcMainInvokeEvent, { provider, token }: { provider: accounts.AccountProvider; token: string }) =>
-        accounts.connectAccount(provider, requireString(token, "access token"))
-    );
-    ipcMain.handle("accounts:disconnect", (_event: IpcMainInvokeEvent, provider: accounts.AccountProvider) =>
-        accounts.disconnectAccount(provider)
-    );
-
-    ipcMain.handle(
-        "audio:transcribe",
-        async (_event: IpcMainInvokeEvent, { audioBase64, mimeType }: { audioBase64: string; mimeType: string }) => {
-            requireString(audioBase64, "audio data");
-            const apiKey = secretsStore.getSecret("openai_api_key");
-            if (!apiKey) {
-                return { error: "Voice input needs an OpenAI API key — add one in Settings to use it." };
-            }
-            try {
-                const buffer = Buffer.from(audioBase64, "base64");
-                const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("ogg") ? "ogg" : "wav";
-                const text = await openaiProvider.transcribeAudio(apiKey, buffer, `audio.${ext}`);
-                return { text };
-            } catch (err) {
-                const error = err as Error;
-                logger.error(`Audio transcription failed: ${error.message}`);
-                return { error: error.message };
-            }
-        }
-    );
-
-    ipcMain.handle("app:setBusy", (_event: IpcMainInvokeEvent, busy: boolean) => {
-        isBusy = busy;
-    });
-    ipcMain.handle("app:getVersion", () => app.getVersion());
-    ipcMain.handle("app:checkForUpdates", () => checkForUpdatesManually(() => mainWindow));
-    ipcMain.handle("app:getDiagnostics", async () => ({
-        appVersion: app.getVersion(),
-        electron: process.versions.electron,
-        chrome: process.versions.chrome,
-        node: process.versions.node,
-        platform: process.platform,
-        arch: process.arch,
-        ollamaHost: ollama.getHost(),
-        ollamaRunning: await ollama.isRunning(),
-        logTail: getLogTail(),
-    }));
-    ipcMain.handle("app:openLogsFolder", () => shell.showItemInFolder(getLogPath()));
-
-    ipcMain.handle("data:exportSession", (_event: IpcMainInvokeEvent, id: string) =>
-        dataTransfer.exportSession(mainWindow, requireString(id, "session id"))
-    );
-    ipcMain.handle("data:exportSessionMarkdown", (_event: IpcMainInvokeEvent, id: string) =>
-        dataTransfer.exportSessionMarkdown(mainWindow, requireString(id, "session id"))
-    );
-    ipcMain.handle("data:getSessionMarkdown", (_event: IpcMainInvokeEvent, id: string) => {
-        const session = sessionsStore.getSession(requireString(id, "session id"));
-        return session ? dataTransfer.sessionToMarkdown(session) : null;
-    });
-    ipcMain.handle("data:exportAll", () => dataTransfer.exportAllSessions(mainWindow));
-    ipcMain.handle("data:import", () => dataTransfer.importSessions(mainWindow));
-    ipcMain.handle("data:getUserDataPath", () => dataTransfer.getUserDataPath());
-    ipcMain.handle("data:openUserDataFolder", () => dataTransfer.openUserDataFolder());
-
-    ipcMain.handle("data:exportPromptPresets", (_event: IpcMainInvokeEvent, presets: PromptPreset[]) =>
-        dataTransfer.exportPromptPresets(mainWindow, presets ?? [])
-    );
-    ipcMain.handle("data:importPromptPresets", () => dataTransfer.importPromptPresets(mainWindow));
-
-    ipcMain.handle(
-        "rag:indexFolder",
-        (_event: IpcMainInvokeEvent, input: { folderPath: string; folderName: string; files: AttachedFile[] }) =>
-            rag.indexFolder({ ...input, embeddingModel: settingsStore.getSettings().ragEmbeddingModel })
-    );
-    ipcMain.handle(
-        "rag:query",
-        (_event: IpcMainInvokeEvent, { collectionId, query, topK }: { collectionId: string; query: string; topK?: number }) =>
-            rag.query(collectionId, query, topK)
-    );
-    ipcMain.handle("rag:listCollections", () => rag.listCollections());
-    ipcMain.handle("rag:deleteCollection", (_event: IpcMainInvokeEvent, id: string) => rag.deleteCollection(requireString(id, "collection id")));
-
-    ipcMain.handle("hf:search", async (_event: IpcMainInvokeEvent, query: string) => {
-        try {
-            return { results: await huggingface.searchGgufModels(String(query ?? ""), 20, accounts.getAccountToken("huggingface")) };
-        } catch (err) {
-            return { error: (err as Error).message };
-        }
-    });
-
-    ipcMain.handle("hf:listFiles", async (_event: IpcMainInvokeEvent, modelId: string) => {
-        requireString(modelId, "model id");
-        try {
-            return { files: await huggingface.listGgufFiles(modelId, accounts.getAccountToken("huggingface")) };
-        } catch (err) {
-            return { error: (err as Error).message };
-        }
-    });
-
-    ipcMain.handle(
-        "hf:downloadFile",
-        async (
-            event: IpcMainInvokeEvent,
-            { requestId, modelId, filename }: { requestId: string; modelId: string; filename: string }
-        ) => {
-            requireString(modelId, "model id");
-            requireString(filename, "filename");
-            const dir = getLlamaCppModelsDir();
-            const destPath = path.join(dir, filename.replace(/[/\\]/g, "_"));
-            const channel = `hf:downloadProgress:${requestId}`;
-            try {
-                await huggingface.downloadGgufFile(modelId, filename, destPath, (progress) =>
-                    event.sender.send(channel, progress)
-                , accounts.getAccountToken("huggingface"));
-                return { path: destPath };
-            } catch (err) {
-                const error = err as Error;
-                logger.error(`Hugging Face download failed (${modelId}/${filename}): ${error.message}`);
-                fs.rmSync(destPath, { force: true });
-                return { error: error.message };
-            }
-        }
-    );
-
-    ipcMain.handle("ocr:recognize", async (_event: IpcMainInvokeEvent, imageBase64: string) => {
-        requireString(imageBase64, "image data");
-        try {
-            return { text: await ocr.recognizeText(imageBase64) };
-        } catch (err) {
-            const error = err as Error;
-            logger.error(`OCR failed: ${error.message}`);
-            return { error: `OCR failed: ${error.message}` };
-        }
-    });
-
-    ipcMain.handle("figma:fetchFrame", async (_event: IpcMainInvokeEvent, url: string) => {
-        requireString(url, "Figma URL");
-        const token = secretsStore.getSecret("figma_token");
-        if (!token) return { error: "Add a Figma personal access token in Settings first." };
-        try {
-            return { result: await figma.fetchFigmaFrameImage(token, url) };
-        } catch (err) {
-            return { error: (err as Error).message };
-        }
-    });
-
-    ipcMain.handle("screen:listSources", async () => {
-        try {
-            const sources = await desktopCapturer.getSources({
-                types: ["screen", "window"],
-                thumbnailSize: { width: 400, height: 250 },
-            });
-            return sources.map((s) => ({ id: s.id, name: s.name, thumbnailDataUrl: s.thumbnail.toDataURL() }));
-        } catch (err) {
-            logger.error(`Failed to list screen capture sources: ${(err as Error).message}`);
-            return [];
-        }
-    });
-
-    ipcMain.handle("screen:capture", async (_event: IpcMainInvokeEvent, sourceId: string) => {
-        requireString(sourceId, "source id");
-        try {
-            // Re-query at full size rather than reusing the small picker
-            // thumbnail — sources can also disappear between listing and
-            // capture (a window closed, a display disconnected).
-            const sources = await desktopCapturer.getSources({
-                types: ["screen", "window"],
-                thumbnailSize: { width: 2560, height: 1440 },
-            });
-            const match = sources.find((s) => s.id === sourceId);
-            if (!match) return { error: "That screen/window is no longer available." };
-            const dataUrl = match.thumbnail.toDataURL();
-            const dataBase64 = dataUrl.split(",")[1] ?? "";
-            if (!dataBase64) return { error: "Capture returned an empty image." };
-            return { dataBase64, mimeType: "image/png" };
-        } catch (err) {
-            const error = err as Error;
-            logger.error(`Screen capture failed: ${error.message}`);
-            return { error: error.message };
-        }
-    });
-
-    ipcMain.handle("agent:pickWorkspace", async () => {
-        const result = mainWindow
-            ? await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] })
-            : await dialog.showOpenDialog({ properties: ["openDirectory"] });
-        return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
-    });
-
-    ipcMain.handle(
-        "tools:execute",
-        async (
-            _event: IpcMainInvokeEvent,
-            { workspaceRoot, name, args }: { workspaceRoot: string; name: string; args: Record<string, unknown> }
-        ) => {
-            requireString(workspaceRoot, "workspace root");
-            requireString(name, "tool name");
-            try {
-                const result = mcpClient.isMcpTool(name)
-                    ? await mcpClient.callMcpTool(name, args ?? {})
-                    : await agentTools.executeTool(workspaceRoot, name, args ?? {});
-                return { result };
-            } catch (err) {
-                const error = err as Error;
-                logger.error(`Tool execution failed (tool=${name}): ${error.message}`);
-                return { error: error.message };
-            }
-        }
-    );
-
-    ipcMain.handle("agent:rollbackLastWrite", (_event: IpcMainInvokeEvent, workspaceRoot: string) => {
-        requireString(workspaceRoot, "workspace root");
-        return agentTools.rollbackLastWrite(workspaceRoot);
-    });
-
-    ipcMain.handle("agent:detectScripts", (_event: IpcMainInvokeEvent, workspaceRoot: string) => {
-        requireString(workspaceRoot, "workspace root");
-        return agentTools.detectProjectScripts(workspaceRoot);
-    });
-
-    // Called when the renderer is about to stop using a workspace (switching
-    // to a different folder, or loading a session that points elsewhere) —
-    // without this, background tasks started against the old workspace kept
-    // running indefinitely, since killAllBackgroundCommands() only ever ran
-    // on app quit.
-    ipcMain.handle("agent:closeWorkspace", (_event: IpcMainInvokeEvent, workspaceRoot: string) => {
-        requireString(workspaceRoot, "workspace root");
-        const killedBackgroundTasks = agentTools.killBackgroundCommandsForWorkspace(workspaceRoot);
-        const killedTerminals = terminalManager.closeAllForWorkspace(workspaceRoot);
-        return { killedBackgroundTasks, killedTerminals };
-    });
-
-    ipcMain.handle("agent:getSandboxCapabilities", () => detectSandboxCapabilities());
-
-    ipcMain.handle(
-        "terminal:create",
-        (
-            event: IpcMainInvokeEvent,
-            { workspaceRoot, opts }: { workspaceRoot: string; opts?: { cwd?: string; name?: string } }
-        ) => {
-            requireString(workspaceRoot, "workspace root");
-            // `id` is referenced inside these callbacks before it's assigned
-            // below, but that's safe: node-pty never calls onData/onExit
-            // synchronously during createTerminal() itself, only later once
-            // its own async event loop runs — by which point `id` is set.
-            const { id, name } = terminalManager.createTerminal(
-                workspaceRoot,
-                opts ?? {},
-                (chunk) => event.sender.send(`terminal:data:${id}`, chunk),
-                (exitCode) => event.sender.send(`terminal:exit:${id}`, exitCode)
-            );
-            return { id, name };
-        }
-    );
-
-    ipcMain.handle("terminal:write", (_event: IpcMainInvokeEvent, { id, data }: { id: string; data: string }) => {
-        requireString(id, "terminal id");
-        terminalManager.writeToTerminal(id, typeof data === "string" ? data : "");
-    });
-
-    ipcMain.handle("terminal:resize", (_event: IpcMainInvokeEvent, { id, cols, rows }: { id: string; cols: number; rows: number }) => {
-        requireString(id, "terminal id");
-        terminalManager.resizeTerminal(id, Number(cols) || 80, Number(rows) || 24);
-    });
-
-    ipcMain.handle("terminal:close", (_event: IpcMainInvokeEvent, id: string) => {
-        requireString(id, "terminal id");
-        terminalManager.closeTerminal(id);
-    });
-
-    ipcMain.handle("terminal:list", (_event: IpcMainInvokeEvent, workspaceRoot?: string) => terminalManager.listTerminals(workspaceRoot));
-
-    ipcMain.handle("mcp:connect", async (_event: IpcMainInvokeEvent, config: McpServerConfig) => {
-        try {
-            const { tools } = await mcpClient.connectServer(config);
-            return { tools };
-        } catch (err) {
-            const error = err as Error;
-            logger.error(`MCP connect failed (server=${config?.name}): ${error.message}`);
-            return { error: error.message };
-        }
-    });
-
-    ipcMain.handle("mcp:disconnect", (_event: IpcMainInvokeEvent, id: string) => {
-        requireString(id, "server id");
-        mcpClient.disconnectServer(id);
-    });
-
-    ipcMain.handle("mcp:status", () => mcpClient.getServerStatuses());
+    registerOllamaIpc();
+    registerChatIpc();
+    registerSystemIpc();
+    registerDownloadsIpc();
+    registerSettingsIpc();
+    registerSessionsIpc();
+    registerFilesIpc();
+    registerAppIpc();
+    registerRagIpc();
+    registerMediaIpc();
+    registerAgentIpc();
+    registerTerminalIpc();
+    registerMcpIpc();
 }
 
 // Best-effort: connect every enabled MCP server on launch so its tools are
@@ -1048,15 +183,15 @@ async function connectEnabledMcpServers(): Promise<void> {
 
 app.whenReady().then(async () => {
     registerIpcHandlers();
-    setupMenu(() => mainWindow, () => checkForUpdatesManually(() => mainWindow), settingsStore.getSettings().keybindings);
+    setupMenu(() => getMainWindow(), () => checkForUpdatesManually(() => getMainWindow()), settingsStore.getSettings().keybindings);
     createWindow();
     ollama.setHost(settingsStore.getSettings().ollamaHost);
     ollama.setModelsDir(settingsStore.getSettings().modelsDir);
     await ollama.start();
     llamacpp.setModelCacheLimit(settingsStore.getSettings().llamaCppMaxCachedModels ?? 2);
     await llamacpp.setGpuBackend(settingsStore.getSettings().llamaCppGpuBackend ?? "auto");
-    setupAutoUpdater(() => mainWindow);
-    downloadQueue.init(() => mainWindow);
+    setupAutoUpdater(() => getMainWindow());
+    downloadQueue.init(() => getMainWindow());
     downloadQueue.configure({
         concurrency: settingsStore.getSettings().downloadGlobalConcurrency ?? 2,
         bandwidthMbps: settingsStore.getSettings().downloadBandwidthMbps ?? 0,
