@@ -10,8 +10,12 @@ import type { PromptPreset } from "./settings-store";
 import type { LocalGgufModel, GpuBackend } from "./llamacpp-manager";
 import type { ScheduledTask } from "./scheduled-tasks-store";
 import type { LocalRuntimeStatus } from "./local-server-manager";
+import type { PythonEnvironmentStatus } from "./python-runtime-manager";
+import type { ChatSession } from "./sessions-store";
+import type { Project } from "./projects-store";
+import type { DownloadJob } from "./download-jobs-store";
 
-interface ToolExecuteResult {
+export interface ToolExecuteResult {
     result?: unknown;
     error?: string;
 }
@@ -22,49 +26,49 @@ interface ToolExecuteResult {
 // listener if it doesn't).
 const terminalListeners = new Map<string, { data: (...args: unknown[]) => void; exit: (...args: unknown[]) => void }>();
 
-interface ScreenSourceInfo {
+export interface ScreenSourceInfo {
     id: string;
     name: string;
     thumbnailDataUrl: string;
 }
 
-interface ScreenCaptureResult {
+export interface ScreenCaptureResult {
     dataBase64?: string;
     mimeType?: string;
     error?: string;
 }
 
-interface FigmaFetchResult {
+export interface FigmaFetchResult {
     result?: { dataBase64: string; mimeType: string; name: string };
     error?: string;
 }
 
-interface OcrResult {
+export interface OcrResult {
     text?: string;
     error?: string;
 }
 
-interface HfSearchResult {
+export interface HfSearchResult {
     results?: { id: string; downloads: number; likes: number; tags: string[] }[];
     error?: string;
 }
 
-interface HfListFilesResult {
+export interface HfListFilesResult {
     files?: { path: string; sizeBytes: number | null }[];
     error?: string;
 }
 
-interface HfDownloadProgress {
+export interface HfDownloadProgress {
     receivedBytes: number;
     totalBytes: number | null;
 }
 
-interface HfDownloadResult {
+export interface HfDownloadResult {
     path?: string;
     error?: string;
 }
 
-interface McpConnectResult {
+export interface McpConnectResult {
     tools?: { name: string; description?: string; inputSchema?: Record<string, unknown> }[];
     error?: string;
 }
@@ -73,7 +77,7 @@ function randomId(): string {
     return Math.random().toString(36).slice(2);
 }
 
-contextBridge.exposeInMainWorld("api", {
+export const api = {
     ollama: {
         status: () => ipcRenderer.invoke("ollama:status"),
         start: () => ipcRenderer.invoke("ollama:start"),
@@ -104,14 +108,14 @@ contextBridge.exposeInMainWorld("api", {
 
     localBackends: {
         getStatuses: (): Promise<LocalRuntimeStatus[]> => ipcRenderer.invoke("localBackends:getStatuses"),
-        start: (backend: "mlx" | "rocm" | "vllm", model: string) => ipcRenderer.invoke("localBackends:start", { backend, model }),
+        start: (backend: "mlx" | "rocm" | "vllm", model: string): Promise<string> => ipcRenderer.invoke("localBackends:start", { backend, model }),
         stop: (backend: "mlx" | "rocm" | "vllm") => ipcRenderer.invoke("localBackends:stop", backend),
-        restart: (backend: "mlx" | "rocm" | "vllm", model: string) => ipcRenderer.invoke("localBackends:restart", { backend, model }),
+        restart: (backend: "mlx" | "rocm" | "vllm", model: string): Promise<string> => ipcRenderer.invoke("localBackends:restart", { backend, model }),
         unload: (backend: "mlx" | "rocm" | "vllm") => ipcRenderer.invoke("localBackends:unload", backend),
     },
 
     pythonRuntimes: {
-        getStatuses: () => ipcRenderer.invoke("pythonRuntimes:getStatuses"),
+        getStatuses: (): Promise<PythonEnvironmentStatus[]> => ipcRenderer.invoke("pythonRuntimes:getStatuses"),
     },
 
     chat: {
@@ -152,8 +156,26 @@ contextBridge.exposeInMainWorld("api", {
         get: (id: string) => ipcRenderer.invoke("sessions:get", id),
         create: (model: string | null, projectId?: string | null) =>
             ipcRenderer.invoke("sessions:create", { model, projectId: projectId ?? null }),
-        update: (id: string, partial: Record<string, unknown>) =>
-            ipcRenderer.invoke("sessions:update", { id, partial }),
+        update: (
+            id: string,
+            partial: Partial<
+                Pick<
+                    ChatSession,
+                    | "title"
+                    | "model"
+                    | "messages"
+                    | "params"
+                    | "projectId"
+                    | "systemPrompt"
+                    | "agentMode"
+                    | "agentWorkspace"
+                    | "planSteps"
+                    | "contextSummary"
+                    | "contextSummaryThroughIndex"
+                    | "tags"
+                >
+            >
+        ) => ipcRenderer.invoke("sessions:update", { id, partial }),
         delete: (id: string) => ipcRenderer.invoke("sessions:delete", id),
         clearAll: () => ipcRenderer.invoke("sessions:clearAll"),
     },
@@ -216,7 +238,7 @@ contextBridge.exposeInMainWorld("api", {
 
     downloads: {
         list: () => ipcRenderer.invoke("downloads:list"),
-        create: (input: { modelId: string; filename: string; expectedBytes: number; backend?: string }) => ipcRenderer.invoke("downloads:create", input),
+        create: (input: { modelId: string; filename: string; expectedBytes: number; backend?: "automatic" | DownloadJob["backend"] }) => ipcRenderer.invoke("downloads:create", input),
         pause: (id: string) => ipcRenderer.invoke("downloads:pause", id),
         resume: (id: string) => ipcRenderer.invoke("downloads:resume", id),
         retry: (id: string) => ipcRenderer.invoke("downloads:retry", id),
@@ -262,7 +284,7 @@ contextBridge.exposeInMainWorld("api", {
     projects: {
         list: () => ipcRenderer.invoke("projects:list"),
         create: (name: string) => ipcRenderer.invoke("projects:create", name),
-        update: (id: string, partial: Record<string, unknown>) =>
+        update: (id: string, partial: Partial<Pick<Project, "name" | "instructions" | "params">>) =>
             ipcRenderer.invoke("projects:update", { id, partial }),
         delete: (id: string) => ipcRenderer.invoke("projects:delete", id),
     },
@@ -364,4 +386,6 @@ contextBridge.exposeInMainWorld("api", {
                 .finally(() => ipcRenderer.removeListener(channel, listener));
         },
     },
-});
+};
+
+contextBridge.exposeInMainWorld("api", api);
