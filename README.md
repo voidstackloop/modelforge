@@ -209,7 +209,7 @@ The `app` suite covers the store layer (atomic writes, corrupted-file recovery),
 
 - **Process isolation**: `contextIsolation: true`, `nodeIntegration: false` — the renderer only ever talks to the main process through an explicit, typed preload bridge.
 - **Content Security Policy** restricting plugins, frames, and form submissions; external links open in your default browser instead of an unmanaged Electron window.
-- **API keys** are encrypted at rest via the OS credential store (`safeStorage`) and never leave the device.
+- **API keys** are encrypted at rest via the OS credential store (`safeStorage`) and never leave the device. On the rare system with no OS credential store available (e.g. some keyring-less Linux setups), keys fall back to being stored in plain text on disk rather than being silently dropped — Settings shows a prominent warning in that case rather than the normal "encrypted" note.
 - **Agent mode** tool calls are workspace-sandboxed (path-traversal rejected) and require explicit per-call approval — see [Agent mode](#agent-mode) above and [docs/AGENT_MODE.md](docs/AGENT_MODE.md) for the full detail.
 - No telemetry, no analytics, no data sent anywhere except directly to whichever provider (Ollama, OpenAI, Anthropic) you've configured.
 

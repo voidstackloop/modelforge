@@ -137,8 +137,20 @@ export async function getPythonEnvironmentStatuses(): Promise<PythonEnvironmentS
 }
 
 interface WorkerResponse { protocol: number; id: string; ok: boolean; result?: unknown; error?: { code: string; message: string } }
+// A request has no inherent deadline otherwise: if the worker process stays
+// alive but stops responding (stuck in a long computation, deadlocked, or
+// just never writes a line back), the promise in `pending` would never
+// settle and would leak forever.
+const REQUEST_TIMEOUT_MS = 20_000;
+// Bounds how much unterminated stdout `consume` will buffer waiting for a
+// newline. A worker that never emits one (buggy print, corrupted output)
+// would otherwise grow this string without limit for as long as the process
+// lives — this caps the damage and fails loudly instead of leaking memory.
+const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 export class ManagedPythonWorker {
-    private child: ChildProcess | null = null; private pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>(); private buffer = "";
+    private child: ChildProcess | null = null;
+    private pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
+    private buffer = "";
     constructor(private readonly family: PythonRuntimeFamily) {}
     start(): void {
         if (this.child) return;
@@ -153,10 +165,54 @@ export class ManagedPythonWorker {
         // event with no listener, which Node treats as an uncaught exception
         // and crashes the whole main process instead of just failing this
         // one request.
-        this.child.once("error", (error: Error) => { for (const request of this.pending.values()) request.reject(error); this.pending.clear(); this.child = null; });
-        this.child.once("exit", () => { for (const request of this.pending.values()) request.reject(new Error("Python worker exited")); this.pending.clear(); this.child = null; });
+        this.child.once("error", (error: Error) => { this.failAllPending(error); this.child = null; });
+        this.child.once("exit", () => { this.failAllPending(new Error("Python worker exited")); this.child = null; });
     }
-    private consume(chunk: string): void { this.buffer += chunk; const lines = this.buffer.split(/\r?\n/); this.buffer = lines.pop() ?? ""; for (const line of lines) { if (!line) continue; const response = JSON.parse(line) as WorkerResponse; const pending = this.pending.get(response.id); if (!pending) continue; this.pending.delete(response.id); response.ok ? pending.resolve(response.result) : pending.reject(new Error(response.error?.message ?? "Worker request failed")); } }
-    request(method: "health" | "metrics" | "recommend", params: Record<string, unknown> = {}): Promise<unknown> { this.start(); const id = crypto.randomUUID(); return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); this.child?.stdin?.write(JSON.stringify({ protocol: PYTHON_WORKER_PROTOCOL_VERSION, id, method, params }) + "\n"); }); }
+    private failAllPending(error: Error): void {
+        for (const request of this.pending.values()) { clearTimeout(request.timer); request.reject(error); }
+        this.pending.clear();
+        this.buffer = "";
+    }
+    private consume(chunk: string): void {
+        this.buffer += chunk;
+        if (this.buffer.length > MAX_BUFFER_BYTES) {
+            // Something is badly wrong (runaway output, no newlines) — treat
+            // it as fatal rather than let the process keep growing memory.
+            const error = new Error(`Python worker "${this.family}" exceeded the ${MAX_BUFFER_BYTES}-byte output buffer without a complete line`);
+            const child = this.child;
+            this.failAllPending(error);
+            if (child?.pid) killProcessTree(child.pid, "SIGKILL");
+            this.child = null;
+            return;
+        }
+        const lines = this.buffer.split(/\r?\n/); this.buffer = lines.pop() ?? "";
+        for (const line of lines) {
+            if (!line) continue;
+            let response: WorkerResponse;
+            try {
+                response = JSON.parse(line) as WorkerResponse;
+            } catch {
+                console.error(`[python-worker:${this.family}] Ignoring malformed response line: ${line.slice(0, 200)}`);
+                continue;
+            }
+            const pending = this.pending.get(response.id);
+            if (!pending) continue;
+            clearTimeout(pending.timer);
+            this.pending.delete(response.id);
+            response.ok ? pending.resolve(response.result) : pending.reject(new Error(response.error?.message ?? "Worker request failed"));
+        }
+    }
+    request(method: "health" | "metrics" | "recommend", params: Record<string, unknown> = {}): Promise<unknown> {
+        this.start();
+        const id = crypto.randomUUID();
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.pending.delete(id);
+                reject(new Error(`Python worker "${this.family}" request "${method}" timed out after ${REQUEST_TIMEOUT_MS}ms`));
+            }, REQUEST_TIMEOUT_MS);
+            this.pending.set(id, { resolve, reject, timer });
+            this.child?.stdin?.write(JSON.stringify({ protocol: PYTHON_WORKER_PROTOCOL_VERSION, id, method, params }) + "\n");
+        });
+    }
     async shutdown(): Promise<void> { const child = this.child; if (!child) return; const pid = child.pid; try { const id = crypto.randomUUID(); child.stdin?.write(JSON.stringify({ protocol: PYTHON_WORKER_PROTOCOL_VERSION, id, method: "shutdown", params: {} }) + "\n"); } catch { /* pipe closed */ } await new Promise((resolve) => setTimeout(resolve, 500)); if (pid && this.child) killProcessTree(pid, "SIGTERM"); this.child = null; }
 }

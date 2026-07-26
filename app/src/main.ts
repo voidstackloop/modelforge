@@ -738,6 +738,7 @@ function registerIpcHandlers(): void {
     ipcMain.handle("secrets:set", (_event: IpcMainInvokeEvent, { key, value }: { key: string; value: string }) =>
         secretsStore.setSecret(requireString(key, "secret key"), value ?? "")
     );
+    ipcMain.handle("secrets:isEncryptionAvailable", () => secretsStore.isEncryptionAvailable());
 
     ipcMain.handle("accounts:status", (_event: IpcMainInvokeEvent, provider: accounts.AccountProvider) =>
         accounts.getLinkedAccount(provider)

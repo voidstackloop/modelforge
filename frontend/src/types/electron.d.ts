@@ -680,6 +680,7 @@ export interface ElectronApi {
   secrets: {
     has: (key: string) => Promise<boolean>;
     set: (key: string, value: string) => Promise<void>;
+    isEncryptionAvailable: () => Promise<boolean>;
   };
   accounts: {
     status: (provider: "github" | "huggingface") => Promise<LinkedAccount | null>;

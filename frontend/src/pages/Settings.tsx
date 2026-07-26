@@ -212,6 +212,7 @@ export default function Settings() {
     const [importMessage, setImportMessage] = useState<string | null>(null);
     const [ollamaHostInput, setOllamaHostInput] = useState("");
     const [sandboxCapabilities, setSandboxCapabilities] = useState<SandboxCapabilities | null>(null);
+    const [secretsEncrypted, setSecretsEncrypted] = useState<boolean | null>(null);
     const [modelsDirStatus, setModelsDirStatus] = useState<string | null>(null);
     const [changingModelsDir, setChangingModelsDir] = useState(false);
     const [newPresetName, setNewPresetName] = useState("");
@@ -282,6 +283,7 @@ export default function Settings() {
         window.api.llamacpp.getAvailableGpuBackends().then(setLlamaCppGpuBackends);
         refreshRuntimeStatuses();
         window.api.agent.getSandboxCapabilities().then(setSandboxCapabilities);
+        window.api.secrets.isEncryptionAvailable().then(setSecretsEncrypted);
     }, []);
 
     useEffect(() => {
@@ -1788,7 +1790,15 @@ export default function Settings() {
 
                     <TabsContent value="integrations" className="min-w-0 flex-1 flex flex-col gap-8">
                     <div>
-                        <SettingsSection title={t.cloudProviders} description={t.keysEncryptedNote}>
+                        <SettingsSection title={t.cloudProviders} description={secretsEncrypted === false ? undefined : t.keysEncryptedNote}>
+                            {secretsEncrypted === false && (
+                                <SettingsRow stacked>
+                                    <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+                                        <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
+                                        <span>{t.keysNotEncryptedWarning}</span>
+                                    </div>
+                                </SettingsRow>
+                            )}
                             <SettingsRow label="ChatGPT (OpenAI)" stacked>
                                 <div className="flex items-center gap-2">
                                     {openaiKeySet && (

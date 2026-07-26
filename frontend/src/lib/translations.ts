@@ -50,6 +50,7 @@ export interface Dictionary {
     yourSystem: string;
     cloudProviders: string;
     keysEncryptedNote: string;
+    keysNotEncryptedWarning: string;
     ollamaModelsSection: string;
     otherInstalledModels: string;
     chatDefaults: string;
@@ -450,6 +451,7 @@ export const en: Dictionary = {
     yourSystem: "Your system",
     cloudProviders: "Cloud providers",
     keysEncryptedNote: "Keys are encrypted at rest using your OS credential store and never leave this device.",
+    keysNotEncryptedWarning: "No OS credential store was found on this system, so keys are being saved in plain text on disk instead of encrypted. They still never leave this device, but anyone with file access to your user profile can read them.",
     ollamaModelsSection: "Ollama models",
     otherInstalledModels: "Other installed models",
     chatDefaults: "Chat defaults",
@@ -860,6 +862,8 @@ export const tr: Dictionary = {
     cloudProviders: "Bulut sağlayıcılar",
     keysEncryptedNote:
         "Anahtarlar, işletim sistemi kimlik bilgisi deposu kullanılarak şifrelenir ve bu cihazdan çıkmaz.",
+    keysNotEncryptedWarning:
+        "Bu sistemde bir işletim sistemi kimlik bilgisi deposu bulunamadığı için anahtarlar şifrelenmeden düz metin olarak diske kaydediliyor. Yine de bu cihazdan çıkmazlar, ancak kullanıcı profilinize dosya erişimi olan herkes onları okuyabilir.",
     ollamaModelsSection: "Ollama modelleri",
     otherInstalledModels: "Diğer yüklü modeller",
     chatDefaults: "Sohbet varsayılanları",

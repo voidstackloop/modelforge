@@ -102,7 +102,12 @@ plain JSON files under Electron's `userData` directory, going through the shared
 
 Secrets (provider API keys) go through `secrets-store.ts` instead, which encrypts values at rest
 via Electron's `safeStorage` (backed by the OS credential store — Keychain, DPAPI, or
-libsecret/kwallet) rather than writing them out as plain JSON.
+libsecret/kwallet) rather than writing them out as plain JSON. On a system with no OS credential
+store available (`safeStorage.isEncryptionAvailable()` returns `false` — some keyring-less Linux
+setups), the store falls back to writing the value unencrypted rather than silently dropping the
+key; this fallback is logged at warn level, and `secrets:isEncryptionAvailable` lets the renderer
+check the same condition to show a plaintext-storage warning in Settings instead of the normal
+"encrypted at rest" note.
 
 ## Native addon (`lib/`)
 

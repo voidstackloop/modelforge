@@ -177,6 +177,7 @@ contextBridge.exposeInMainWorld("api", {
     secrets: {
         has: (key: string) => ipcRenderer.invoke("secrets:has", key),
         set: (key: string, value: string) => ipcRenderer.invoke("secrets:set", { key, value }),
+        isEncryptionAvailable: () => ipcRenderer.invoke("secrets:isEncryptionAvailable") as Promise<boolean>,
     },
 
     accounts: {
