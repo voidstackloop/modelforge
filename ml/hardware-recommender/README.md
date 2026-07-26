@@ -4,6 +4,29 @@ This project trains a compact recommender that predicts whether a model will run
 
 The public Open LLM Leaderboard supplies real model names, parameter counts, architectures, precisions, and quality scores. It does **not** contain measured PC compatibility labels. `prepare_dataset.py` therefore combines the real catalog with transparent memory and throughput heuristics to create supervised training examples. Replace or augment those generated labels with measured telemetry before treating speed estimates as authoritative.
 
+## Relationship to the Modelforge app
+
+This directory is the *training* project — it is not built or run as part of the app's `npm run
+build:all`/CI pipeline, and has no Node/Electron dependency at all. Its trained output is used at
+runtime, though, via a committed copy rather than a live link:
+
+- `artifacts/hardware_recommender.pt` (produced by `train.py` below) is manually copied to
+  `app/python/artifacts/hardware_recommender.pt` when it's updated.
+- `app/python/recommender_worker.py` is a separate, trimmed, inference-only reimplementation of
+  `recommender/model.py`'s architecture and feature encoding — deliberately not importing this
+  project's code, so the packaged app doesn't need pandas/pyarrow/the training pipeline just to
+  run inference. If you change the model architecture or feature set here, that worker script
+  needs the equivalent change ported over by hand.
+- `app/src/system-specs.ts` spawns that worker as a long-lived JSON-line subprocess
+  (`app/src/python-runtime-manager.ts`) and calls it to enhance the app's plain-heuristic hardware
+  recommendations with this model's predictions, falling back to the heuristic alone if the worker
+  isn't available. See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md#mlhardware-recommender)
+  in the repo root for the full runtime picture.
+
+**In short:** edit and retrain here, verify with `recommend.py`, then hand-port the updated
+checkpoint and any architecture/feature changes into `app/python/` before they take effect in the
+app.
+
 ## Outputs
 
 For a hardware/model combination, inference returns:
@@ -18,6 +41,25 @@ For a hardware/model combination, inference returns:
 - recommended runtime
 
 The PyTorch model is a compact multi-task MLP with a shared backbone and separate fit, runtime, context, and speed heads. It is normally well below 1 MB. It trains on CPU by default and can optionally use CUDA or Apple MPS. A 2–3 GB GPU is more than sufficient.
+
+## Project layout
+
+```
+download_dataset.py    Fetches the Open LLM Leaderboard snapshot (and optionally published benchmark datasets)
+prepare_dataset.py      Builds the supervised training set: real catalog + measured/published rows + synthetic boundary rows
+train.py                 Trains the multi-task MLP and writes artifacts/hardware_recommender.pt
+recommend.py             CLI inference against a trained checkpoint — the reference implementation of the prediction logic
+recommender/
+  model.py                 HardwareRecommender module, feature/target encoding, Normalizer
+  features.py               Feature column definitions, quantization table, memory/throughput heuristics
+  data_sources.py           Dataset download/normalization helpers used by download_dataset.py / prepare_dataset.py
+data/
+  raw/                       Downloaded leaderboard snapshot and published benchmark tables
+  measured/                  App-exported or manually collected measured benchmark rows (highest-weight training signal)
+  processed/                 Output of prepare_dataset.py — the actual training parquet
+artifacts/                Trained checkpoint + metrics (hardware_recommender.pt, hardware_recommender.metrics.json)
+tests/                     pytest coverage for feature encoding and data-source normalization
+```
 
 ## Setup
 
@@ -72,7 +114,7 @@ python recommend.py \
   --cpu-cores 8
 ```
 
-Use `--json` when calling it from Electron. For production, keep a Python worker alive and exchange JSON lines over stdin/stdout instead of starting Python for every recommendation. `--device auto` selects CUDA, then Apple MPS, then CPU; use `--device cpu` if the GPU is needed for inference workloads.
+Use `--json` when scripting against it. This CLI is the reference implementation for manual testing — the app itself doesn't shell out to `recommend.py` per request; it keeps a long-lived worker process alive and exchanges JSON lines over stdin/stdout instead (see [Relationship to the Modelforge app](#relationship-to-the-modelforge-app) above), which is the pattern to follow if you're integrating this model elsewhere. `--device auto` selects CUDA, then Apple MPS, then CPU; use `--device cpu` if the GPU is needed for inference workloads.
 
 ## Important limitations
 

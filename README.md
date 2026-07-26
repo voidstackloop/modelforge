@@ -18,7 +18,7 @@ Beyond chat, Modelforge includes an **agentic mode** — the model can read/writ
 - [Quick start](#quick-start-try-it-in-5-minutes)
 - [Agent mode](#agent-mode)
 - [Building from source](#building-from-source)
-- [Project structure](#project-structure)
+- [Documentation](#documentation)
 - [Testing](#testing)
 - [Security](#security)
 - [Contributing](#contributing)
@@ -140,31 +140,15 @@ If steps 2–3 work, the core app is functioning correctly — everything else l
 
 ## Agent mode
 
-Click **Agent** in the chat toolbar and pick a folder — that becomes the model's sandboxed workspace for the rest of the conversation. The model can then call:
-
-| Tool | What it does |
-|---|---|
-| `read_file` | Read a text file, optionally by line range |
-| `write_file` | Create or overwrite a file (creates parent directories as needed) |
-| `replace_in_file` | Replace an exact text block without rewriting the whole file; supports Undo |
-| `find_files`, `file_info` | Discover files by glob and inspect path metadata |
-| `list_dir` | List files and subdirectories |
-| `search_files` | Search for a text string across the workspace |
-| `make_directory`, `move_path`, `delete_path` | Organize workspace files with explicit approval for mutations |
-| `run_command` | Execute a shell command in the workspace (or a subfolder), with a 60s timeout |
-| `run_code` | Run a Python or JavaScript snippet — a convenience over shell-quoting multi-line code through `run_command`, not a new capability |
-| `git_status`, `git_diff`, `git_log` | Read-only git helpers (auto-approvable, like the file tools) so the model doesn't need to guess flag syntax |
-| `git_commit` | Stage everything and commit — requires approval, like `write_file` |
-| `github_list_repositories` | List repositories accessible to the linked GitHub account |
-| `github_repository_tree` | Inspect a repository's complete file structure before analysis |
-| `github_read_file` | Read selected files from public or private linked-account repositories |
+Click **Agent** in the chat toolbar and pick a folder — that becomes the model's sandboxed workspace for the rest of the conversation. The model can then call a wide catalog of tools: file read/write/search/patch, shell and background commands, an interactive terminal, read-only and commit git operations, and network tools (web search, arbitrary HTTP requests, linked-GitHub repo access). **See [docs/AGENT_MODE.md](docs/AGENT_MODE.md) for the full, current tool table** — the summary below covers the safety model, which is the part worth understanding before you use it.
 
 **Safety model:**
 - Built-in filesystem tools are genuinely confined to the chosen workspace folder — path traversal (`../../etc`), absolute paths elsewhere on disk, and symlinks that resolve outside the workspace are rejected before anything runs.
-- `run_command` and `run_code` are different: a shell command (or a script `run_code` hands to `python3`/`node`) is opaque text that can reference any path on the system regardless of its working directory, so neither is sandboxed the way the file tools are. As a safety net, commands (and `run_code`'s source text) matching destructive or system-level patterns — deleting outside the workspace, formatting a drive, shutting down the machine, registry deletion, `sudo`/`runas`, piping a remote script into a shell — are **rejected outright**, even if already approved. This blocklist catches the common catastrophic cases, not everything a shell or script can do — only approve a command or snippet you actually understand.
-- Every call (including ones the blocklist doesn't catch) shows an **Allow / Deny** card before it executes — nothing runs without an explicit click. Read-only tools (`read_file`, `find_files`, `file_info`, `list_dir`, `search_files`, `git_status`, `git_diff`, `git_log`) can be marked "always allow this session" to cut down on repetitive approvals; filesystem mutations, `run_command`, `run_code`, and `git_commit` always require a fresh click, since they have real, potentially irreversible effects.
+- `run_command` and `run_code` are different: a shell command (or a script `run_code` hands to `python3`/`node`) is opaque text that can reference any path on the system regardless of its working directory, so neither is confined the way the file tools are. Where the OS supports it, commands run inside a real sandbox instead (bubblewrap on Linux, `sandbox-exec` on macOS — Windows has no equivalent). As a safety net everywhere, commands (and `run_code`'s source text) matching destructive or system-level patterns — deleting outside the workspace, formatting a drive, shutting down the machine, registry deletion, `sudo`/`runas`, piping a remote script into a shell — are **rejected outright**, even if already approved. This blocklist catches the common catastrophic cases, not everything a shell or script can do — only approve a command or snippet you actually understand.
+- Every call (including ones the blocklist doesn't catch) shows an **Allow / Deny** card before it executes — nothing runs without an explicit click. A narrow set of strictly read-only, no-network tools can be marked "always allow this session" to cut down on repetitive approvals; anything that mutates the workspace, runs code, or touches the network always requires a fresh click, since those have real, potentially irreversible or unattended-outbound-channel effects — see [docs/AGENT_MODE.md](docs/AGENT_MODE.md#safety-model) for exactly which tools qualify and why.
 - A per-turn step limit (25 tool-result → model-continuation round trips) stops a model from looping indefinitely without producing a final answer.
 - The trust list for "always allow" is in-memory only — closing and reopening a chat resets it.
+- A Settings toggle can disable every network-capable tool at once, for a fully offline, filesystem-and-shell-only workflow.
 
 **Preview & Rollback:**
 - A pending `write_file` call shows a real **line-by-line diff** against the file's current content (or a "new file" badge if it doesn't exist yet) instead of a raw argument dump, so you can see exactly what would change before clicking Allow.
@@ -178,7 +162,7 @@ Click **Agent** in the chat toolbar and pick a folder — that becomes the model
 
 Enabled servers reconnect automatically on launch; each server's tools appear in Agent mode's tool list prefixed with the server's name, going through the exact same Allow/Deny approval flow as built-in tools. (SSE and plain WebSocket transports aren't implemented — SSE is the legacy MCP HTTP transport, now superseded by Streamable HTTP, and WebSocket isn't part of the MCP spec itself.)
 
-**Model choice matters.** Agent mode works with whatever model you point it at, but only actually produces tool calls if that model was trained for function/tool calling — a model without that training will just chat normally and never call a tool. The Settings model browser flags models with reliable tool-calling support with a 🔧 **Tool calling** badge (e.g. the Qwen3 family, Llama 3.1+, Mistral Nemo, Qwen2.5-Coder, Devstral).
+**Model choice matters.** Agent mode works with whatever model you point it at, but only actually produces tool calls if that model was trained for function/tool calling — a model without that training will just chat normally and never call a tool. The Settings model browser flags models with reliable tool-calling support with a 🔧 **Tool calling** badge (e.g. the Qwen3 family, Llama 3.1+, Mistral Nemo, Qwen2.5-Coder, Devstral). The llama.cpp backend doesn't have tool-calling wired up yet — see [Features](#features) above.
 
 ## Building from source
 
@@ -199,26 +183,18 @@ npm run dev --prefix app
 npm run package --prefix app
 ```
 
-Packaged installers are written to `app/release/`.
+Packaged installers are written to `app/release/`. For the full development workflow (hot reload,
+rebuilding the native Rust addon, cross-platform packaging details, CI/release pipeline), see
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-## Project structure
+## Documentation
 
-```
-frontend/          React + Vite renderer (the UI)
-  src/pages/          Chat and Settings screens
-  src/components/     Shared UI (layout, command palette, markdown rendering, shadcn primitives)
-  src/lib/            i18n, model catalogs, pricing estimates, provider helpers
+This README covers what the app does and how to install/build it. For anything deeper:
 
-app/                Electron main process
-  src/main.ts           Window management, IPC handler registration
-  src/providers/        Ollama/OpenAI/Anthropic chat + tool-calling adapters
-  src/agent-tools.ts     Agent mode's file/shell tool implementations (workspace-sandboxed)
-  src/*-store.ts         Settings/sessions/projects/secrets persistence (atomic writes, corruption recovery)
-  src/rag.ts             Chunking + embedding + retrieval for large folder attachments
-  src/logger.ts          Rotating file logs surfaced via Settings → Data → Diagnostics
-```
-
-The frontend builds to a single inlined HTML file (`vite-plugin-singlefile`) so Electron can load it directly via `file://` in production, matching how the packaged app actually runs.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the Electron main/renderer/preload split works, the IPC bridge, the native Rust downloader addon, the persistence pattern (atomic writes, corruption recovery), and the end-to-end data flow for sending a chat message.
+- **[docs/AGENT_MODE.md](docs/AGENT_MODE.md)** — the full Agent mode tool catalog, the workspace-sandboxing and OS-level command-sandboxing model, the tool-approval policy and exactly why each tool is or isn't auto-approvable, and MCP server integration.
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** — prerequisites, running in dev mode, testing, building, packaging installers for each platform, and the project's directory layout.
+- **[ml/hardware-recommender/README.md](ml/hardware-recommender/README.md)** — the standalone Python project that trains the hardware/model-fit recommender. Its training pipeline isn't part of the app's build, but its trained checkpoint ships with the app and is used at runtime via a Python worker to enhance the Models & hardware recommendations mentioned above.
 
 ## Testing
 
@@ -227,19 +203,19 @@ npm test --prefix frontend
 npm test --prefix app
 ```
 
-The `app` suite covers the store layer (atomic writes, corrupted-file recovery), the agent tools (including path-traversal rejection and shell command execution), and the RAG chunking/similarity logic. Both suites run in CI on every push and pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which also lints, typechecks, and builds both packages.
+The `app` suite covers the store layer (atomic writes, corrupted-file recovery), the agent tools (including path-traversal rejection and shell command execution), and the RAG chunking/similarity logic. Both suites run in CI on every push and pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which also lints, typechecks, and builds both packages. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#testing) for what each suite specifically exercises.
 
 ## Security
 
 - **Process isolation**: `contextIsolation: true`, `nodeIntegration: false` — the renderer only ever talks to the main process through an explicit, typed preload bridge.
 - **Content Security Policy** restricting plugins, frames, and form submissions; external links open in your default browser instead of an unmanaged Electron window.
 - **API keys** are encrypted at rest via the OS credential store (`safeStorage`) and never leave the device.
-- **Agent mode** tool calls are workspace-sandboxed (path-traversal rejected) and require explicit per-call approval — see [Agent mode](#agent-mode) above.
+- **Agent mode** tool calls are workspace-sandboxed (path-traversal rejected) and require explicit per-call approval — see [Agent mode](#agent-mode) above and [docs/AGENT_MODE.md](docs/AGENT_MODE.md) for the full detail.
 - No telemetry, no analytics, no data sent anywhere except directly to whichever provider (Ollama, OpenAI, Anthropic) you've configured.
 
 ## Contributing
 
-Issues and pull requests are welcome. Before opening a PR, please make sure:
+Issues and pull requests are welcome. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full setup and testing workflow. Before opening a PR, please make sure:
 
 ```sh
 npm run lint --prefix frontend
