@@ -4,6 +4,7 @@
   "description": "",
   "main": "dist/main.js",
   "scripts": {
+    "postinstall": "node scripts/fix-native-permissions.js",
     "test": "vitest run",
     "build": "tsc -p tsconfig.json",
     "dev:renderer": "npm --prefix ../frontend run dev",
@@ -98,7 +99,7 @@
     "wait-on": "^9.0.10"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^13.0.1",
     "electron-updater": "^6.6.2",
     "ffmpeg-static": "^5.3.0",
     "node-llama-cpp": "^3.19.1",

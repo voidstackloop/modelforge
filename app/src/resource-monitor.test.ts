@@ -11,6 +11,19 @@ function isAlive(pid: number): boolean {
     }
 }
 
+// pidusage's per-call latency varies a lot by platform (Windows CI runners
+// in particular can be slow/jittery, e.g. when it shells out for process
+// stats) — polling for the expected outcome instead of sleeping a fixed
+// duration avoids flaking on a runner where one polling interval legitimately
+// takes longer than the fixed wait this used to use.
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+    const start = Date.now();
+    while (!predicate()) {
+        if (Date.now() - start > timeoutMs) throw new Error("timed out waiting for condition");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+}
+
 describe("monitorProcess", () => {
     let child: ChildProcess | undefined;
     let stop: (() => void) | undefined;
@@ -29,7 +42,7 @@ describe("monitorProcess", () => {
         // very first poll.
         stop = monitorProcess(pid, { maxMemoryMB: 1 }, (reason) => reasons.push(reason), 50);
 
-        await new Promise((r) => setTimeout(r, 500));
+        await waitFor(() => reasons.length > 0);
 
         expect(reasons).toHaveLength(1);
         expect(reasons[0]).toMatch(/exceeded the 1MB memory limit/);

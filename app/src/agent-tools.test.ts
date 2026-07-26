@@ -627,7 +627,7 @@ describe("agent-tools", () => {
             expect(() => startBackgroundCommand(workspace, "sleep 5")).toThrow(/Already running/);
         });
 
-        it("kills and forgets only the tasks belonging to the given workspace, leaving other workspaces' tasks running", () => {
+        it("kills and forgets only the tasks belonging to the given workspace, leaving other workspaces' tasks running", async () => {
             const otherWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "agent-tools-test-other-"));
             const { taskId: taskA } = startBackgroundCommand(workspace, "sleep 30");
             const { taskId: taskB } = startBackgroundCommand(otherWorkspace, "sleep 30");
@@ -639,7 +639,24 @@ describe("agent-tools", () => {
             // switched away from shouldn't linger as a queryable id.
             expect(() => getBackgroundOutput(taskA)).toThrow(/No background task/);
             expect(getBackgroundOutput(taskB)).toContain("running");
-            fs.rmSync(otherWorkspace, { recursive: true, force: true });
+
+            // Clean up taskB now that the assertion above is done — leaving it
+            // running would leak a process for the rest of the suite, and on
+            // Windows, removing otherWorkspace while it's still that process's
+            // cwd fails with EBUSY (POSIX allows unlinking a directory a live
+            // process is using; Windows doesn't). Killing is fire-and-forget
+            // (killProcessTree doesn't wait for exit), so the directory removal
+            // is retried briefly to absorb the gap between signal and release.
+            killBackgroundCommandsForWorkspace(otherWorkspace);
+            for (let attempt = 0; attempt < 10; attempt++) {
+                try {
+                    fs.rmSync(otherWorkspace, { recursive: true, force: true });
+                    break;
+                } catch (err) {
+                    if ((err as NodeJS.ErrnoException).code !== "EBUSY" || attempt === 9) throw err;
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                }
+            }
         });
 
         it("returns 0 when the workspace has no background tasks", () => {

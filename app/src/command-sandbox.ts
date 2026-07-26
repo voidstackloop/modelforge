@@ -153,6 +153,15 @@ function buildMacSandboxProfile(workspaceRoot: string, allowNetwork: boolean): s
         '(allow file-write* (subpath "/tmp"))',
         '(allow file-write* (subpath "/private/tmp"))',
         '(allow file-write* (subpath "/private/var/folders"))',
+        // The blanket file-write deny above also covers /dev — bubblewrap's
+        // Linux path gets a working /dev for free via --dev /dev, but
+        // sandbox-exec needs these listed explicitly. Without /dev/null
+        // specifically, ordinary tools that redirect to it internally
+        // (git being the one that surfaced this) fail with "could not open
+        // '/dev/null' for reading and writing: Operation not permitted".
+        '(allow file-write* (literal "/dev/null"))',
+        '(allow file-write* (literal "/dev/zero"))',
+        '(allow file-write* (literal "/dev/tty"))',
         allowNetwork ? "(allow network*)" : "(deny network*)",
         "",
     ].join("\n");

@@ -1,7 +1,21 @@
 import { describe, it, expect } from "vitest";
+import * as path from "node:path";
 import { detectSandboxCapabilities, wrapCommand, applySandbox, shellQuote } from "./command-sandbox";
 
 const has = (available: string[]) => (cmd: string) => available.includes(cmd);
+
+// wrapCommand resolves paths with the real (host-native) path.resolve
+// regardless of the `platform` argument used to simulate capability
+// detection — that argument only picks which sandbox mechanism to build for,
+// it doesn't make path.resolve itself POSIX. So these tests build their
+// expected paths the same way, via path.resolve, rather than hardcoding
+// POSIX literals that would only match on Linux/macOS test runners and fail
+// on Windows CI where path.resolve("/home/user/project") is
+// "D:\\home\\user\\project".
+const resolved = (p: string) => path.resolve(p);
+// Mirrors buildMacSandboxProfile's own escaping of the resolved path so the
+// expected profile string matches on any host, backslashes and all.
+const macProfileEscaped = (p: string) => resolved(p).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
 describe("detectSandboxCapabilities", () => {
     it("prefers bubblewrap on Linux when available", () => {
@@ -56,7 +70,7 @@ describe("wrapCommand", () => {
         expect(wrapped?.command).toBe("bwrap");
         expect(wrapped?.args).toContain("--unshare-all");
         expect(wrapped?.args).not.toContain("--share-net");
-        expect(wrapped?.args).toEqual(expect.arrayContaining(["--bind", "/home/user/project", "/home/user/project"]));
+        expect(wrapped?.args).toEqual(expect.arrayContaining(["--bind", resolved("/home/user/project"), resolved("/home/user/project")]));
         expect(wrapped?.args.slice(-3)).toEqual(["sh", "-c", "npm test"]);
     });
 
@@ -69,7 +83,7 @@ describe("wrapCommand", () => {
         const wrapped = wrapCommand("npm test", { workspaceRoot: "/Users/me/project", allowNetwork: false }, "darwin", has(["sandbox-exec"]));
         expect(wrapped?.command).toBe("sandbox-exec");
         expect(wrapped?.args[0]).toBe("-p");
-        expect(wrapped?.args[1]).toContain('(allow file-write* (subpath "/Users/me/project"))');
+        expect(wrapped?.args[1]).toContain(`(allow file-write* (subpath "${macProfileEscaped("/Users/me/project")}"))`);
         expect(wrapped?.args[1]).toContain("(deny network*)");
         expect(wrapped?.args.slice(-3)).toEqual(["sh", "-c", "npm test"]);
     });
@@ -92,15 +106,15 @@ describe("wrapCommand", () => {
         );
         const chdirIndex = wrapped!.args.indexOf("--chdir");
         expect(chdirIndex).toBeGreaterThan(-1);
-        expect(wrapped!.args[chdirIndex + 1]).toBe("/home/user/project/packages/api");
+        expect(wrapped!.args[chdirIndex + 1]).toBe(resolved("/home/user/project/packages/api"));
         // The workspace root is still what gets bound writable.
-        expect(wrapped!.args).toEqual(expect.arrayContaining(["--bind", "/home/user/project", "/home/user/project"]));
+        expect(wrapped!.args).toEqual(expect.arrayContaining(["--bind", resolved("/home/user/project"), resolved("/home/user/project")]));
     });
 
     it("falls back to the workspace root when no cwd is given", () => {
         const wrapped = wrapCommand("npm test", { workspaceRoot: "/home/user/project", allowNetwork: false }, "linux", has(["bwrap"]));
         const chdirIndex = wrapped!.args.indexOf("--chdir");
-        expect(wrapped!.args[chdirIndex + 1]).toBe("/home/user/project");
+        expect(wrapped!.args[chdirIndex + 1]).toBe(resolved("/home/user/project"));
     });
 });
 
@@ -133,7 +147,7 @@ describe("applySandbox", () => {
     it("folds a bubblewrap-wrapped command into a single shell string ending in the original command", () => {
         const result = applySandbox("npm test", { workspaceRoot: "/home/user/project", allowNetwork: false }, "linux", has(["bwrap"]));
         expect(result.startsWith("'bwrap' ")).toBe(true);
-        expect(result).toContain("'/home/user/project'");
+        expect(result).toContain(`'${resolved("/home/user/project")}'`);
         expect(result.endsWith("'sh' '-c' 'npm test'")).toBe(true);
     });
 
@@ -141,6 +155,9 @@ describe("applySandbox", () => {
         const result = applySandbox("echo hi", { workspaceRoot: "/home/user/it's-a-project", allowNetwork: false }, "linux", has(["bwrap"]));
         // A raw unescaped single quote here would terminate the shell string
         // early and let the rest of the path be interpreted as commands.
-        expect(result).toContain("'/home/user/it'\\''s-a-project'");
+        // applySandbox always quotes POSIX-style here since it's passed the
+        // simulated "linux" platform, regardless of the host OS actually
+        // running this test — only the resolved path's format varies by host.
+        expect(result).toContain(`'${resolved("/home/user/it's-a-project").replace(/'/g, "'\\''")}'`);
     });
 });
