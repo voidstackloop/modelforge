@@ -33,21 +33,32 @@ describe("monitorProcess", () => {
         if (child?.pid && isAlive(child.pid)) child.kill();
     });
 
-    it("kills the process and reports why when it exceeds the memory limit", async () => {
-        child = spawn("node", ["-e", "setTimeout(() => {}, 10000)"], { stdio: "ignore" });
-        const pid = child.pid!;
-        const reasons: string[] = [];
+    it(
+        "kills the process and reports why when it exceeds the memory limit",
+        async () => {
+            child = spawn("node", ["-e", "setTimeout(() => {}, 10000)"], { stdio: "ignore" });
+            const pid = child.pid!;
+            const reasons: string[] = [];
 
-        // Any real node process uses well over 1MB RSS, so this fires on the
-        // very first poll.
-        stop = monitorProcess(pid, { maxMemoryMB: 1 }, (reason) => reasons.push(reason), 50);
+            // Any real node process uses well over 1MB RSS, so this fires on the
+            // very first poll.
+            stop = monitorProcess(pid, { maxMemoryMB: 1 }, (reason) => reasons.push(reason), 50);
 
-        await waitFor(() => reasons.length > 0);
+            // Windows CI runners can take noticeably longer than Vitest's
+            // default 5000ms per-test timeout for pidusage's first sample
+            // (it shells out for process stats there) — 5000ms was both this
+            // waitFor's internal budget and Vitest's outer one, so a slow
+            // first poll hit the outer timeout before waitFor's own, more
+            // descriptive error could ever fire. Both are widened here,
+            // consistently, so the intended error surfaces instead.
+            await waitFor(() => reasons.length > 0, 15_000);
 
-        expect(reasons).toHaveLength(1);
-        expect(reasons[0]).toMatch(/exceeded the 1MB memory limit/);
-        expect(isAlive(pid)).toBe(false);
-    });
+            expect(reasons).toHaveLength(1);
+            expect(reasons[0]).toMatch(/exceeded the 1MB memory limit/);
+            expect(isAlive(pid)).toBe(false);
+        },
+        20_000
+    );
 
     it("does nothing when no limits are configured", async () => {
         child = spawn("node", ["-e", "setTimeout(() => {}, 10000)"], { stdio: "ignore" });
