@@ -43,15 +43,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-    Select,
-    SelectContent,
-    SelectGroup,
-    SelectItem,
-    SelectLabel,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select";
+import { ModelPickerDialog, type ModelPickerGroup } from "@/components/model-picker";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -64,7 +56,7 @@ import { TerminalPanel } from "@/components/terminal-panel";
 import { cn } from "@/lib/utils";
 import { useSessions } from "@/lib/sessions-context";
 import { useI18n } from "@/lib/i18n";
-import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, LOCAL_PROVIDERS, formatModelRef, formatCustomModelRef, parseModelRef } from "@/lib/providers";
+import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, LOCAL_PROVIDERS, PROVIDER_LABELS, formatModelRef, formatCustomModelRef, parseModelRef } from "@/lib/providers";
 import { estimateCost, formatCost } from "@/lib/pricing";
 import { extractVariables, fillTemplate } from "@/lib/prompt-templates";
 import { PromptVariableDialog } from "@/components/prompt-variable-dialog";
@@ -441,6 +433,7 @@ export default function Chat() {
     const [model, setModel] = useState<string>("");
     const [pendingCustomProvider, setPendingCustomProvider] = useState<ProviderId | null>(null);
     const [customModelInput, setCustomModelInput] = useState("");
+    const [showModelPicker, setShowModelPicker] = useState(false);
     const [settings, setSettings] = useState<AppSettings | null>(null);
     const agentMaxSteps = Math.max(5, Math.min(settings?.agentMaxSteps ?? DEFAULT_AGENT_MAX_STEPS, 100));
     const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1534,6 +1527,98 @@ export default function Chat() {
     );
     const draftTokens = useMemo(() => estimateTokens(input), [input]);
 
+    // Grouped source data for the model picker dialog — same providers and
+    // membership rules the old inline <Select> used, just shaped as plain
+    // data instead of JSX so the dialog can search/filter across all of it.
+    const modelGroups = useMemo<ModelPickerGroup[]>(() => {
+        const groups: ModelPickerGroup[] = [
+            {
+                key: "ollama",
+                label: PROVIDER_LABELS.ollama,
+                items: models.map((m) => ({ ref: formatModelRef("ollama", m.name), name: m.name, sizeBytes: m.size })),
+            },
+        ];
+        if (llamaCppModels.length > 0) {
+            groups.push({
+                key: "llamacpp",
+                label: PROVIDER_LABELS.llamacpp,
+                items: llamaCppModels.map((m) => ({
+                    ref: formatModelRef("llamacpp", m.name),
+                    name: m.label,
+                    sizeBytes: m.sizeBytes,
+                })),
+            });
+        }
+        if ((settings?.mlxModels ?? []).length > 0) {
+            groups.push({
+                key: "mlx",
+                label: PROVIDER_LABELS.mlx,
+                items: settings!.mlxModels!.map((id) => ({ ref: formatModelRef("mlx", id), name: id })),
+            });
+        }
+        if (llamaCppModels.length > 0) {
+            groups.push({
+                key: "rocm",
+                label: PROVIDER_LABELS.rocm,
+                items: llamaCppModels.map((m) => ({
+                    ref: formatModelRef("rocm", m.name),
+                    name: m.label,
+                    sizeBytes: m.sizeBytes,
+                })),
+            });
+        }
+        if ((settings?.vllmModels ?? []).length > 0) {
+            groups.push({
+                key: "vllm",
+                label: PROVIDER_LABELS.vllm,
+                items: settings!.vllmModels!.map((id) => ({ ref: formatModelRef("vllm", id), name: id })),
+            });
+        }
+        groups.push({
+            key: "openai",
+            label: PROVIDER_LABELS.openai,
+            items: [
+                ...OPENAI_MODELS.map((m) => ({ ref: formatModelRef("openai", m.id), name: m.label })),
+                { ref: formatModelRef("openai", CUSTOM_SENTINEL), name: "Custom model ID...", customSentinelProvider: "openai" as ProviderId },
+            ],
+        });
+        groups.push({
+            key: "anthropic",
+            label: PROVIDER_LABELS.anthropic,
+            items: [
+                ...ANTHROPIC_MODELS.map((m) => ({ ref: formatModelRef("anthropic", m.id), name: m.label })),
+                { ref: formatModelRef("anthropic", CUSTOM_SENTINEL), name: "Custom model ID...", customSentinelProvider: "anthropic" as ProviderId },
+            ],
+        });
+        groups.push({
+            key: "gemini",
+            label: PROVIDER_LABELS.gemini,
+            items: [
+                ...GEMINI_MODELS.map((m) => ({ ref: formatModelRef("gemini", m.id), name: m.label })),
+                { ref: formatModelRef("gemini", CUSTOM_SENTINEL), name: "Custom model ID...", customSentinelProvider: "gemini" as ProviderId },
+            ],
+        });
+        for (const provider of settings?.customProviders ?? []) {
+            groups.push({
+                key: `custom-${provider.id}`,
+                label: provider.name,
+                items: provider.modelIds.map((modelId) => ({
+                    ref: formatCustomModelRef(provider.id, modelId),
+                    name: modelId,
+                })),
+            });
+        }
+        return groups;
+    }, [models, llamaCppModels, settings]);
+
+    const currentModelLabel = useMemo(() => {
+        for (const group of modelGroups) {
+            const match = group.items.find((item) => item.ref === model && !item.customSentinelProvider);
+            if (match) return match.name;
+        }
+        return parsedModel?.modelId || "Select a model";
+    }, [modelGroups, model, parsedModel]);
+
     if (!hasApi) {
         return (
             <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
@@ -1554,114 +1639,30 @@ export default function Chat() {
                     </span>
                 )}
                 <span className="section-eyebrow ml-1">{t.model}</span>
-                <Select value={model} onValueChange={handleModelChange}>
-                    <SelectTrigger size="sm">
-                        <SelectValue placeholder="Select a model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                        <SelectGroup>
-                            <SelectLabel>Ollama (local)</SelectLabel>
-                            {models.map((m) => (
-                                <SelectItem key={m.name} value={formatModelRef("ollama", m.name)}>
-                                    {m.name}
-                                </SelectItem>
-                            ))}
-                        </SelectGroup>
-                        {llamaCppModels.length > 0 && (
-                            <SelectGroup>
-                                <SelectLabel>llama.cpp (local)</SelectLabel>
-                                {llamaCppModels.map((m) => (
-                                    <SelectItem key={m.name} value={formatModelRef("llamacpp", m.name)}>
-                                        {m.label}
-                                    </SelectItem>
-                                ))}
-                            </SelectGroup>
-                        )}
-                        {(settings?.mlxModels ?? []).length > 0 && (
-                            <SelectGroup>
-                                <SelectLabel>MLX (Apple Silicon)</SelectLabel>
-                                {settings!.mlxModels!.map((id) => (
-                                    <SelectItem key={id} value={formatModelRef("mlx", id)}>
-                                        {id}
-                                    </SelectItem>
-                                ))}
-                            </SelectGroup>
-                        )}
-                        {llamaCppModels.length > 0 && (
-                            <SelectGroup>
-                                <SelectLabel>ROCm (AMD)</SelectLabel>
-                                {llamaCppModels.map((m) => (
-                                    <SelectItem key={m.name} value={formatModelRef("rocm", m.name)}>
-                                        {m.label}
-                                    </SelectItem>
-                                ))}
-                            </SelectGroup>
-                        )}
-                        {(settings?.vllmModels ?? []).length > 0 && (
-                            <SelectGroup>
-                                <SelectLabel>vLLM (managed)</SelectLabel>
-                                {settings!.vllmModels!.map((id) => (
-                                    <SelectItem key={id} value={formatModelRef("vllm", id)}>
-                                        {id}
-                                    </SelectItem>
-                                ))}
-                            </SelectGroup>
-                        )}
-                        <SelectGroup>
-                            <SelectLabel>ChatGPT</SelectLabel>
-                            {OPENAI_MODELS.map((m) => (
-                                <SelectItem key={m.id} value={formatModelRef("openai", m.id)}>
-                                    {m.label}
-                                </SelectItem>
-                            ))}
-                            <SelectItem value={formatModelRef("openai", CUSTOM_SENTINEL)}>Custom model ID...</SelectItem>
-                        </SelectGroup>
-                        <SelectGroup>
-                            <SelectLabel>Claude</SelectLabel>
-                            {ANTHROPIC_MODELS.map((m) => (
-                                <SelectItem key={m.id} value={formatModelRef("anthropic", m.id)}>
-                                    {m.label}
-                                </SelectItem>
-                            ))}
-                            <SelectItem value={formatModelRef("anthropic", CUSTOM_SENTINEL)}>Custom model ID...</SelectItem>
-                        </SelectGroup>
-                        <SelectGroup>
-                            <SelectLabel>Gemini</SelectLabel>
-                            {GEMINI_MODELS.map((m) => (
-                                <SelectItem key={m.id} value={formatModelRef("gemini", m.id)}>
-                                    {m.label}
-                                </SelectItem>
-                            ))}
-                            <SelectItem value={formatModelRef("gemini", CUSTOM_SENTINEL)}>Custom model ID...</SelectItem>
-                        </SelectGroup>
-                        {(settings?.customProviders ?? []).map((provider) => (
-                            <SelectGroup key={provider.id}>
-                                <SelectLabel>{provider.name}</SelectLabel>
-                                {provider.modelIds.map((modelId) => (
-                                    <SelectItem key={modelId} value={formatCustomModelRef(provider.id, modelId)}>
-                                        {modelId}
-                                    </SelectItem>
-                                ))}
-                            </SelectGroup>
-                        ))}
-                    </SelectContent>
-                </Select>
-
-                {pendingCustomProvider && (
-                    <div className="flex items-center gap-1.5">
-                        <Input
-                            autoFocus
-                            value={customModelInput}
-                            onChange={(e) => setCustomModelInput(e.target.value)}
-                            onKeyDown={(e) => e.key === "Enter" && confirmCustomModel()}
-                            placeholder="exact model id..."
-                            className="h-7 w-44 text-xs"
-                        />
-                        <Button size="sm" variant="outline" onClick={confirmCustomModel}>
-                            Use
-                        </Button>
-                    </div>
-                )}
+                <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowModelPicker(true)}
+                    className="max-w-56 justify-start gap-1.5"
+                >
+                    <span className="truncate">{currentModelLabel}</span>
+                </Button>
+                <ModelPickerDialog
+                    open={showModelPicker}
+                    onOpenChange={setShowModelPicker}
+                    currentModel={model}
+                    groups={modelGroups}
+                    onSelectModel={handleModelChange}
+                    pendingCustomProvider={pendingCustomProvider}
+                    customModelInput={customModelInput}
+                    onCustomModelInputChange={setCustomModelInput}
+                    onConfirmCustomModel={confirmCustomModel}
+                    onCancelCustomProvider={() => {
+                        setPendingCustomProvider(null);
+                        setCustomModelInput("");
+                    }}
+                    providerLabel={(provider) => PROVIDER_LABELS[provider]}
+                />
 
                 {models.length === 0 && (
                     <span className="text-xs text-muted-foreground">{t.noOllamaModelsInstalled}</span>
