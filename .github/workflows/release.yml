@@ -180,8 +180,16 @@ jobs:
               fi
               # Re-check size after the retry rather than trusting gh's exit
               # code alone — that's the exact assumption that let the
-              # original silent failure through.
-              new_size=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq --arg name "$name" '.assets[] | select(.name == $name) | .size')
+              # original silent failure through. gh's own --jq flag takes a
+              # single filter-string argument, not jq's --arg/--jq combo (an
+              # earlier version of this line mixed the two, which made gh
+              # treat the leftover tokens — including the two halves of an
+              # asset name containing a space, "Modelforge Setup 1.1.1.exe"
+              # — as extra positional args to `release view`, which only
+              # accepts one: the tag). Re-fetching the full JSON and reusing
+              # the same plain-jq --arg pattern as above avoids that entirely.
+              published_json=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq '.assets')
+              new_size=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .size' <<< "$published_json")
               if [ "$new_size" != "$local_size" ]; then
                 echo "::error::Asset '$name' still wrong size after retry (local: ${local_size}, remote: ${new_size:-none})."
                 missing=1
