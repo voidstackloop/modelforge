@@ -152,19 +152,38 @@ jobs:
       # confirms the files exist locally in dist/ *before* this upload;
       # this checks what the release *actually* ended up with afterward, and
       # retries anything gh's own upload silently dropped.
+      #
+      # Comparing by NAME alone isn't enough (learned the hard way on the
+      # v1.1.1 rebuild): a failed/partial upload can still register a ghost
+      # asset entry under the right name with the wrong size (or 0), which a
+      # name-only check treats as "already there" and never retries. Byte
+      # size is compared against the local file instead — cheap, and the one
+      # signal that actually distinguishes a real upload from a placeholder.
       - name: Verify every local asset actually landed on the release, retry any that didn't
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          published=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq '.assets[].name')
+          published_json=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq '.assets')
           missing=0
           for f in dist/*; do
             name=$(basename "$f")
-            if ! grep -qxF "$name" <<< "$published"; then
-              echo "::warning::Asset '$name' didn't land on the release after the initial publish — retrying its upload."
+            local_size=$(stat -c%s "$f")
+            remote_size=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .size' <<< "$published_json")
+            if [ -z "$remote_size" ] || [ "$remote_size" != "$local_size" ]; then
+              echo "::warning::Asset '$name' is missing or wrong size on the release (local: ${local_size} bytes, remote: ${remote_size:-none}) — deleting any partial copy and re-uploading."
+              gh release delete-asset "${{ github.ref_name }}" "$name" --repo "${{ github.repository }}" --yes 2>/dev/null || true
               if ! gh release upload "${{ github.ref_name }}" "$f" --repo "${{ github.repository }}" --clobber; then
                 echo "::error::Retry upload failed for '$name'."
+                missing=1
+                continue
+              fi
+              # Re-check size after the retry rather than trusting gh's exit
+              # code alone — that's the exact assumption that let the
+              # original silent failure through.
+              new_size=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq --arg name "$name" '.assets[] | select(.name == $name) | .size')
+              if [ "$new_size" != "$local_size" ]; then
+                echo "::error::Asset '$name' still wrong size after retry (local: ${local_size}, remote: ${new_size:-none})."
                 missing=1
               fi
             fi
