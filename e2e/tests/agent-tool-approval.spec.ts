@@ -33,6 +33,13 @@ test.beforeEach(async () => {
     workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "modelforge-e2e-workspace-"));
     instance = await launchApp({ settings: { onboardingComplete: true, ollamaHost: fakeOllama.url } });
     await stubOpenDialog(instance.app, workspaceDir);
+
+    // Both agent-tool-approval tests have failed on CI (never locally) with
+    // no other signal than "Allow never appeared" — surface renderer
+    // console/errors directly in the CI step's own stdout (no artifact
+    // download needed) so a future failure actually says why.
+    instance.window.on("console", (m) => console.log(`[renderer:${m.type()}] ${m.text()}`));
+    instance.window.on("pageerror", (e) => console.log(`[renderer:pageerror] ${e.stack ?? e.message}`));
 });
 
 test.afterEach(async () => {
@@ -55,6 +62,12 @@ async function enableAgentModeAndSendToolCallingMessage(instance_: LaunchedApp):
     const sendButton = window.getByRole("button", { name: "Send message" });
     await expect(sendButton).toBeEnabled({ timeout: 20_000 });
     await sendButton.click();
+
+    // Narrows "the request never reached the fake server" from "it reached
+    // it but the response never rendered" — cheap, and the only thing that
+    // can actually tell those two apart from the CI log alone.
+    await instance_.window.waitForTimeout(500);
+    console.log(`[diagnostic] fakeOllama chat request count after send: ${fakeOllama.getChatRequestCount()}`);
 }
 
 test("Deny stops the tool from running and the card clears", async () => {

@@ -143,3 +143,33 @@ jobs:
           || gh release upload "${{ github.ref_name }}" dist/* \
             --repo "${{ github.repository }}" \
             --clobber
+
+      # `gh release create dist/*` uploads every asset concurrently and can
+      # exit 0 even when one of them silently failed to attach (observed on
+      # v1.1.1: the Windows .exe — by far the largest asset at ~450MB — never
+      # made it onto the release while gh reported success, and every asset
+      # smaller than it uploaded fine). The "Validate..." step above only
+      # confirms the files exist locally in dist/ *before* this upload;
+      # this checks what the release *actually* ended up with afterward, and
+      # retries anything gh's own upload silently dropped.
+      - name: Verify every local asset actually landed on the release, retry any that didn't
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          published=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq '.assets[].name')
+          missing=0
+          for f in dist/*; do
+            name=$(basename "$f")
+            if ! grep -qxF "$name" <<< "$published"; then
+              echo "::warning::Asset '$name' didn't land on the release after the initial publish — retrying its upload."
+              if ! gh release upload "${{ github.ref_name }}" "$f" --repo "${{ github.repository }}" --clobber; then
+                echo "::error::Retry upload failed for '$name'."
+                missing=1
+              fi
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::One or more release assets could not be uploaded even after a retry — this release is incomplete."
+            exit 1
+          fi
