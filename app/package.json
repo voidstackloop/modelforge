@@ -12,7 +12,8 @@
     "dev:electron": "wait-on tcp:5173 dist/main.js && cross-env NODE_ENV=development electron .",
     "dev": "concurrently -k -s first \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
     "build:native": "npm --prefix ../lib install && npm --prefix ../lib run build",
-    "build:all": "npm run build:native && npm --prefix ../frontend run build && npm run build",
+    "build:mastervault": "npm --prefix ../mastervault-mcp-server install && npm --prefix ../mastervault-mcp-server run build:bundled",
+    "build:all": "npm run build:native && npm run build:mastervault && npm --prefix ../frontend run build && npm run build",
     "package": "npm run build:all && electron-builder"
   },
   "keywords": [],
@@ -49,6 +50,10 @@
       {
         "from": "python",
         "to": "python"
+      },
+      {
+        "from": "../mastervault-mcp-server/dist-bundled",
+        "to": "mcp-servers/mastervault"
       }
     ],
     "win": {
@@ -106,6 +111,7 @@
     "node-pty": "^1.1.0",
     "pdf-parse": "^2.4.5",
     "pidusage": "^4.0.1",
-    "tesseract.js": "^5.1.1"
+    "tesseract.js": "^5.1.1",
+    "zod": "^4.4.3"
   }
 }

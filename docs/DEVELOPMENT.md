@@ -102,6 +102,37 @@ a `v*.*.*` tag is pushed, and attaches the resulting installers to a GitHub Rele
 certificate is configured yet, so every platform's installer shows an "unknown publisher" warning
 on first run; see the [README](../README.md#installation) for what that looks like for a user.
 
+Each matrix leg's build step fails outright if its platform's installer doesn't actually show up in
+`app/release/` (a `.exe` on Windows, a `.dmg` on macOS, an `.AppImage` on Linux) — electron-builder
+can otherwise exit 0 having silently failed to produce one — and `publish-release` re-checks all
+three are present in the merged download before creating the GitHub Release, so a build going out
+without every platform's asset fails the workflow instead of quietly shipping a partial release.
+
+### Adding signing later (not currently configured)
+
+electron-builder picks up code-signing credentials from environment variables at build time — no
+config file changes needed once these are set as repository secrets and threaded into
+`release.yml`'s `env:` for the `Build` step on the relevant matrix leg. Nothing below is currently
+set; this just documents the exact names so wiring it up later doesn't require re-deriving them
+from electron-builder's docs.
+
+**Windows** (Authenticode, applies to the `windows-latest` leg):
+- `CSC_LINK` — URL or base64-encoded contents of the `.pfx`/`.p12` code-signing certificate.
+- `CSC_KEY_PASSWORD` — the certificate's password.
+
+**macOS signing + notarization** (applies to the `macos-latest` leg):
+- `CSC_LINK` / `CSC_KEY_PASSWORD` — the Developer ID Application `.p12` certificate and its
+  password (same variable names as Windows; electron-builder picks the right one from `mac`/`win`
+  context).
+- `APPLE_ID` — the Apple ID email used for notarization.
+- `APPLE_APP_SPECIFIC_PASSWORD` — an app-specific password for that Apple ID (not the account
+  password itself).
+- `APPLE_TEAM_ID` — the Developer Team ID notarization submits under.
+
+electron-builder reads all of these itself (via `@electron/notarize` for the Apple ones) — no code
+changes to `app/package.json`'s `build` config are needed beyond what's already there, only adding
+the secrets to the repo and passing them through as `env:` on the signing platform's job/step.
+
 ## Rebuilding the native addon
 
 Only needed if you change `lib/src/*.rs`:

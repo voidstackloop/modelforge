@@ -1,10 +1,28 @@
-import { ipcMain, IpcMainInvokeEvent } from "electron";
+import { ipcMain, IpcMainInvokeEvent, dialog } from "electron";
 import { logger } from "../logger";
 import * as mcpClient from "../mcp-client";
 import { mcpServerConfigSchema, parseOrThrow } from "../schemas";
-import { requireString } from "../app-state";
+import { requireString, getMainWindow } from "../app-state";
+import { buildMastervaultServerConfig, isMastervaultBuiltinAvailable } from "../mastervault-builtin";
 
 export function registerMcpIpc(): void {
+    ipcMain.handle("mcp:isMastervaultBuiltinAvailable", () => isMastervaultBuiltinAvailable());
+
+    // Convenience one-click add for the built-in MasterVault server: prompts
+    // for the vault folder (the one piece of per-user config it needs) and
+    // hands back a ready-to-use McpServerConfig. The renderer still owns
+    // adding it to settings.mcpServers and connecting — same as any other
+    // MCP server — so it's removable through the exact same "Remove" button,
+    // nothing about it is special-cased as undeletable.
+    ipcMain.handle("mcp:pickMastervaultVault", async () => {
+        const mainWindow = getMainWindow();
+        const result = mainWindow
+            ? await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] })
+            : await dialog.showOpenDialog({ properties: ["openDirectory"] });
+        if (result.canceled || result.filePaths.length === 0) return null;
+        return buildMastervaultServerConfig(result.filePaths[0]);
+    });
+
     ipcMain.handle("mcp:connect", async (_event: IpcMainInvokeEvent, input: unknown) => {
         try {
             const config = parseOrThrow(mcpServerConfigSchema, input, "MCP server config");

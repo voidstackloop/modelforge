@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { app, safeStorage } from "electron";
-import { readJson, writeJson } from "./json-store";
+import { readJsonWithSchema, writeJson } from "./json-store";
+import { secretsFileSchema } from "./schemas";
 import { logger } from "./logger";
 
 function filePath(): string {
@@ -8,7 +9,7 @@ function filePath(): string {
 }
 
 function readAll(): Record<string, string> {
-    return readJson<Record<string, string>>(filePath(), {});
+    return readJsonWithSchema(filePath(), {}, secretsFileSchema);
 }
 
 function writeAll(data: Record<string, string>): void {

@@ -354,6 +354,8 @@ export const api = {
         connect: (config: McpServerConfig): Promise<McpConnectResult> => ipcRenderer.invoke("mcp:connect", config),
         disconnect: (id: string): Promise<void> => ipcRenderer.invoke("mcp:disconnect", id),
         status: (): Promise<Record<string, McpServerStatus>> => ipcRenderer.invoke("mcp:status"),
+        isMastervaultBuiltinAvailable: (): Promise<boolean> => ipcRenderer.invoke("mcp:isMastervaultBuiltinAvailable"),
+        pickMastervaultVault: (): Promise<McpServerConfig | null> => ipcRenderer.invoke("mcp:pickMastervaultVault"),
     },
 
     screen: {

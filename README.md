@@ -162,6 +162,8 @@ Click **Agent** in the chat toolbar and pick a folder — that becomes the model
 
 Enabled servers reconnect automatically on launch; each server's tools appear in Agent mode's tool list prefixed with the server's name, going through the exact same Allow/Deny approval flow as built-in tools. (SSE and plain WebSocket transports aren't implemented — SSE is the legacy MCP HTTP transport, now superseded by Streamable HTTP, and WebSocket isn't part of the MCP spec itself.)
 
+**MasterVault (bundled):** a built-in MCP server ([`mastervault-mcp-server/`](mastervault-mcp-server/)) ships with Modelforge — it serves a plain folder of notes as a "MasterVault" (orientation file, a decision log with confidence calibration, soft-delete-only file removal) to Agent mode, no Obsidian or separate install required. In Settings → Integrations → MCP servers, click **Add MasterVault** and pick a vault folder; it's added and removed exactly like any other MCP server. See its own [README](mastervault-mcp-server/README.md) for the full tool list and security model.
+
 **Model choice matters.** Agent mode works with whatever model you point it at, but only actually produces tool calls if that model was trained for function/tool calling — a model without that training will just chat normally and never call a tool. The Settings model browser flags models with reliable tool-calling support with a 🔧 **Tool calling** badge (e.g. the Qwen3 family, Llama 3.1+, Mistral Nemo, Qwen2.5-Coder, Devstral). The llama.cpp backend doesn't have tool-calling wired up yet — see [Features](#features) above.
 
 ## Building from source

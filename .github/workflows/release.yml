@@ -46,6 +46,35 @@ jobs:
         working-directory: app
         run: npm run build:all && npx electron-builder --publish never
 
+      # electron-builder can exit 0 while having silently failed to produce
+      # the actual installer for this platform (a code-signing step that
+      # warns instead of erroring, a packager crash it swallows, etc.) — the
+      # old `if-no-files-found: ignore` on the upload step below meant that
+      # kind of failure would only surface later, as a missing asset in the
+      # published GitHub release, with no clear signal of which platform or
+      # step was responsible. Each matrix leg's own required installer type
+      # is checked explicitly here so a silent packaging failure fails this
+      # job, on this platform, right where it happened.
+      - name: Verify the expected installer artifact was produced
+        working-directory: app/release
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.os }}" in
+            windows-latest) pattern='*.exe' ;;
+            macos-latest) pattern='*.dmg' ;;
+            ubuntu-latest) pattern='*.AppImage' ;;
+            *) echo "::error::Unhandled matrix os '${{ matrix.os }}' — add its expected installer pattern here." && exit 1 ;;
+          esac
+          # shellcheck disable=SC2086 (intentional glob expansion)
+          matches=$(ls -1 $pattern 2>/dev/null | wc -l)
+          if [ "$matches" -eq 0 ]; then
+            echo "::error::No installer matching '$pattern' was found in app/release for ${{ matrix.os }} — electron-builder must have failed to produce it."
+            ls -la .
+            exit 1
+          fi
+          echo "Found $matches artifact(s) matching '$pattern'."
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -58,7 +87,14 @@ jobs:
             app/release/*.zip
             app/release/*.AppImage
             app/release/latest*.yml
-          if-no-files-found: ignore
+          # The list above intentionally spans all three platforms' output
+          # patterns (electron-builder's own upload step further down needs
+          # them merged into one flat `dist/` for a single release publish),
+          # so on any given matrix leg most of these globs legitimately match
+          # nothing — that's expected, not a failure, which is exactly why
+          # the step above checks for *this platform's* required installer
+          # explicitly instead of relying on this list.
+          if-no-files-found: warn
 
   publish-release:
     needs: build
@@ -71,6 +107,29 @@ jobs:
 
       - name: List downloaded assets
         run: ls -la dist
+
+      # Each build matrix leg already fails on its own platform if its
+      # installer didn't get produced (see "Verify the expected installer
+      # artifact was produced" above) — this is the second, independent
+      # check right before publishing: it protects against a leg being
+      # skipped entirely (fail-fast: false lets the others continue) or an
+      # artifact getting lost/renamed between upload and this download,
+      # either of which would otherwise still let a release go out missing
+      # a platform.
+      - name: Validate every platform's installer is present before publishing
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          missing=0
+          for pattern in '*.exe' '*.dmg' '*.AppImage'; do
+            if ! ls -1 $pattern >/dev/null 2>&1; then
+              echo "::error::No file matching '$pattern' in the downloaded release assets — that platform's installer is missing."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Publish release with all platform assets
         env:

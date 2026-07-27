@@ -35,11 +35,29 @@ export const PYTHON_RUNTIME_MANIFESTS: Record<PythonRuntimeFamily, PythonRuntime
 };
 
 function environmentRoot(): string { return path.join(app.getPath("userData"), "python-runtimes"); }
-function usesWsl(family: PythonRuntimeFamily): boolean { return process.platform === "win32" && family !== "mlx" && family !== "hardware-recommender"; }
-export function environmentDestination(family: PythonRuntimeFamily): string { return usesWsl(family) ? `~/.local/share/modelforge/python-runtimes/${family}` : path.join(environmentRoot(), family); }
+// hardware-recommender is deliberately excluded even though it's win32: it's
+// pure-CPU-inference and runs natively on Windows (see the manifest comment
+// above), unlike vllm-cuda/vllm-rocm which only ever run through WSL there.
+// `platform` is threaded through as a parameter (rather than read from
+// process.platform directly) purely so this — and environmentDestination/
+// environmentPython below — can be exercised for every platform from a test
+// running on any single host OS.
+function usesWsl(family: PythonRuntimeFamily, platform: NodeJS.Platform = process.platform): boolean {
+    return platform === "win32" && family !== "mlx" && family !== "hardware-recommender";
+}
+export function environmentDestination(family: PythonRuntimeFamily, platform: NodeJS.Platform = process.platform): string {
+    return usesWsl(family, platform) ? `~/.local/share/modelforge/python-runtimes/${family}` : path.join(environmentRoot(), family);
+}
+// Bug this guards against: an earlier version of this function decided
+// bin/python vs Scripts/python.exe from `platform === "win32" && family !==
+// "mlx"` directly, which doesn't match usesWsl()'s own exception for
+// hardware-recommender — so a native Windows hardware-recommender install
+// (no WSL involved at all) was being pointed at a WSL-style `bin/python`
+// path that never exists there, instead of the venv's real
+// `Scripts/python.exe`. Routing through usesWsl() here keeps the two in sync.
 export function environmentPython(family: PythonRuntimeFamily, platform: NodeJS.Platform = process.platform): string {
-    if (platform === "win32" && family !== "mlx") return `${environmentDestination(family)}/bin/python`;
-    return path.join(environmentDestination(family), platform === "win32" ? "Scripts/python.exe" : "bin/python");
+    if (usesWsl(family, platform)) return `${environmentDestination(family, platform)}/bin/python`;
+    return path.join(environmentDestination(family, platform), platform === "win32" ? "Scripts/python.exe" : "bin/python");
 }
 function quote(value: string): string { return process.platform === "win32" ? `"${value.replace(/"/g, '\\"')}"` : `'${value.replace(/'/g, `'"'"'`)}'`; }
 function posixQuote(value: string): string { return `'${value.replace(/'/g, `'"'"'`)}'`; }
@@ -140,39 +158,95 @@ interface WorkerResponse { protocol: number; id: string; ok: boolean; result?: u
 // A request has no inherent deadline otherwise: if the worker process stays
 // alive but stops responding (stuck in a long computation, deadlocked, or
 // just never writes a line back), the promise in `pending` would never
-// settle and would leak forever.
-const REQUEST_TIMEOUT_MS = 20_000;
+// settle and would leak forever. Overridable per-instance (see
+// ManagedPythonWorkerOptions) so tests aren't stuck waiting out the real
+// production default just to exercise the timeout path.
+const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 // Bounds how much unterminated stdout `consume` will buffer waiting for a
 // newline. A worker that never emits one (buggy print, corrupted output)
 // would otherwise grow this string without limit for as long as the process
 // lives — this caps the damage and fails loudly instead of leaking memory.
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+
+export interface ManagedPythonWorkerOptions {
+    // Per-request deadline; defaults to DEFAULT_REQUEST_TIMEOUT_MS.
+    timeoutMs?: number;
+    // Overrides the spawned command/args — used by tests to substitute a
+    // small fake worker (e.g. `node -e "<script>"`) for the real Python
+    // interpreter/script, since CI can't assume a working Python+torch venv
+    // is present just to test request plumbing. Production callers never
+    // set these; environmentPython()/the packaged script path are used.
+    command?: string;
+    args?: string[];
+}
+
 export class ManagedPythonWorker {
     private child: ChildProcess | null = null;
     private pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
     private buffer = "";
-    constructor(private readonly family: PythonRuntimeFamily) {}
+    private readonly timeoutMs: number;
+    private readonly commandOverride?: string;
+    private readonly argsOverride?: string[];
+
+    constructor(private readonly family: PythonRuntimeFamily, options: ManagedPythonWorkerOptions = {}) {
+        this.timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+        this.commandOverride = options.command;
+        this.argsOverride = options.args;
+    }
+
     start(): void {
         if (this.child) return;
-        const python = environmentPython(this.family);
-        const scriptName = this.family === "hardware-recommender" ? "recommender_worker.py" : "runtime_worker.py";
-        const packaged = path.join(process.resourcesPath, "python", scriptName); const script = fs.existsSync(packaged) ? packaged : path.join(__dirname, "..", "python", scriptName);
-        this.child = spawn(python, [script], { stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
-        this.child.stdout?.setEncoding("utf8"); this.child.stdout?.on("data", (chunk: string) => this.consume(chunk));
-        this.child.stderr?.setEncoding("utf8"); this.child.stderr?.on("data", (chunk: string) => { for (const line of chunk.split(/\r?\n/).filter(Boolean)) console.info(`[python-worker:${this.family}] ${line}`); });
+        const python = this.commandOverride ?? environmentPython(this.family);
+        let args: string[];
+        if (this.argsOverride) {
+            args = this.argsOverride;
+        } else {
+            const scriptName = this.family === "hardware-recommender" ? "recommender_worker.py" : "runtime_worker.py";
+            const packaged = path.join(process.resourcesPath, "python", scriptName);
+            const script = fs.existsSync(packaged) ? packaged : path.join(__dirname, "..", "python", scriptName);
+            args = [script];
+        }
+        const child = spawn(python, args, { stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
+        this.child = child;
+
+        // Every listener below closes over this specific `child` and bails
+        // if `this.child` has since moved on to a different instance. Without
+        // that guard, a *late* async event from an old, already-replaced
+        // child (e.g. the real OS 'exit' for a process this.consume() just
+        // SIGKILLed after a buffer overflow, arriving after start() was
+        // called again and spawned a new one) would call failAllPending()
+        // against the new child's in-flight requests and null out
+        // this.child out from under it — silently orphaning the process
+        // that's actually still running.
+        child.stdout?.setEncoding("utf8");
+        child.stdout?.on("data", (chunk: string) => { if (this.child === child) this.consume(chunk); });
+        child.stderr?.setEncoding("utf8");
+        child.stderr?.on("data", (chunk: string) => {
+            for (const line of chunk.split(/\r?\n/).filter(Boolean)) console.info(`[python-worker:${this.family}] ${line}`);
+        });
         // Without this, a missing/unset-up venv (spawn ENOENT — the common
         // case for a family the user hasn't installed yet) emits an 'error'
         // event with no listener, which Node treats as an uncaught exception
         // and crashes the whole main process instead of just failing this
         // one request.
-        this.child.once("error", (error: Error) => { this.failAllPending(error); this.child = null; });
-        this.child.once("exit", () => { this.failAllPending(new Error("Python worker exited")); this.child = null; });
+        child.once("error", (error: Error) => {
+            if (this.child !== child) return;
+            this.failAllPending(error);
+            this.child = null;
+        });
+        child.once("exit", () => {
+            if (this.child !== child) return;
+            this.failAllPending(new Error(`Python worker "${this.family}" exited`));
+            this.child = null;
+        });
     }
+
     private failAllPending(error: Error): void {
         for (const request of this.pending.values()) { clearTimeout(request.timer); request.reject(error); }
         this.pending.clear();
         this.buffer = "";
     }
+
     private consume(chunk: string): void {
         this.buffer += chunk;
         if (this.buffer.length > MAX_BUFFER_BYTES) {
@@ -192,7 +266,15 @@ export class ManagedPythonWorker {
             try {
                 response = JSON.parse(line) as WorkerResponse;
             } catch {
+                // A worker writing something to stdout that isn't a
+                // protocol response (a stray print, partial/corrupted
+                // output) must not crash the main process or wedge whatever
+                // request is actually pending — log and keep consuming.
                 console.error(`[python-worker:${this.family}] Ignoring malformed response line: ${line.slice(0, 200)}`);
+                continue;
+            }
+            if (typeof response?.id !== "string") {
+                console.error(`[python-worker:${this.family}] Ignoring response with no request id: ${line.slice(0, 200)}`);
                 continue;
             }
             const pending = this.pending.get(response.id);
@@ -202,17 +284,39 @@ export class ManagedPythonWorker {
             response.ok ? pending.resolve(response.result) : pending.reject(new Error(response.error?.message ?? "Worker request failed"));
         }
     }
+
     request(method: "health" | "metrics" | "recommend", params: Record<string, unknown> = {}): Promise<unknown> {
         this.start();
         const id = crypto.randomUUID();
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pending.delete(id);
-                reject(new Error(`Python worker "${this.family}" request "${method}" timed out after ${REQUEST_TIMEOUT_MS}ms`));
-            }, REQUEST_TIMEOUT_MS);
+                reject(new Error(`Python worker "${this.family}" request "${method}" timed out after ${this.timeoutMs}ms`));
+            }, this.timeoutMs);
             this.pending.set(id, { resolve, reject, timer });
             this.child?.stdin?.write(JSON.stringify({ protocol: PYTHON_WORKER_PROTOCOL_VERSION, id, method, params }) + "\n");
         });
     }
-    async shutdown(): Promise<void> { const child = this.child; if (!child) return; const pid = child.pid; try { const id = crypto.randomUUID(); child.stdin?.write(JSON.stringify({ protocol: PYTHON_WORKER_PROTOCOL_VERSION, id, method: "shutdown", params: {} }) + "\n"); } catch { /* pipe closed */ } await new Promise((resolve) => setTimeout(resolve, 500)); if (pid && this.child) killProcessTree(pid, "SIGTERM"); this.child = null; }
+
+    async shutdown(): Promise<void> {
+        const child = this.child;
+        if (!child) return;
+        const pid = child.pid;
+        try {
+            const id = crypto.randomUUID();
+            child.stdin?.write(JSON.stringify({ protocol: PYTHON_WORKER_PROTOCOL_VERSION, id, method: "shutdown", params: {} }) + "\n");
+        } catch {
+            /* pipe closed */
+        }
+        // Reject immediately rather than only relying on the child's async
+        // 'exit' event to eventually fire failAllPending() — that event can
+        // lag behind (up to the 500ms grace period below, longer if the
+        // process ignores SIGTERM until a future SIGKILL), and a caller
+        // awaiting a pending request during shutdown shouldn't be left
+        // hanging for that long.
+        this.failAllPending(new Error(`Python worker "${this.family}" is shutting down`));
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if (pid && this.child === child) killProcessTree(pid, "SIGTERM");
+        if (this.child === child) this.child = null;
+    }
 }

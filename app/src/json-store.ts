@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { z } from "zod";
 import { logger } from "./logger";
+import { formatZodError } from "./schemas";
 
 // Shared persistence helpers for the small JSON "database" files this app
 // keeps in userData (sessions/projects/settings/secrets).
@@ -17,6 +19,22 @@ import { logger } from "./logger";
 //    permanently destroying whatever data was still recoverable. Instead
 //    we back the bad file up next to itself so the user (or support) can
 //    recover it, and log what happened.
+
+// Shared by readJson and readJsonWithSchema for the "this file can't be used
+// as-is" path — corrupted JSON and JSON that parses fine but doesn't match
+// the expected shape (a hand-edited or bug-written settings/secrets file)
+// both get the same treatment: back up next to the original so the content
+// isn't silently lost, log what happened, and hand back the fallback so the
+// next write doesn't overwrite the backup.
+function backUpAndFallBack<T>(filePath: string, reason: string, fallback: T): T {
+    logger.error(`${reason} in ${filePath}, backing up and resetting`);
+    try {
+        fs.copyFileSync(filePath, `${filePath}.corrupted-${Date.now()}`);
+    } catch (backupErr) {
+        logger.error(`Failed to back up corrupted file ${filePath}: ${(backupErr as Error).message}`);
+    }
+    return fallback;
+}
 
 export function readJson<T>(filePath: string, fallback: T): T {
     let raw: string;
@@ -35,14 +53,44 @@ export function readJson<T>(filePath: string, fallback: T): T {
     try {
         return JSON.parse(raw) as T;
     } catch (err) {
-        logger.error(`Corrupted JSON in ${filePath}, backing up and resetting: ${(err as Error).message}`);
-        try {
-            fs.copyFileSync(filePath, `${filePath}.corrupted-${Date.now()}`);
-        } catch (backupErr) {
-            logger.error(`Failed to back up corrupted file ${filePath}: ${(backupErr as Error).message}`);
+        return backUpAndFallBack(filePath, `Corrupted JSON (${(err as Error).message})`, fallback);
+    }
+}
+
+// Same read-and-recover behavior as readJson, plus a runtime shape check —
+// TypeScript's `readJson<T>(...)` cast is compile-time only, so a file that
+// is valid JSON but not a valid T (hand-edited, corrupted-but-still-parses,
+// written by a future/older build with an incompatible shape) would
+// otherwise flow straight through as if it were trusted data. Malformed
+// input here gets the exact same backup-and-fallback treatment as a parse
+// failure, rather than handing the caller something that merely happens to
+// satisfy a cast.
+export function readJsonWithSchema<T>(filePath: string, fallback: T, schema: z.ZodType<T>): T {
+    let raw: string;
+    try {
+        raw = fs.readFileSync(filePath, "utf-8");
+    } catch (err) {
+        const nodeErr = err as NodeJS.ErrnoException;
+        if (nodeErr.code !== "ENOENT") {
+            logger.error(`Failed to read ${filePath}: ${nodeErr.message}`);
         }
         return fallback;
     }
+
+    restrictExistingPermissions(filePath);
+
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (err) {
+        return backUpAndFallBack(filePath, `Corrupted JSON (${(err as Error).message})`, fallback);
+    }
+
+    const result = schema.safeParse(parsed);
+    if (!result.success) {
+        return backUpAndFallBack(filePath, `JSON doesn't match the expected shape (${formatZodError(result.error)})`, fallback);
+    }
+    return result.data;
 }
 
 // These files hold provider API keys (secrets.json) and full conversation

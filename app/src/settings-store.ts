@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { app } from "electron";
-import { readJson, writeJson } from "./json-store";
+import { readJsonWithSchema, writeJson } from "./json-store";
+import { appSettingsSchema } from "./schemas";
 import type { McpServerConfig } from "./mcp-client";
 import type { TimeOfUseTariff } from "./energy-types";
 
@@ -184,7 +185,8 @@ function filePath(): string {
 }
 
 export function getSettings(): AppSettings {
-    return { ...DEFAULTS, ...readJson<Partial<AppSettings>>(filePath(), {}) };
+    const stored = readJsonWithSchema(filePath(), {}, appSettingsSchema) as Partial<AppSettings>;
+    return { ...DEFAULTS, ...stored };
 }
 
 export function saveSettings(partial: Partial<AppSettings>): AppSettings {

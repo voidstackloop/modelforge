@@ -16,11 +16,23 @@ export const app = {
     getVersion: () => "0.0.0-test",
 };
 
-// Plain passthrough (base64) "encryption" — good enough to test that
-// secrets-store round-trips values through whatever safeStorage provides,
-// without needing a real OS credential store in the test environment.
+// A tagged passthrough "encryption" — good enough to test that secrets-store
+// round-trips values through whatever safeStorage provides, without needing
+// a real OS credential store in the test environment. The tag matters: real
+// safeStorage.decryptString() throws on a buffer it didn't itself produce
+// (foreign data, a legacy plaintext value, ciphertext from a different OS
+// credential-store identity) — a bare base64 passthrough would happily
+// "decrypt" anything, making it impossible to test secrets-store's legacy-
+// plaintext-fallback and migration behavior against this mock.
+const MOCK_ENCRYPTION_PREFIX = "mock-encrypted:";
 export const safeStorage = {
     isEncryptionAvailable: () => true,
-    encryptString: (value: string) => Buffer.from(value, "utf-8"),
-    decryptString: (buf: Buffer) => buf.toString("utf-8"),
+    encryptString: (value: string) => Buffer.from(MOCK_ENCRYPTION_PREFIX + value, "utf-8"),
+    decryptString: (buf: Buffer) => {
+        const text = buf.toString("utf-8");
+        if (!text.startsWith(MOCK_ENCRYPTION_PREFIX)) {
+            throw new Error("mock safeStorage: buffer wasn't produced by this mock's encryptString");
+        }
+        return text.slice(MOCK_ENCRYPTION_PREFIX.length);
+    },
 };

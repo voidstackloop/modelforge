@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { readJson, writeJson } from "./json-store";
+import { z } from "zod";
+import { readJson, readJsonWithSchema, writeJson } from "./json-store";
 
 describe("json-store", () => {
     let dir: string;
@@ -81,5 +82,55 @@ describe("json-store", () => {
         const backups = fs.readdirSync(dir).filter((f) => f.includes(".corrupted-"));
         expect(backups.length).toBe(1);
         expect(readJson(file, {})).toEqual({ recovered: false });
+    });
+
+    describe("readJsonWithSchema", () => {
+        const schema = z.object({ token: z.string() });
+
+        it("returns the fallback when the file doesn't exist yet", () => {
+            expect(readJsonWithSchema(file, { token: "default" }, schema)).toEqual({ token: "default" });
+        });
+
+        it("returns the parsed value when it matches the schema", () => {
+            writeJson(file, { token: "abc" });
+            expect(readJsonWithSchema(file, { token: "default" }, schema)).toEqual({ token: "abc" });
+        });
+
+        it("still backs up and falls back on plain JSON corruption", () => {
+            fs.writeFileSync(file, "{ not valid json");
+            expect(readJsonWithSchema(file, { token: "default" }, schema)).toEqual({ token: "default" });
+            expect(fs.readdirSync(dir).filter((f) => f.includes(".corrupted-"))).toHaveLength(1);
+        });
+
+        // The case readJson() can't catch: valid JSON that simply isn't the
+        // shape the caller asked for — e.g. a hand-edited settings.json with
+        // a field typed wrong, or a secrets.json truncated/rewritten into
+        // some other structure. Without schema validation this would flow
+        // straight through JSON.parse's cast and into store code as if it
+        // were trusted data.
+        it("backs up and falls back when the JSON is valid but doesn't match the schema", () => {
+            fs.writeFileSync(file, JSON.stringify({ token: 12345 })); // wrong type
+            const result = readJsonWithSchema(file, { token: "default" }, schema);
+
+            expect(result).toEqual({ token: "default" });
+            const backups = fs.readdirSync(dir).filter((f) => f.includes(".corrupted-"));
+            expect(backups).toHaveLength(1);
+            expect(JSON.parse(fs.readFileSync(path.join(dir, backups[0]), "utf-8"))).toEqual({ token: 12345 });
+        });
+
+        it("backs up and falls back when a required field is missing entirely", () => {
+            fs.writeFileSync(file, JSON.stringify({ somethingElse: true }));
+            expect(readJsonWithSchema(file, { token: "default" }, schema)).toEqual({ token: "default" });
+        });
+
+        it("does not destroy the schema-mismatch backup on a subsequent write", () => {
+            fs.writeFileSync(file, JSON.stringify({ token: 12345 }));
+            readJsonWithSchema(file, { token: "default" }, schema); // triggers the backup
+            writeJson(file, { token: "recovered" });
+
+            const backups = fs.readdirSync(dir).filter((f) => f.includes(".corrupted-"));
+            expect(backups).toHaveLength(1);
+            expect(readJsonWithSchema(file, { token: "default" }, schema)).toEqual({ token: "recovered" });
+        });
     });
 });
