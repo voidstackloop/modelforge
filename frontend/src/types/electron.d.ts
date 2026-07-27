@@ -787,6 +787,8 @@ export interface ElectronApi {
     ) => Promise<{ tools?: { name: string; description?: string; inputSchema?: Record<string, unknown> }[]; error?: string }>;
     disconnect: (id: string) => Promise<void>;
     status: () => Promise<Record<string, McpServerStatus>>;
+    isMastervaultBuiltinAvailable: () => Promise<boolean>;
+    pickMastervaultVault: () => Promise<McpServerConfig | null>;
   };
   screen: {
     listSources: () => Promise<ScreenSourceInfo[]>;

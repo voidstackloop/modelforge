@@ -129,7 +129,7 @@ export function TerminalPanel({ workspaceRoot, onClose }: { workspaceRoot: strin
     /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
     return (
-        <div className="surface-glass flex h-64 flex-col border-t border-border/70">
+        <div className="flex h-64 flex-col border-t border-border/70 bg-card">
             <div className="flex items-center gap-1 border-b border-border/70 px-2 py-1.5">
                 <TerminalSquare className="size-3.5 shrink-0 text-muted-foreground" />
                 <div className="flex flex-1 items-center gap-1 overflow-x-auto">

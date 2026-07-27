@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
-import { Outlet, useNavigate, useParams } from "react-router-dom";
+import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
     BookMarked,
     ChevronDown,
@@ -527,6 +527,7 @@ export default function Layout() {
     const { sessions, projects, hasApi, createSession, deleteSession, createProject, refresh } = useSessions();
     const { t } = useI18n();
     const navigate = useNavigate();
+    const location = useLocation();
     const { sessionId } = useParams();
     const [search, setSearch] = useState("");
     const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
@@ -671,26 +672,26 @@ export default function Layout() {
     }
 
     return (
-        <div className="flex h-svh overflow-hidden">
+        <div className="flex h-svh overflow-hidden bg-background">
             {sidebarOpen && <button className="fixed inset-0 z-30 bg-black/35 backdrop-blur-sm md:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close navigation" />}
             <aside className={cn(
-                "surface-glass fixed inset-y-0 left-0 z-40 flex w-[18rem] shrink-0 flex-col border-r border-border/70 shadow-2xl transition-transform duration-200 md:static md:translate-x-0 md:shadow-none",
+                "app-sidebar fixed inset-y-0 left-0 z-40 flex w-[17.5rem] shrink-0 flex-col border-r border-border/60 shadow-2xl transition-transform duration-200 md:static md:translate-x-0 md:shadow-none",
                 sidebarOpen ? "translate-x-0" : "-translate-x-full"
             )}>
-                <div className="flex items-center justify-between px-4 py-4">
+                <div className="flex items-center justify-between px-4 pb-4 pt-5">
                     <div className="flex items-center gap-2.5">
-                        <span className="flex size-8 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm"><Sparkles className="size-4" /></span>
-                        <div><span className="block text-sm font-semibold tracking-tight">{t.appName}</span><span className="block text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">AI workspace</span></div>
+                        <span className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
+                        <div><span className="block text-[15px] font-semibold tracking-[-0.02em]">{t.appName}</span><span className="section-eyebrow mt-0.5 block">AI workspace</span></div>
                     </div>
                     <ThemeToggle />
                 </div>
 
-                <div className="flex flex-col gap-1.5 px-3 pb-3">
+                <div className="flex flex-col gap-1 px-3 pb-3">
                     <Button
                         onClick={() => handleNewChat()}
                         size="sm"
                         variant="default"
-                        className="h-9 w-full justify-start gap-2 rounded-xl shadow-sm"
+                        className="h-10 w-full justify-start gap-2 rounded-xl px-3"
                         disabled={!hasApi}
                     >
                         <Plus className="size-4" />
@@ -700,7 +701,7 @@ export default function Layout() {
                         onClick={() => setCreatingProject(true)}
                         size="sm"
                         variant="ghost"
-                        className="w-full justify-start gap-2 text-muted-foreground"
+                        className="nav-action w-full justify-start gap-2"
                         disabled={!hasApi}
                     >
                         <FolderPlus className="size-4" />
@@ -722,11 +723,13 @@ export default function Layout() {
                             </Button>
                         </div>
                     )}
+                    <p className="section-eyebrow px-2 pb-1 pt-3">Workspace</p>
                     <Button
                         onClick={() => navigate("/compare")}
                         size="sm"
                         variant="ghost"
-                        className="w-full justify-start gap-2 text-muted-foreground"
+                        className={cn("nav-action w-full justify-start gap-2", location.pathname === "/compare" && "nav-action-active")}
+                        aria-current={location.pathname === "/compare" ? "page" : undefined}
                         disabled={!hasApi}
                     >
                         <Scale className="size-4" />
@@ -736,7 +739,8 @@ export default function Layout() {
                         onClick={() => navigate("/usage")}
                         size="sm"
                         variant="ghost"
-                        className="w-full justify-start gap-2 text-muted-foreground"
+                        className={cn("nav-action w-full justify-start gap-2", location.pathname === "/usage" && "nav-action-active")}
+                        aria-current={location.pathname === "/usage" ? "page" : undefined}
                         disabled={!hasApi}
                     >
                         <BarChart3 className="size-4" />
@@ -746,25 +750,27 @@ export default function Layout() {
                         onClick={() => navigate("/downloads")}
                         size="sm"
                         variant="ghost"
-                        className="w-full justify-start gap-2 text-muted-foreground"
+                        className={cn("nav-action w-full justify-start gap-2", location.pathname === "/downloads" && "nav-action-active")}
+                        aria-current={location.pathname === "/downloads" ? "page" : undefined}
                         disabled={!hasApi}
                     >
                         <Download className="size-4" />
                         Download Center
                     </Button>
-                    <Button onClick={() => navigate("/runtimes")} size="sm" variant="ghost" className="w-full justify-start gap-2 text-muted-foreground" disabled={!hasApi}>
+                    <Button onClick={() => navigate("/runtimes")} size="sm" variant="ghost" className={cn("nav-action w-full justify-start gap-2", location.pathname === "/runtimes" && "nav-action-active")} aria-current={location.pathname === "/runtimes" ? "page" : undefined} disabled={!hasApi}>
                         <Server className="size-4" />Runtime Manager
                     </Button>
                 </div>
 
-                <div className="relative px-3 pb-3 pt-1">
-                    <Search className="pointer-events-none absolute top-1/2 left-5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <div className="relative px-3 pb-3 pt-2">
+                    <p className="section-eyebrow mb-2 px-2">Conversations</p>
+                    <Search className="pointer-events-none absolute bottom-[1.35rem] left-5 size-3.5 translate-y-1/2 text-muted-foreground" />
                     <Input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder={t.searchChats}
                         aria-label={t.searchChats}
-                        className="h-9 rounded-xl border-border/70 bg-background/70 pl-8 text-xs shadow-sm"
+                        className="h-9 rounded-xl border-border/70 bg-background/55 pl-8 text-xs shadow-sm focus-visible:bg-card"
                     />
                 </div>
 
@@ -820,12 +826,13 @@ export default function Layout() {
                     </div>
                 </ScrollArea>
 
-                <div className="flex border-t border-border/70 bg-background/30 p-2.5">
+                <div className="flex border-t border-border/60 bg-background/25 p-2.5">
                     <Button
                         variant="ghost"
                         size="sm"
-                        className="flex-1 justify-start gap-2"
+                        className={cn("nav-action flex-1 justify-start gap-2", location.pathname === "/settings" && "nav-action-active")}
                         onClick={() => navigate("/settings")}
+                        aria-current={location.pathname === "/settings" ? "page" : undefined}
                     >
                         <SettingsIcon className="size-4" />
                         {t.settings}
@@ -843,7 +850,7 @@ export default function Layout() {
                 </div>
             </aside>
 
-            <main className="relative min-w-0 flex-1 overflow-hidden">
+            <main className="relative min-w-0 flex-1 overflow-hidden bg-background">
                 <Button variant="outline" size="icon" className="surface-glass absolute left-3 top-3 z-30 shadow-md md:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open navigation">
                     <Menu className="size-4" />
                 </Button>

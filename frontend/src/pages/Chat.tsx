@@ -286,12 +286,19 @@ const MessageBubble = memo(function MessageBubble({
                 </div>
             )}
             {(m.content || (isStreaming && isLastAssistant) || !m.toolCalls?.length) && (
-                <div
-                    className={cn(
-                        "max-w-[82%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm sm:max-w-[75%]",
-                        m.role === "user" ? "rounded-br-md bg-primary text-primary-foreground" : "surface-glass rounded-bl-md border border-border/60 text-foreground"
-                    )}
-                >
+                <>
+                    <div className={cn("mb-1.5 flex items-center gap-2 px-1 text-[11px] font-medium", m.role === "user" ? "text-primary" : "text-muted-foreground")}>
+                        <span className={cn("flex size-5 items-center justify-center rounded-md", m.role === "user" ? "bg-primary/12" : "bg-muted")}>
+                            {m.role === "user" ? <span className="text-[9px] font-bold">Y</span> : <Bot className="size-3" />}
+                        </span>
+                        {m.role === "user" ? t.you : t.assistant}
+                    </div>
+                    <div
+                        className={cn(
+                            "max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-7 sm:max-w-[78%]",
+                            m.role === "user" ? "message-user rounded-br-md text-primary-foreground" : "message-assistant rounded-bl-md border border-border/55 text-foreground"
+                        )}
+                    >
                     {m.images && m.images.length > 0 && (
                         <div className="mb-2 flex flex-wrap gap-1.5">
                             {m.images.map((img, imgIdx) => (
@@ -311,7 +318,8 @@ const MessageBubble = memo(function MessageBubble({
                     ) : (
                         ""
                     )}
-                </div>
+                    </div>
+                </>
             )}
             {m.citations && m.citations.length > 0 && (
                 <div className={cn("mt-1 flex max-w-[82%] flex-wrap gap-1 sm:max-w-[75%]", m.role === "user" ? "justify-end" : "justify-start")}>
@@ -328,7 +336,7 @@ const MessageBubble = memo(function MessageBubble({
                     ))}
                 </div>
             )}
-            <div className="mt-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <div className="mt-1 flex gap-1 opacity-45 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                 <button
                     onClick={() => onCopy(m.content, i)}
                     className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -1538,14 +1546,14 @@ export default function Chat() {
     const currentProject = getCurrentProject();
 
     return (
-        <div className="flex h-full flex-col bg-background/35">
-            <div className="surface-glass flex min-h-14 flex-wrap items-center gap-2 border-b border-border/70 px-4 py-2.5 pl-14 shadow-sm md:pl-4">
+        <div className="flex h-full flex-col">
+            <div className="app-header flex min-h-16 flex-wrap items-center gap-2 px-4 py-3 pl-14 md:px-5">
                 {currentProject && (
-                    <span className="rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
+                    <span className="rounded-lg border border-border/60 bg-card/70 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm">
                         {currentProject.name}
                     </span>
                 )}
-                <span className="text-sm text-muted-foreground">{t.model}</span>
+                <span className="section-eyebrow ml-1">{t.model}</span>
                 <Select value={model} onValueChange={handleModelChange}>
                     <SelectTrigger size="sm">
                         <SelectValue placeholder="Select a model" />
@@ -1658,6 +1666,8 @@ export default function Chat() {
                 {models.length === 0 && (
                     <span className="text-xs text-muted-foreground">{t.noOllamaModelsInstalled}</span>
                 )}
+
+                <div className="mx-0.5 h-5 w-px shrink-0 bg-border" aria-hidden="true" />
 
                 <Button
                     size="sm"
@@ -2093,14 +2103,14 @@ export default function Chat() {
 
             <div className="relative flex-1 overflow-hidden">
             <ScrollArea viewportRef={viewportRef} className="h-full">
-                <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6 2xl:max-w-4xl">
+                <div className="mx-auto flex max-w-4xl flex-col gap-7 px-5 py-10 sm:px-8 2xl:max-w-5xl">
                     {messages.length === 0 && (
-                        <div className="flex flex-col items-center gap-4 py-20 text-center">
-                            <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-sm"><Sparkles className="size-7" /></div>
-                            <div><h2 className="text-xl font-semibold tracking-tight">What would you like to build?</h2><p className="mt-1 text-sm text-muted-foreground">{t.startConversationWith(parsedModel?.modelId || "a model")}</p></div>
-                            <div className="mt-3 grid w-full max-w-xl gap-2 sm:grid-cols-3">
+                        <div className="flex min-h-[58vh] flex-col items-center justify-center gap-5 text-center">
+                            <div className="flex size-14 items-center justify-center rounded-2xl border border-border bg-muted text-primary"><Sparkles className="size-6" /></div>
+                            <div><p className="section-eyebrow mb-2">New conversation</p><h2 className="text-2xl font-semibold tracking-[-0.03em]">What would you like to build?</h2><p className="mt-2 text-sm text-muted-foreground">{t.startConversationWith(parsedModel?.modelId || "a model")}</p></div>
+                            <div className="mt-3 grid w-full max-w-2xl gap-2.5 sm:grid-cols-3">
                                 {["Analyze my GitHub repository", "Review and improve my code", "Plan a new application"].map((suggestion) => (
-                                    <button key={suggestion} onClick={() => setInput(suggestion)} className="surface-glass rounded-xl border border-border/70 p-3 text-left text-xs font-medium shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:bg-primary/5 hover:shadow-md">{suggestion}</button>
+                                    <button key={suggestion} onClick={() => setInput(suggestion)} className="prompt-card rounded-2xl border border-border/65 p-4 text-left text-xs font-medium leading-5 transition-all hover:-translate-y-0.5 hover:border-primary/30">{suggestion}</button>
                                 ))}
                             </div>
                         </div>
@@ -2266,8 +2276,8 @@ export default function Chat() {
                 <TerminalPanel key={agentWorkspace} workspaceRoot={agentWorkspace} onClose={() => setShowTerminalPanel(false)} />
             )}
 
-            <div className="surface-glass border-t border-border/70 p-3 shadow-[0_-12px_36px_rgb(0_0_0/0.04)] sm:p-4">
-                <div className="mx-auto max-w-3xl 2xl:max-w-4xl">
+            <div className="border-t border-border/70 bg-background p-3 sm:px-5 sm:pb-5 sm:pt-4">
+                <div className="mx-auto max-w-4xl 2xl:max-w-5xl">
                     {(individualAttachments.length > 0 ||
                         folderGroups.length > 0 ||
                         ragFolders.length > 0 ||
@@ -2395,7 +2405,7 @@ export default function Chat() {
                     )}
                     {figmaError && <p className="mb-1.5 text-xs text-destructive">{figmaError}</p>}
                     {ocrError && <p className="mb-1.5 text-xs text-destructive">{ocrError}</p>}
-                    <div className="flex items-end gap-2 rounded-2xl border border-border/80 bg-background/75 p-2 shadow-soft focus-within:border-primary/35 focus-within:ring-3 focus-within:ring-primary/10">
+                    <div className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2.5 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-3 focus-within:ring-primary/10">
                         <DropdownMenu>
                             <DropdownMenuTrigger
                                 render={
@@ -2494,7 +2504,7 @@ export default function Chat() {
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={handleKeyDown}
                             placeholder={t.sendMessage}
-                            className="min-h-11 flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
+                            className="min-h-11 flex-1 resize-none border-0 bg-transparent px-2 py-2.5 text-[15px] leading-6 shadow-none focus-visible:ring-0 dark:bg-transparent"
                             disabled={isStreaming}
                         />
                         {isStreaming ? (

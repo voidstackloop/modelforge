@@ -229,6 +229,10 @@ export default function Settings() {
         window.api.benchmark.getLast().then(setBenchmarkResult).catch(() => undefined);
     }, []);
 
+    useEffect(() => {
+        window.api.mcp.isMastervaultBuiltinAvailable().then(setMastervaultAvailable).catch(() => undefined);
+    }, []);
+
     const [mcpStatuses, setMcpStatuses] = useState<Record<string, McpServerStatus>>({});
     const [mcpConnecting, setMcpConnecting] = useState<Record<string, boolean>>({});
     const [showAddMcp, setShowAddMcp] = useState(false);
@@ -236,6 +240,8 @@ export default function Settings() {
     const [mcpDraftTransport, setMcpDraftTransport] = useState<"stdio" | "http">("stdio");
     const [mcpDraftCommand, setMcpDraftCommand] = useState("");
     const [mcpDraftUrl, setMcpDraftUrl] = useState("");
+    const [mastervaultAvailable, setMastervaultAvailable] = useState(false);
+    const [mastervaultAdding, setMastervaultAdding] = useState(false);
 
     const [llamaCppModels, setLlamaCppModels] = useState<LocalGgufModel[]>([]);
     const [llamaCppGpuBackends, setLlamaCppGpuBackends] = useState<string[]>([]);
@@ -843,6 +849,28 @@ export default function Settings() {
         connectMcpServer(server);
     }
 
+    // One-click add for the bundled MasterVault server: the folder picker is
+    // the only per-user config it needs (everything else — command, args,
+    // the ELECTRON_RUN_AS_NODE env var so it runs without a system Node.js —
+    // is filled in on the main process side). Added exactly like any other
+    // MCP server afterwards, so it's removable the same way (see
+    // removeMcpServer below) — nothing about it is pinned or undeletable.
+    async function addBuiltinMastervault() {
+        if (!settings) return;
+        setMastervaultAdding(true);
+        try {
+            const server = await window.api.mcp.pickMastervaultVault();
+            if (!server) return;
+            const updated = await window.api.settings.save({
+                mcpServers: [...(settings.mcpServers ?? []).filter((s) => s.id !== server.id), server],
+            });
+            setSettings(updated);
+            connectMcpServer(server);
+        } finally {
+            setMastervaultAdding(false);
+        }
+    }
+
     async function removeMcpServer(id: string) {
         if (!settings) return;
         await window.api.mcp.disconnect(id);
@@ -983,19 +1011,19 @@ export default function Settings() {
     const exactMatchExists = searchResults.some((m) => m.name.toLowerCase() === search.trim().toLowerCase());
 
     return (
-        <ScrollArea className="h-full bg-background/25">
-            <div className="mx-auto max-w-5xl px-4 pb-20 pt-16 sm:px-6 md:pt-8 2xl:max-w-6xl">
-                <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-                    <div className="flex items-center gap-3"><span className="flex size-10 items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-sm"><Settings2 className="size-5" /></span>
-                    <div><h1 className="text-2xl font-semibold tracking-tight">{t.settings}</h1><p className="mt-0.5 text-xs text-muted-foreground">{t.settingsSubtitle}</p></div></div>
+        <ScrollArea className="h-full">
+            <div className="mx-auto max-w-6xl px-4 pb-24 pt-16 sm:px-7 md:pt-9 2xl:max-w-7xl">
+                <div className="mb-9 flex flex-col justify-between gap-5 sm:flex-row sm:items-center">
+                    <div className="flex items-center gap-3.5"><span className="flex size-11 items-center justify-center rounded-2xl border border-border bg-muted text-primary"><Settings2 className="size-5" /></span>
+                    <div><p className="section-eyebrow mb-1">Workspace preferences</p><h1 className="text-[1.75rem] font-semibold tracking-[-0.035em]">{t.settings}</h1><p className="mt-1 text-xs text-muted-foreground">{t.settingsSubtitle}</p></div></div>
                     <div className="relative w-full sm:w-72">
                         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                        <Input value={settingsQuery} onChange={(e) => setSettingsQuery(e.target.value)} placeholder={t.searchSettingsPlaceholder} className="h-10 rounded-xl bg-card pl-9 shadow-sm" aria-label={t.searchSettingsPlaceholder} />
+                        <Input value={settingsQuery} onChange={(e) => setSettingsQuery(e.target.value)} placeholder={t.searchSettingsPlaceholder} className="h-11 rounded-2xl border-border/70 bg-card/75 pl-9 shadow-sm" aria-label={t.searchSettingsPlaceholder} />
                     </div>
                 </div>
 
                 {settingsQuery.trim() && (
-                    <div className="surface-glass shadow-soft mb-6 grid gap-2 rounded-2xl border border-border/70 p-3 sm:grid-cols-2">
+                    <div className="mb-6 grid gap-2 rounded-2xl border border-border/70 bg-card p-3 shadow-sm sm:grid-cols-2">
                         {SETTINGS_SEARCH_ITEMS.filter((item) => `${item.label} ${item.keywords}`.toLowerCase().includes(settingsQuery.trim().toLowerCase())).map((item) => (
                             <button key={item.tab} onClick={() => { setActiveTab(item.tab); setSettingsQuery(""); }} className="rounded-xl border border-transparent p-3 text-left text-sm font-medium transition-colors hover:border-primary/20 hover:bg-primary/5">{item.label}<span className="mt-0.5 block text-xs font-normal text-muted-foreground">Open {item.tab} settings</span></button>
                         ))}
@@ -1006,9 +1034,9 @@ export default function Settings() {
                     value={activeTab}
                     onValueChange={(v) => setActiveTab(v as SettingsTab)}
                     orientation="vertical"
-                    className="flex-col items-stretch gap-6 lg:flex-row lg:items-start lg:gap-10"
+                    className="flex-col items-stretch gap-6 lg:flex-row lg:items-start lg:gap-9"
                 >
-                    <TabsList variant="line" className="surface-glass sticky top-0 z-10 w-full shrink-0 flex-row overflow-x-auto rounded-xl border border-border/70 p-1 shadow-sm lg:top-6 lg:w-52 lg:flex-col lg:rounded-2xl lg:p-2">
+                    <TabsList variant="line" className="sticky top-0 z-10 w-full shrink-0 flex-row overflow-x-auto rounded-2xl border border-border/65 bg-card p-1.5 lg:top-6 lg:w-56 lg:flex-col lg:p-2">
                         <TabsTrigger value="general" className="justify-start gap-2">
                             <SlidersHorizontal className="size-4 shrink-0" /> {t.settingsTabGeneral}
                         </TabsTrigger>
@@ -1444,6 +1472,7 @@ export default function Settings() {
                                     type="button"
                                     role="switch"
                                     aria-checked={settings?.reduceMotion ?? false}
+                                    aria-label={t.reduceMotionLabel}
                                     onClick={() => saveSettings({ reduceMotion: !(settings?.reduceMotion ?? false) })}
                                     className={cn("relative h-6 w-11 rounded-full transition-colors", settings?.reduceMotion ? "bg-primary" : "bg-muted")}
                                 >
@@ -2061,6 +2090,20 @@ export default function Settings() {
                                         </SettingsRow>
                                     );
                                 })}
+                                {mastervaultAvailable && !(settings.mcpServers ?? []).some((s) => s.id === "mastervault-builtin") && (
+                                    <SettingsRow label={t.mastervaultTitle} description={t.mastervaultHint} stacked>
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            disabled={mastervaultAdding}
+                                            onClick={addBuiltinMastervault}
+                                            className="w-fit gap-1.5"
+                                        >
+                                            {mastervaultAdding ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
+                                            {t.mastervaultAdd}
+                                        </Button>
+                                    </SettingsRow>
+                                )}
                                 <SettingsRow stacked>
                                     {showAddMcp ? (
                                         <div className="flex flex-col gap-2">

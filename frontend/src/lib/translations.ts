@@ -103,6 +103,9 @@ export interface Dictionary {
     disabled: string;
     mcpServersSection: string;
     mcpServersHint: string;
+    mastervaultTitle: string;
+    mastervaultHint: string;
+    mastervaultAdd: string;
     addMcpServer: string;
     mcpServerName: string;
     mcpTransport: string;
@@ -505,6 +508,9 @@ export const en: Dictionary = {
     disabled: "Disabled",
     mcpServersSection: "MCP servers",
     mcpServersHint: "Connect external Model Context Protocol servers to give Agent mode more tools (e.g. a database, a ticket tracker, a browser). stdio launches a local command; HTTP connects to a remote MCP server URL.",
+    mastervaultTitle: "MasterVault (built-in)",
+    mastervaultHint: "Gives Agent mode tools to orient on, read, search, and log decisions against a MasterVault-style notes folder — bundled with Modelforge, no separate install needed. Pick the vault folder to add it; remove it like any other MCP server if you don't want it.",
+    mastervaultAdd: "Add MasterVault",
     addMcpServer: "Add server",
     mcpServerName: "Name",
     mcpTransport: "Transport",
@@ -917,6 +923,9 @@ export const tr: Dictionary = {
     disabled: "Kapalı",
     mcpServersSection: "MCP sunucuları",
     mcpServersHint: "Agent moduna daha fazla araç kazandırmak için harici Model Context Protocol sunucularına bağlanın (ör. bir veritabanı, bir destek sistemi, bir tarayıcı). stdio yerel bir komut başlatır; HTTP uzak bir MCP sunucu adresine bağlanır.",
+    mastervaultTitle: "MasterVault (yerleşik)",
+    mastervaultHint: "Agent moduna bir MasterVault tarzı not klasörüne yönelme, okuma, arama yapma ve karar kaydetme araçları kazandırır — Modelforge ile birlikte gelir, ayrı bir kurulum gerekmez. Eklemek için kasa klasörünü seçin; istemezseniz diğer MCP sunucuları gibi kaldırabilirsiniz.",
+    mastervaultAdd: "MasterVault Ekle",
     addMcpServer: "Sunucu ekle",
     mcpServerName: "Ad",
     mcpTransport: "Bağlantı türü",
