@@ -55,7 +55,25 @@ async function enableAgentModeAndSendToolCallingMessage(instance_: LaunchedApp):
     await window.getByRole("button", { name: "Agent", exact: true }).click();
     await expect(window.getByRole("button", { name: /Agent/ })).toHaveAttribute("aria-pressed", "true");
 
-    fakeOllama.setNextChatTurn({ toolCall: { name: "run_command", arguments: { command: "echo hello-from-agent" } } });
+    // Enabling agent mode kicks off its own IPC round trips in the
+    // background (sessions:update, agentTools.detectProjectScripts() via the
+    // agentWorkspace effect) — sending the chat message immediately risks
+    // its single-chunk tool-call response's webContents.send() landing in
+    // the same event-loop tick as one of those, which Electron can coalesce
+    // away silently (this is the same class of bug worked around in
+    // fake-ollama.ts's DEFAULT_DELAY_MS, just triggered by a different
+    // neighbor now that agent mode is in play). Letting things settle first
+    // is cheaper and more direct than only padding the response delay.
+    await window.waitForTimeout(300);
+
+    fakeOllama.setNextChatTurn({
+        toolCall: { name: "run_command", arguments: { command: "echo hello-from-agent" } },
+        // Wider than the fixture's own default — this response is a single
+        // chunk carrying the *entire* tool call, so if Electron drops it,
+        // there's no partial content left behind to recover; CI has shown
+        // this needs more headroom than plain streaming does.
+        delayMs: 250,
+    });
 
     const input = window.getByPlaceholder("Send a message...");
     await input.fill("run a command for me");
