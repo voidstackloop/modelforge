@@ -18,8 +18,19 @@ export default defineConfig({
     fullyParallel: false,
     retries: process.env.CI ? 1 : 0,
     timeout: 60_000,
-    expect: { timeout: 10_000 },
+    // CI runners (shared, no GPU, xvfb overhead on top of Electron's own
+    // startup cost) are measurably slower than a local dev machine — a wait
+    // that's comfortably generous locally can still time out there. Give CI
+    // more headroom uniformly rather than chasing each timeout one at a time.
+    expect: { timeout: process.env.CI ? 20_000 : 10_000 },
     reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
+    use: {
+        // Only kept for a run that actually failed — cheap on disk, and the
+        // difference between "it broke somewhere" and "here's exactly what
+        // the page looked like and every action leading up to it."
+        trace: "retain-on-failure",
+        screenshot: "only-on-failure",
+    },
     webServer: {
         command: "npx vite preview --port 5173 --strictPort",
         cwd: path.resolve(__dirname, "../frontend"),

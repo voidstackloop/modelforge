@@ -12,6 +12,11 @@ import { startFakeOllama, type FakeOllamaServer } from "../fixtures/fake-ollama"
 // through the real IPC bridge and a real (sandboxed, harmless) command
 // execution on Allow, not a mocked approval handler.
 
+// The Allow/Deny wait below alone can take 30s on a slow CI runner; the
+// config's default 60s per-test budget leaves too little room for the setup
+// and follow-up assertions around it.
+test.setTimeout(90_000);
+
 let fakeOllama: FakeOllamaServer;
 let instance: LaunchedApp;
 let workspaceDir: string;
@@ -48,7 +53,7 @@ async function enableAgentModeAndSendToolCallingMessage(instance_: LaunchedApp):
     const input = window.getByPlaceholder("Send a message...");
     await input.fill("run a command for me");
     const sendButton = window.getByRole("button", { name: "Send message" });
-    await expect(sendButton).toBeEnabled({ timeout: 15_000 });
+    await expect(sendButton).toBeEnabled({ timeout: 20_000 });
     await sendButton.click();
 }
 
@@ -59,13 +64,19 @@ test("Deny stops the tool from running and the card clears", async () => {
     // "run_command" appears twice once the card is up (the tool-call summary
     // line and the pending-call header) — anchor on the Allow/Deny buttons
     // themselves, which is what actually defines "the approval card showed".
-    await expect(window.getByRole("button", { name: "Allow" })).toBeVisible({ timeout: 15_000 });
+    // Generous on top of the config's own CI-aware expect timeout: this
+    // specific wait spans agent-workspace setup (a real IPC round trip plus
+    // agentTools.detectProjectScripts()) and a full chat request/response
+    // round trip through the fake Ollama server — the longest chain of
+    // async work in this suite, and the one most exposed to a slower/shared
+    // CI runner.
+    await expect(window.getByRole("button", { name: "Allow" })).toBeVisible({ timeout: 30_000 });
     await window.getByRole("button", { name: "Deny" }).click();
 
     await expect(window.getByRole("button", { name: "Deny" })).toBeHidden();
     // The agent loop still completes (with the model told it was denied) —
     // the whole turn doesn't hang after a denial.
-    await expect(window.getByText("Hello from the fake model.")).toBeVisible({ timeout: 15_000 });
+    await expect(window.getByText("Hello from the fake model.")).toBeVisible({ timeout: 20_000 });
 
     // Nothing the denied command would have produced actually happened.
     expect(fs.readdirSync(workspaceDir)).toEqual([]);
@@ -75,12 +86,18 @@ test("Allow runs the tool for real and the card clears", async () => {
     const { window } = instance;
     await enableAgentModeAndSendToolCallingMessage(instance);
 
-    await expect(window.getByRole("button", { name: "Allow" })).toBeVisible({ timeout: 15_000 });
+    // Generous on top of the config's own CI-aware expect timeout: this
+    // specific wait spans agent-workspace setup (a real IPC round trip plus
+    // agentTools.detectProjectScripts()) and a full chat request/response
+    // round trip through the fake Ollama server — the longest chain of
+    // async work in this suite, and the one most exposed to a slower/shared
+    // CI runner.
+    await expect(window.getByRole("button", { name: "Allow" })).toBeVisible({ timeout: 30_000 });
     await window.getByRole("button", { name: "Allow" }).click();
 
     await expect(window.getByRole("button", { name: "Allow" })).toBeHidden();
     // The tool result card (not the earlier pending-call summary line, which
     // also still mentions the command) — proof the command actually ran.
-    await expect(window.locator("pre", { hasText: "hello-from-agent" })).toBeVisible({ timeout: 15_000 });
-    await expect(window.getByText("Hello from the fake model.")).toBeVisible({ timeout: 15_000 });
+    await expect(window.locator("pre", { hasText: "hello-from-agent" })).toBeVisible({ timeout: 20_000 });
+    await expect(window.getByText("Hello from the fake model.")).toBeVisible({ timeout: 20_000 });
 });
