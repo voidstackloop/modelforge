@@ -1,0 +1,38 @@
+{
+  "name": "mastervault-mcp-server",
+  "version": "1.1.1",
+  "description": "A headless, filesystem-backed MCP server that serves any MasterVault — its files and its operating protocol — to any MCP client. No Obsidian required.",
+  "author": "JustMichael-80",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JustMichael-80/mastervault-mcp-server.git"
+  },
+  "homepage": "https://github.com/JustMichael-80/mastervault-mcp-server#readme",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "mastervault-mcp-server": "dist/index.js"
+  },
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "build:bundled": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist-bundled/index.js --banner:js=\"import { createRequire as __mvCreateRequire } from 'node:module'; const require = __mvCreateRequire(import.meta.url);\"",
+    "clean": "rm -rf dist dist-bundled",
+    "prepare": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "gray-matter": "^4.0.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
