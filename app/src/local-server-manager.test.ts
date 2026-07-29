@@ -134,7 +134,7 @@ describe("runtime input safety", () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-models-"));
         const model = path.join(root, "model.gguf"); fs.writeFileSync(model, "gguf");
         const outside = path.join(os.tmpdir(), `outside-${Date.now()}.gguf`); fs.writeFileSync(outside, "gguf");
-        expect(validateRuntimeModel("rocm", model, root)).toBe(path.resolve(model));
+        expect(validateRuntimeModel("rocm", model, root)).toBe(fs.realpathSync(model));
         expect(() => validateRuntimeModel("rocm", outside, root)).toThrow(/outside/);
         expect(() => validateRuntimeModel("vllm", "not a model id", root)).toThrow(/publisher\/model/);
         fs.rmSync(outside, { force: true });
