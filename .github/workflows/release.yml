@@ -175,10 +175,14 @@ jobs:
           # has already gone through.
           while IFS= read -r -d '' f; do
             name=$(basename "$f")
+            # GitHub normalizes spaces in uploaded asset names to periods.
+            # Query and delete by the server-side name while continuing to
+            # upload the original local path.
+            remote_name=${name// /.}
             local_size=$(stat -c%s "$f")
             uploaded=0
             for attempt in 1 2 3 4; do
-              remote_size=$(remote_size_of "$name")
+              remote_size=$(remote_size_of "$remote_name")
               if [ -n "$remote_size" ] && [ "$remote_size" = "$local_size" ]; then
                 echo "Asset '$name' already present with the correct size ($local_size bytes)."
                 uploaded=1
@@ -191,12 +195,12 @@ jobs:
                 # Only clean up a ghost/partial entry once we know one exists —
                 # never delete-then-fail-to-replace on the very first attempt.
                 if [ -n "$remote_size" ]; then
-                  gh release delete-asset "${{ github.ref_name }}" "$name" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+                  gh release delete-asset "${{ github.ref_name }}" "$remote_name" --repo "${{ github.repository }}" --yes 2>/dev/null || true
                 fi
               fi
               gh release upload "${{ github.ref_name }}" "$f" --repo "${{ github.repository }}" --clobber || true
             done
-            remote_size=$(remote_size_of "$name")
+            remote_size=$(remote_size_of "$remote_name")
             if [ -z "$remote_size" ] || [ "$remote_size" != "$local_size" ]; then
               echo "::error::Asset '$name' still missing or wrong size after 4 attempts (local: ${local_size}, remote: ${remote_size:-none})."
               overall_missing=1
