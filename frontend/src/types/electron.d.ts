@@ -159,6 +159,30 @@ export interface ModelRecommendations {
   models: RecommendedModel[];
 }
 
+export interface GgufAssessmentInput {
+  modelId: string;
+  filename: string;
+  sizeBytes: number | null;
+}
+
+export interface GgufAssessment {
+  modelId: string;
+  filename: string;
+  canAssess: boolean;
+  fits: boolean | null;
+  outcome: RecommendedModel["outcome"] | "Unknown size";
+  quantization: string;
+  estimatedParametersB: number | null;
+  estimatedWeightGB: number | null;
+  estimatedKvCacheGB: number | null;
+  runtimeOverheadGB: number | null;
+  totalRequiredGB: number | null;
+  expectedGpuOffloadPercent: number | null;
+  estimatedTokensPerSecond: number | null;
+  recommendedRuntime: "llamacpp";
+  reason: string;
+}
+
 export interface PromptVersion {
   prompt: string;
   savedAt: string;
@@ -760,6 +784,7 @@ export interface ElectronApi {
   system: {
     getSpecs: () => Promise<SystemSpecs>;
     getRecommendations: () => Promise<ModelRecommendations>;
+    assessGgufFiles: (files: GgufAssessmentInput[]) => Promise<GgufAssessment[]>;
     getActivity: () => Promise<AppActivity>;
   };
   gpu: {

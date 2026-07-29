@@ -78,17 +78,31 @@ export async function startFakeOllama(): Promise<FakeOllamaServer> {
                 chatRequestCount++;
                 const turn = oneShotTurn ?? defaultTurn;
                 oneShotTurn = null;
+                // Drain the JSON request body before starting the streamed
+                // response. Leaving it unread makes Node's keep-alive/socket
+                // completion timing platform-dependent and can leave the
+                // Electron fetch reader waiting forever after res.end().
+                for await (const _chunk of req) { /* body shape is irrelevant to this fixture */ }
                 res.writeHead(200, { "Content-Type": "application/x-ndjson" });
 
                 let aborted = false;
-                req.on("close", () => {
+                // IncomingMessage "close" also fires after a normal request
+                // body completes, so using it as cancellation races every
+                // delayed response. "aborted" is the real client-abort
+                // signal. Writes to an actually closed response are already
+                // harmless and covered by the surrounding server try/catch.
+                req.on("aborted", () => {
                     aborted = true;
                 });
                 const delayMs = turn.delayMs ?? DEFAULT_DELAY_MS;
 
                 if (turn.toolCall) {
                     if (delayMs) await sleep(delayMs);
-                    if (aborted) return void res.end();
+                    // Tool-call tests are validating approval behavior, not
+                    // cancellation. Always attempt this single response;
+                    // writing to a genuinely closed socket is harmless,
+                    // while honoring a platform-specific/spurious request
+                    // abort here makes the approval card nondeterministic.
                     res.write(
                         JSON.stringify({
                             model: "fake-model:latest",
@@ -139,7 +153,8 @@ export async function startFakeOllama(): Promise<FakeOllamaServer> {
             }
 
             res.writeHead(404).end();
-        } catch {
+        } catch (error) {
+            console.error("[fake-ollama] request failed", error);
             if (!res.headersSent) res.writeHead(500);
             res.end();
         }

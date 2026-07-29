@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyGpuVendor, computeGpuTopology, detectModelFormat, parseMigInstancesFromNvidiaSmiL, recommendModels, recommendModelsWithML, resolveAutomaticRuntime, type GpuInfo, type GpuTopology, type SystemSpecs } from "./system-specs";
+import { assessGgufFiles, classifyGpuVendor, computeGpuTopology, detectGgufQuantization, detectModelFormat, parseMigInstancesFromNvidiaSmiL, recommendModels, recommendModelsWithML, resolveAutomaticRuntime, type GpuInfo, type GpuTopology, type SystemSpecs } from "./system-specs";
 
 function baseTopology(overrides: Partial<GpuTopology> = {}): GpuTopology {
     return {
@@ -250,6 +250,41 @@ describe("detectModelFormat", () => {
     });
     it("falls back to unknown for anything unrecognized", () => {
         expect(detectModelFormat("meta-llama/Llama-3.1-8B-Instruct")).toBe("unknown");
+    });
+});
+
+describe("assessGgufFiles", () => {
+    it("extracts common GGUF quantizations without confusing model names", () => {
+        expect(detectGgufQuantization("Kimi-Q3_K_L.gguf")).toEqual({ label: "Q3_K_L", bits: 3.69 });
+        expect(detectGgufQuantization("model-IQ2_XXS.gguf").label).toBe("IQ2_XXS");
+        expect(detectGgufQuantization("model-UD-Q4_K_XL.gguf").label).toBe("UD-Q4_K_XL");
+        expect(detectGgufQuantization("model.gguf").label).toBe("GGUF");
+    });
+
+    it("reports a full-GPU fit and a non-zero speed estimate", () => {
+        const specs = baseSpecs({
+            freeRAMGB: 32,
+            gpu: { name: "RTX 4090", vramGB: 24, vendor: "nvidia" },
+            gpus: [{ name: "RTX 4090", vramGB: 24, vendor: "nvidia" }],
+            totalVramGB: 24,
+            largestGpuVramGB: 24,
+        });
+        const [result] = assessGgufFiles(specs, [{ modelId: "org/model", filename: "model-Q4_K_M.gguf", sizeBytes: 8_000_000_000 }]);
+        expect(result.outcome).toBe("Runs fully on GPU");
+        expect(result.fits).toBe(true);
+        expect(result.totalRequiredGB).toBeGreaterThan(8);
+        expect(result.estimatedTokensPerSecond).toBeGreaterThan(0);
+    });
+
+    it("marks an oversized file unsafe and handles missing sizes honestly", () => {
+        const [oversized, unknown] = assessGgufFiles(baseSpecs({ totalRAMGB: 16, freeRAMGB: 8 }), [
+            { modelId: "org/model", filename: "huge-Q8_0.gguf", sizeBytes: 80_000_000_000 },
+            { modelId: "org/model", filename: "unknown.gguf", sizeBytes: null },
+        ]);
+        expect(oversized.outcome).toBe("Likely out of memory");
+        expect(oversized.estimatedTokensPerSecond).toBe(0);
+        expect(unknown.canAssess).toBe(false);
+        expect(unknown.fits).toBeNull();
     });
 });
 

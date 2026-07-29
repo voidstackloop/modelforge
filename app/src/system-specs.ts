@@ -148,6 +148,30 @@ export interface ModelRecommendations {
     models: RecommendedModel[];
 }
 
+export interface GgufAssessmentInput {
+    modelId: string;
+    filename: string;
+    sizeBytes: number | null;
+}
+
+export interface GgufAssessment {
+    modelId: string;
+    filename: string;
+    canAssess: boolean;
+    fits: boolean | null;
+    outcome: RecommendationOutcome | "Unknown size";
+    quantization: string;
+    estimatedParametersB: number | null;
+    estimatedWeightGB: number | null;
+    estimatedKvCacheGB: number | null;
+    runtimeOverheadGB: number | null;
+    totalRequiredGB: number | null;
+    expectedGpuOffloadPercent: number | null;
+    estimatedTokensPerSecond: number | null;
+    recommendedRuntime: "llamacpp";
+    reason: string;
+}
+
 // Model tags are Ollama library names as of this app's last update — Ollama's
 // lineup changes often, so verify a tag still exists (`ollama pull <name>`)
 // if a pull ever fails; the search box above also lets you pull any exact
@@ -639,6 +663,112 @@ function runtimeOverhead(weightGB: number, runtime: NonNullable<RecommendationOp
 function observationFor(model: string, history: BenchmarkObservation[]): BenchmarkObservation | undefined {
     const normalized = model.toLowerCase().split(":")[0];
     return [...history].reverse().find((item) => item.model.toLowerCase().includes(normalized) || normalized.includes(item.model.toLowerCase().split(":")[0]));
+}
+
+// GGUF filenames use a wider set of quantization labels than the curated
+// Ollama catalog. These effective bit widths are intentionally approximate:
+// the actual file size remains the source of truth for memory fitting, while
+// the bit width lets us infer parameter count for KV-cache and speed estimates.
+const GGUF_QUANTIZATION_BITS: Record<string, number> = {
+    IQ1_S: 1.56, IQ1_M: 1.75, IQ2_XXS: 2.06, IQ2_XS: 2.31, IQ2_S: 2.5, IQ2_M: 2.7,
+    Q2_K: 2.625, Q3_K_S: 3.44, Q3_K_M: 3.5, Q3_K_L: 3.69,
+    IQ3_XXS: 3.06, IQ3_XS: 3.3, IQ3_S: 3.5, IQ3_M: 3.7,
+    Q4_0: 4.5, Q4_1: 5, Q4_K_S: 4.58, Q4_K_M: 4.75, IQ4_XS: 4.25, IQ4_NL: 4.5,
+    Q5_0: 5.5, Q5_1: 6, Q5_K_S: 5.4, Q5_K_M: 5.5,
+    Q6_K: 6.56, Q8_0: 8.5, F16: 16, BF16: 16, F32: 32,
+};
+
+export function detectGgufQuantization(filename: string): { label: string; bits: number } {
+    const upper = filename.toUpperCase();
+    const labels = Object.keys(GGUF_QUANTIZATION_BITS).sort((a, b) => b.length - a.length);
+    const label = labels.find((candidate) => new RegExp(`(?:^|[-_.])${candidate}(?=[-_.]|$)`).test(upper));
+    if (label) return { label, bits: GGUF_QUANTIZATION_BITS[label] };
+    // Preserve newer community labels (for example UD-Q4_K_XL) so Ollama can
+    // receive the exact tag even before this table learns its precise bpw.
+    const community = upper.match(/(?:^|[-_.])((?:UD-)?(?:IQ|Q|TQ)\d(?:_[A-Z0-9]+)+)(?=[-.]|$)/)?.[1];
+    if (community) {
+        const nominalBits = Number(community.match(/(?:IQ|Q|TQ)(\d)/)?.[1] ?? 4);
+        return { label: community, bits: nominalBits === 1 ? 1.75 : nominalBits === 2 ? 2.625 : nominalBits === 3 ? 3.5 : nominalBits === 4 ? 4.75 : nominalBits + 0.5 };
+    }
+    return { label: "GGUF", bits: 4.75 };
+}
+
+// Evaluates arbitrary Hugging Face GGUF files against the same conservative
+// hardware budgets used by the catalog recommender. Unlike catalog entries,
+// the downloaded file's real byte size drives weight-memory accounting.
+export function assessGgufFiles(specs: SystemSpecs, inputs: GgufAssessmentInput[], contextLength = 8_192): GgufAssessment[] {
+    const safeContext = Math.max(2_048, Math.min(131_072, contextLength));
+    const usableRAMGB = Math.max(0, Math.min(specs.totalRAMGB * 0.72, specs.freeRAMGB > 2 ? specs.freeRAMGB - 2 : specs.totalRAMGB * 0.55));
+    const knownGpuMemory = specs.gpus.map((gpu) => gpu.vramGB).filter((value): value is number => value !== null);
+    const unifiedMemory = specs.gpuInterconnect === "unified" || specs.gpus.some((gpu) => gpu.vendor === "apple");
+    const largestUsableGpuGB = unifiedMemory ? usableRAMGB : Math.max(0, specs.largestGpuVramGB ?? (knownGpuMemory.length ? Math.max(...knownGpuMemory) : 0)) * 0.88;
+    const aggregateUsableVramGB = unifiedMemory ? usableRAMGB : knownGpuMemory.reduce((sum, value) => sum + value * 0.88, 0);
+    const smallestUsableGpuGB = knownGpuMemory.length ? Math.min(...knownGpuMemory) * 0.88 : 0;
+
+    return inputs.map((input) => {
+        const quantization = detectGgufQuantization(input.filename);
+        if (input.sizeBytes === null || !Number.isFinite(input.sizeBytes) || input.sizeBytes <= 0) {
+            return {
+                modelId: input.modelId, filename: input.filename, canAssess: false, fits: null, outcome: "Unknown size" as const,
+                quantization: quantization.label, estimatedParametersB: null, estimatedWeightGB: null, estimatedKvCacheGB: null,
+                runtimeOverheadGB: null, totalRequiredGB: null, expectedGpuOffloadPercent: null, estimatedTokensPerSecond: null,
+                recommendedRuntime: "llamacpp" as const, reason: "Hugging Face did not report a file size, so memory fit and speed cannot be estimated safely.",
+            };
+        }
+
+        const estimatedWeightGB = input.sizeBytes / 1e9;
+        // GGUF metadata and tensor alignment add a small amount beyond pure
+        // quantized weights, hence the conservative 3% correction.
+        const estimatedParametersB = Math.max(0.1, estimatedWeightGB * 8 / quantization.bits / 1.03);
+        const estimatedKvCacheGB = Math.max(0.12, 0.17 * Math.sqrt(estimatedParametersB / 7)) * safeContext / 1024;
+        const overhead = runtimeOverhead(estimatedWeightGB, "llamacpp");
+        const totalRequiredGB = estimatedWeightGB + estimatedKvCacheGB + overhead;
+        const gpuBudgetForWeights = Math.max(0, largestUsableGpuGB - estimatedKvCacheGB - overhead);
+        const expectedGpuOffloadPercent = Math.max(0, Math.min(100, gpuBudgetForWeights / estimatedWeightGB * 100));
+        const cpuRemainingGB = estimatedWeightGB * (1 - expectedGpuOffloadPercent / 100) + Math.min(overhead, 1.2);
+        const fullGpu = totalRequiredGB <= largestUsableGpuGB && (unifiedMemory || knownGpuMemory.length > 0);
+        const tensorParallel = !fullGpu && !unifiedMemory && specs.tensorParallelSupported && knownGpuMemory.length > 1
+            && estimatedWeightGB / knownGpuMemory.length + estimatedKvCacheGB + overhead <= smallestUsableGpuGB
+            && totalRequiredGB <= aggregateUsableVramGB;
+        const partial = !fullGpu && !tensorParallel && expectedGpuOffloadPercent >= 5 && cpuRemainingGB <= usableRAMGB;
+        const cpuOnly = !fullGpu && !tensorParallel && !partial && totalRequiredGB <= usableRAMGB;
+
+        let outcome: RecommendationOutcome;
+        let reason: string;
+        if (fullGpu) {
+            outcome = "Runs fully on GPU";
+            reason = unifiedMemory
+                ? `Fits the ${usableRAMGB.toFixed(1)} GB usable unified-memory budget at ${safeContext.toLocaleString()} context.`
+                : `Fits the largest GPU's safe memory budget at ${safeContext.toLocaleString()} context.`;
+        } else if (tensorParallel) {
+            outcome = "Requires tensor parallelism";
+            reason = `Estimated shards fit ${knownGpuMemory.length} GPUs, but llama.cpp must distribute the model across them.`;
+        } else if (partial) {
+            outcome = "Runs with partial offload";
+            reason = `About ${expectedGpuOffloadPercent.toFixed(0)}% GPU offload; the remaining weights fit usable system RAM.`;
+        } else if (cpuOnly) {
+            outcome = "CPU-only but usable";
+            reason = `Fits usable RAM, but generation will be limited by roughly ${specs.cpuMemoryBandwidthGBps} GB/s CPU memory bandwidth.`;
+        } else {
+            outcome = "Likely out of memory";
+            reason = `Needs about ${totalRequiredGB.toFixed(1)} GB including KV cache and runtime overhead; safe RAM/VRAM budgets are insufficient.`;
+        }
+
+        const cpuTps = specs.cpuMemoryBandwidthGBps / Math.max(estimatedWeightGB, 0.5) * 0.65;
+        const gpuTps = 42 * Math.sqrt(7 / Math.max(estimatedParametersB, 0.5)) * (4.75 / quantization.bits);
+        const estimatedTokensPerSecond = outcome === "Likely out of memory" ? 0
+            : fullGpu || tensorParallel ? gpuTps
+                : partial ? cpuTps + (gpuTps - cpuTps) * expectedGpuOffloadPercent / 100
+                    : cpuTps;
+
+        return {
+            modelId: input.modelId, filename: input.filename, canAssess: true, fits: outcome !== "Likely out of memory", outcome,
+            quantization: quantization.label, estimatedParametersB: +estimatedParametersB.toFixed(1), estimatedWeightGB: +estimatedWeightGB.toFixed(2),
+            estimatedKvCacheGB: +estimatedKvCacheGB.toFixed(2), runtimeOverheadGB: +overhead.toFixed(2), totalRequiredGB: +totalRequiredGB.toFixed(2),
+            expectedGpuOffloadPercent: +expectedGpuOffloadPercent.toFixed(0), estimatedTokensPerSecond: +estimatedTokensPerSecond.toFixed(1),
+            recommendedRuntime: "llamacpp", reason,
+        };
+    });
 }
 
 // Relative weight each goal puts on {quality, speed, memory-efficiency, agent

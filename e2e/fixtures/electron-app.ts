@@ -48,7 +48,11 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
 
     const app = await electron.launch({
         executablePath: ELECTRON_EXECUTABLE,
-        args: [MAIN_JS, `--user-data-dir=${userDataDir}`],
+        // Chromium switches must precede Electron's app entry point. When
+        // --user-data-dir came after MAIN_JS Electron exposed it only as an
+        // application argument, silently reusing the real/default profile
+        // and leaking sessions/navigation between otherwise isolated tests.
+        args: [`--user-data-dir=${userDataDir}`, MAIN_JS],
         cwd: APP_DIR,
         env: {
             ...process.env,

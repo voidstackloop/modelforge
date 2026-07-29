@@ -1955,7 +1955,8 @@ export default function Chat() {
                             </div>
                             <div className="flex flex-col gap-1">
                                 <label className="text-xs text-muted-foreground">
-                                    Context length{parsedModel?.provider !== "ollama" ? " (Ollama only)" : ""}
+                                    Context length
+                                    {parsedModel?.provider !== "ollama" && parsedModel?.provider !== "llamacpp" ? " (local GGUF only)" : ""}
                                 </label>
                                 <Input
                                     type="number"
@@ -1963,7 +1964,7 @@ export default function Chat() {
                                     step={512}
                                     value={params.contextLength ?? currentProject?.params?.contextLength ?? settings?.contextLength ?? ""}
                                     onChange={(e) => updateParam({ contextLength: Number(e.target.value) })}
-                                    disabled={parsedModel?.provider !== "ollama"}
+                                    disabled={parsedModel?.provider !== "ollama" && parsedModel?.provider !== "llamacpp"}
                                     className="h-8 text-xs"
                                 />
                             </div>

@@ -5,6 +5,7 @@ import * as downloadWorker from "./download-worker";
 import { createJob, deleteJob, flushJobs, getJob, listJobs, updateJob, type DownloadJob } from "./download-jobs-store";
 import { getDownloadManager } from "./native-downloader";
 import { detectModelFormat, getSpecs, resolveAutomaticRuntime } from "./system-specs";
+import { logger } from "./logger";
 
 export interface DownloadControls { concurrency: number; bandwidthMbps: number }
 export interface RecoveryStatus { recoveredJobs: number; recoveredAt: string | null }
@@ -41,9 +42,17 @@ export function configure(controls: DownloadControls): DownloadControls {
     const concurrency = Number.isFinite(rawConcurrency) ? Math.max(1, Math.min(8, Math.floor(rawConcurrency))) : 2;
     const rawBandwidth = Number(controls?.bandwidthMbps);
     const bandwidthMbps = Number.isFinite(rawBandwidth) ? Math.max(0, Math.min(100_000, rawBandwidth)) : 0;
-    const manager = getDownloadManager();
-    manager.setGlobalConcurrency(concurrency);
-    manager.setBandwidthLimit(bandwidthMbps > 0 ? bandwidthMbps * 1024 * 1024 / 8 : undefined);
+    try {
+        const manager = getDownloadManager();
+        manager.setGlobalConcurrency(concurrency);
+        manager.setBandwidthLimit(bandwidthMbps > 0 ? bandwidthMbps * 1024 * 1024 / 8 : undefined);
+    } catch (error) {
+        // Plain TypeScript/dev/E2E builds intentionally do not compile the
+        // Rust addon. Keep the rest of app startup healthy; attempting an
+        // actual download will still surface the missing-addon error. The
+        // packaged build always runs build:native and includes app/native.
+        logger.warn(`Native download controls unavailable: ${(error as Error).message}`);
+    }
     return { concurrency, bandwidthMbps };
 }
 

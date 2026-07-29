@@ -2,7 +2,19 @@ import { describe, it, expect, beforeEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deleteModel, groupShardedModels, listModels, normalizeLlamaCppRuntimeConfig } from "./llamacpp-manager";
+import { deleteModel, groupShardedModels, listModels, normalizeLlamaCppRuntimeConfig, resolveGpuLayers } from "./llamacpp-manager";
+
+describe("resolveGpuLayers", () => {
+    it("reserves VRAM for the user's requested context in automatic mode", () => {
+        expect(resolveGpuLayers("auto", undefined, 32_768)).toEqual({ fitContext: { contextSize: 32_768 } });
+    });
+
+    it("keeps CPU, all-layer, and manual modes distinct", () => {
+        expect(resolveGpuLayers("cpu", undefined, 8_192)).toBe(0);
+        expect(resolveGpuLayers("max", undefined, 8_192)).toBe("max");
+        expect(resolveGpuLayers("manual", 24, 8_192)).toBe(24);
+    });
+});
 
 describe("groupShardedModels", () => {
     it("leaves a normal single-file model untouched", () => {

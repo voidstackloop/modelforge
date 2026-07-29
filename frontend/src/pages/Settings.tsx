@@ -69,6 +69,7 @@ import type {
     GpuSelectionMode,
     HfModelSummary,
     HfGgufFile,
+    GgufAssessment,
     ScheduledTask,
     AppActivity,
     LinkedAccount,
@@ -95,6 +96,7 @@ import type { Locale } from "@/lib/translations";
 import { useTheme, COLOR_THEMES, type ColorTheme } from "@/components/theme-provider";
 import { speakText } from "@/lib/tts";
 import { cn } from "@/lib/utils";
+import { ggufGroupFor, ggufGroupSize, groupGgufFiles, ollamaTagForGguf } from "@/lib/gguf";
 
 type SettingsTab = "general" | "models" | "accounts" | "integrations" | "chat" | "voice" | "automation" | "data";
 
@@ -281,6 +283,8 @@ export default function Settings() {
     const [hfFiles, setHfFiles] = useState<HfGgufFile[]>([]);
     const [hfFilesLoading, setHfFilesLoading] = useState(false);
     const [hfDownloading, setHfDownloading] = useState<Record<string, number>>({});
+    const [hfAssessments, setHfAssessments] = useState<Record<string, GgufAssessment>>({});
+    const [hfAssessmentsLoading, setHfAssessmentsLoading] = useState(false);
 
     const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
     const [showAddTask, setShowAddTask] = useState(false);
@@ -377,21 +381,45 @@ export default function Settings() {
         }
         setHfExpandedId(modelId);
         setHfFilesLoading(true);
-        const res = await window.api.huggingface.listFiles(modelId);
-        setHfFiles(res.files ?? []);
-        setHfFilesLoading(false);
+        setHfAssessments({});
+        try {
+            const res = await window.api.huggingface.listFiles(modelId);
+            if (res.error) throw new Error(res.error);
+            const files = res.files ?? [];
+            setHfFiles(files);
+            setHfFilesLoading(false);
+            if (files.length > 0) {
+                setHfAssessmentsLoading(true);
+                const assessments = await window.api.system.assessGgufFiles(groupGgufFiles(files).map((group) => ({ modelId, filename: group[0].path, sizeBytes: ggufGroupSize(group) })));
+                setHfAssessments(Object.fromEntries(assessments.map((assessment) => [assessment.filename, assessment])));
+            }
+        } catch (reason) {
+            setHfFiles([]);
+            toast.error((reason as Error).message);
+        } finally {
+            setHfFilesLoading(false);
+            setHfAssessmentsLoading(false);
+        }
     }
 
-    async function downloadForLlamaCpp(modelId: string, filename: string, expectedBytes: number | null) {
-        const key = `${modelId}/${filename}`;
-        setHfDownloading((d) => ({ ...d, [key]: 0 }));
-        await window.api.downloads.create({ modelId, filename, expectedBytes: expectedBytes ?? 0, sha256: hfFiles.find((file) => file.path === filename)?.sha256 });
-        setHfDownloading((d) => {
-            const next = { ...d };
-            delete next[key];
-            return next;
-        });
-        toast.success("Added to Download Center");
+    async function downloadForLlamaCpp(modelId: string, filename: string) {
+        const files = ggufGroupFor(hfFiles, filename);
+        const keys = files.map((file) => `${modelId}/${file.path}`);
+        setHfDownloading((current) => ({ ...current, ...Object.fromEntries(keys.map((key) => [key, 0])) }));
+        try {
+            await Promise.all(files.map((file) => window.api.downloads.create({ modelId, filename: file.path, expectedBytes: file.sizeBytes ?? 0, sha256: file.sha256 })));
+            toast.success(files.length > 1
+                ? (locale === "tr" ? `${files.length} parça İndirme Merkezine eklendi` : `${files.length} shards added to Download Center`)
+                : (locale === "tr" ? "İndirme Merkezine eklendi" : "Added to Download Center"));
+        } catch (reason) {
+            toast.error((reason as Error).message);
+        } finally {
+            setHfDownloading((current) => {
+                const next = { ...current };
+                for (const key of keys) delete next[key];
+                return next;
+            });
+        }
     }
 
     async function deleteLlamaCppModel(name: string) {
@@ -1855,35 +1883,71 @@ export default function Settings() {
                                                 ) : hfFiles.length === 0 ? (
                                                     <p className="text-xs text-muted-foreground">{t.noGgufFiles}</p>
                                                 ) : (
-                                                    hfFiles.map((f) => {
+                                                    groupGgufFiles(hfFiles).map((group) => {
+                                                        const f = group[0];
                                                         const key = `${r.id}/${f.path}`;
                                                         const progress = hfDownloading[key];
-                                                        const ggufTag = `hf.co/${r.id}`;
+                                                        const assessment = hfAssessments[f.path];
+                                                        const shardCount = group.length;
+                                                        const downloadSize = ggufGroupSize(group);
+                                                        const ggufTag = ollamaTagForGguf(r.id, f.path, assessment);
+                                                        const ollamaProgress = pulling[ggufTag];
+                                                        const tone: StatusTone = !assessment || !assessment.canAssess ? "neutral" : OUTCOME_TONE[assessment.outcome] ?? "neutral";
+                                                        const fitLabel = !assessment || !assessment.canAssess
+                                                            ? (locale === "tr" ? "Boyut bekleniyor" : "Waiting for size")
+                                                            : assessment.fits
+                                                                ? (locale === "tr" ? "Bu bilgisayarda çalışır" : "Fits this computer")
+                                                                : (locale === "tr" ? "Güvenli biçimde sığmaz" : "Does not fit safely");
                                                         return (
                                                             <div
                                                                 key={f.path}
-                                                                className="flex items-center justify-between gap-2 rounded-md border border-border p-2 text-xs"
+                                                                className={cn("rounded-xl border p-3 text-xs transition-colors", assessment?.fits === false ? "border-destructive/35 bg-destructive/[0.03]" : "border-border bg-card/60 hover:bg-muted/25")}
                                                             >
-                                                                <div className="min-w-0">
-                                                                    <p className="truncate font-mono">{f.path}</p>
-                                                                    {f.sizeBytes !== null && (
-                                                                        <p className="text-muted-foreground">{formatBytes(f.sizeBytes)}</p>
-                                                                    )}
-                                                                    {progress !== undefined && <Progress value={progress} className="mt-1 h-1" />}
+                                                                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                                                                    <div className="min-w-0 flex-1">
+                                                                        <div className="flex flex-wrap items-center gap-2">
+                                                                            <p className="min-w-0 truncate font-mono font-medium" title={f.path}>{f.path}</p>
+                                                                            {assessment && <Badge variant="outline">{assessment.quantization}</Badge>}
+                                                                            {hfAssessmentsLoading && !assessment ? (
+                                                                                <Badge variant="outline"><Loader2 className="mr-1 size-3 animate-spin" />{locale === "tr" ? "Analiz ediliyor" : "Analyzing"}</Badge>
+                                                                            ) : <StatusBadge tone={tone}>{fitLabel}</StatusBadge>}
+                                                                        </div>
+                                                                        <p className="mt-1 text-muted-foreground">
+                                                                            {downloadSize !== null ? formatBytes(downloadSize) : (locale === "tr" ? "Boyut bilinmiyor" : "Unknown size")}
+                                                                            {shardCount > 1 ? ` · ${shardCount} ${locale === "tr" ? "parça" : "shards"}` : ""}
+                                                                            {assessment?.estimatedParametersB !== null && assessment?.estimatedParametersB !== undefined ? ` · ~${assessment.estimatedParametersB}B parameters` : ""}
+                                                                        </p>
+                                                                    </div>
+                                                                    <div className="flex shrink-0 flex-wrap gap-1.5">
+                                                                        <Button size="sm" variant="outline" disabled={ollamaProgress !== undefined} onClick={() => pullModel(ggufTag)} title={`${locale === "tr" ? "Ollama etiketi" : "Ollama tag"}: ${ggufTag}`}>
+                                                                            {ollamaProgress !== undefined ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <Download className="mr-1.5 size-3.5" />}
+                                                                            {t.pullWithOllama}
+                                                                        </Button>
+                                                                        <Button size="sm" variant={assessment?.fits === false ? "outline" : "default"} disabled={progress !== undefined} onClick={() => downloadForLlamaCpp(r.id, f.path)}>
+                                                                            {progress !== undefined ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <FileDown className="mr-1.5 size-3.5" />}
+                                                                            {shardCount > 1 ? `${t.downloadForLlamaCpp} (${shardCount})` : t.downloadForLlamaCpp}
+                                                                        </Button>
+                                                                    </div>
                                                                 </div>
-                                                                <div className="flex shrink-0 gap-1.5">
-                                                                    <Button size="sm" variant="outline" onClick={() => pullModel(ggufTag)}>
-                                                                        {t.pullWithOllama}
-                                                                    </Button>
-                                                                    <Button
-                                                                        size="sm"
-                                                                        variant="outline"
-                                                                        disabled={progress !== undefined}
-                                                                            onClick={() => downloadForLlamaCpp(r.id, f.path, f.sizeBytes)}
-                                                                    >
-                                                                        {t.downloadForLlamaCpp}
-                                                                    </Button>
-                                                                </div>
+                                                                {assessment?.canAssess && (
+                                                                    <div className="mt-3 grid gap-2 border-t border-border/70 pt-3 sm:grid-cols-3">
+                                                                        <div className="rounded-lg bg-muted/45 px-3 py-2">
+                                                                            <p className="flex items-center gap-1 text-muted-foreground"><Gauge className="size-3.5" />{locale === "tr" ? "Tahmini hız" : "Estimated speed"}</p>
+                                                                            <p className="mt-0.5 text-sm font-semibold tabular-nums">{assessment.estimatedTokensPerSecond === 0 ? "—" : `~${assessment.estimatedTokensPerSecond} tok/s`}</p>
+                                                                        </div>
+                                                                        <div className="rounded-lg bg-muted/45 px-3 py-2">
+                                                                            <p className="flex items-center gap-1 text-muted-foreground"><MemoryStick className="size-3.5" />{locale === "tr" ? "Gerekli bellek" : "Memory required"}</p>
+                                                                            <p className="mt-0.5 text-sm font-semibold tabular-nums">~{assessment.totalRequiredGB} GB</p>
+                                                                        </div>
+                                                                        <div className="rounded-lg bg-muted/45 px-3 py-2">
+                                                                            <p className="flex items-center gap-1 text-muted-foreground"><Cpu className="size-3.5" />{locale === "tr" ? "GPU aktarımı" : "GPU offload"}</p>
+                                                                            <p className="mt-0.5 text-sm font-semibold tabular-nums">{assessment.expectedGpuOffloadPercent}%</p>
+                                                                        </div>
+                                                                        <p className="text-muted-foreground sm:col-span-3">{assessment.reason} {locale === "tr" ? "Hız bir tahmindir; gerçek sonuç model mimarisi ve arka uç sürümüne göre değişir." : "Speed is an estimate; actual results vary with model architecture and runtime version."}</p>
+                                                                    </div>
+                                                                )}
+                                                                {progress !== undefined && <Progress value={progress} className="mt-3 h-1.5" />}
+                                                                {ollamaProgress !== undefined && <Progress value={ollamaProgress} className="mt-3 h-1.5" />}
                                                             </div>
                                                         );
                                                     })
@@ -2610,7 +2674,7 @@ export default function Settings() {
                                                     <SelectContent>
                                                         <SelectItem value="auto">Automatic (recommended)</SelectItem>
                                                         <SelectItem value="cpu">CPU only</SelectItem>
-                                                        <SelectItem value="max">Maximum safe offload</SelectItem>
+                                                        <SelectItem value="max">All GPU layers (may fail)</SelectItem>
                                                         <SelectItem value="manual">Manual layer count</SelectItem>
                                                     </SelectContent>
                                                 </Select>

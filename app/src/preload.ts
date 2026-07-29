@@ -145,7 +145,17 @@ export const api = {
             ipcRenderer.on(channel, listener);
             const promise = ipcRenderer
                 .invoke("chat:send", { requestId, provider, model, messages, options, agentMode })
-                .finally(() => ipcRenderer.removeListener(channel, listener));
+                // The invoke reply and a final webContents.send() chunk use
+                // separate IPC routes. The reply can arrive first even when
+                // main sent the chunk first; removing this listener
+                // immediately dropped single-chunk tool calls and final usage
+                // metadata. Keep it through one short renderer turn, and
+                // delay promise resolution so Chat flushes those chunks before
+                // it inspects the completed assistant message.
+                .finally(() => new Promise<void>((resolve) => setTimeout(() => {
+                    ipcRenderer.removeListener(channel, listener);
+                    resolve();
+                }, 25)));
             return { requestId, promise };
         },
 
@@ -155,6 +165,7 @@ export const api = {
     system: {
         getSpecs: () => ipcRenderer.invoke("system:getSpecs"),
         getRecommendations: () => ipcRenderer.invoke("system:getRecommendations"),
+        assessGgufFiles: (files: import("./system-specs").GgufAssessmentInput[]): Promise<import("./system-specs").GgufAssessment[]> => ipcRenderer.invoke("system:assessGgufFiles", files),
         getActivity: () => ipcRenderer.invoke("system:getActivity"),
     },
 

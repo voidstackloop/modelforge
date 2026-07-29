@@ -63,13 +63,12 @@ export interface ChatOptions {
     maxTokens?: number;
     frequencyPenalty?: number;
     presencePenalty?: number;
-    // Ollama-only: how much conversation history the model actually processes
-    // (num_ctx). Cloud providers fix this per-model and don't expose it via API.
+    // Local GGUF context window: Ollama maps this to num_ctx and the built-in
+    // llama.cpp runtime maps it to createContext({ contextSize }). Cloud
+    // providers fix this per model and don't expose it via API.
     contextLength?: number;
-    // Ollama-only: how many model layers to offload to GPU (num_gpu).
-    // undefined = let Ollama auto-decide, 0 = force CPU-only, a positive
-    // number = offload that many layers (useful for tuning multi-GPU setups
-    // or freeing VRAM for something else running alongside Ollama).
+    // Local GGUF GPU placement. Ollama maps a manual count to num_gpu; the
+    // built-in llama.cpp runtime additionally supports gpuLayerMode below.
     gpuLayers?: number;
     // Built-in node-llama-cpp controls. Other providers ignore these fields.
     gpuLayerMode?: GpuLayerMode;

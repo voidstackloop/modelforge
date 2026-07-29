@@ -21,6 +21,21 @@ export function registerSystemIpc(): void {
         const settings = settingsStore.getSettings();
         return systemSpecs.recommendModelsWithML(specs, { contextLength: settings.contextLength, quantization: "Q4_K_M", runtime: settings.preferredRuntime ?? "automatic", goal: settings.recommendationGoal ?? "balanced" }, getBenchmarkObservations());
     });
+    ipcMain.handle("system:assessGgufFiles", async (_event, rawInputs: unknown) => {
+        if (!Array.isArray(rawInputs) || rawInputs.length > 200) throw new Error("Expected at most 200 GGUF files.");
+        const inputs = rawInputs.map((value) => {
+            if (!value || typeof value !== "object") throw new Error("Invalid GGUF assessment input.");
+            const input = value as Record<string, unknown>;
+            const modelId = requireString(input.modelId, "Hugging Face model id");
+            const filename = requireString(input.filename, "GGUF filename");
+            const sizeBytes = input.sizeBytes === null ? null : Number(input.sizeBytes);
+            if (sizeBytes !== null && (!Number.isFinite(sizeBytes) || sizeBytes < 0)) throw new Error("Invalid GGUF file size.");
+            return { modelId, filename, sizeBytes };
+        });
+        const specs = await systemSpecs.getSpecs();
+        const settings = settingsStore.getSettings();
+        return systemSpecs.assessGgufFiles(specs, inputs, settings.contextLength);
+    });
     ipcMain.handle("system:getActivity", async () => {
         const ollamaRunning = await ollama.isRunning();
         const ollamaLoadedModels = ollamaRunning

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createJob, updateJob, listJobs, type DownloadShard, type DownloadJobState } from "./download-jobs-store";
-import { init, broadcast, resumeInterruptedJobs } from "./download-queue";
+import { init, broadcast, configure, resumeInterruptedJobs } from "./download-queue";
 
 function shard(overrides: Partial<DownloadShard> = {}): DownloadShard {
     return {
@@ -28,6 +28,10 @@ function makeJob(state: DownloadJobState) {
 }
 
 describe("download-queue: broadcast plumbing", () => {
+    it("normalizes controls without crashing when a plain dev build has no native addon", () => {
+        expect(configure({ concurrency: 99, bandwidthMbps: -5 })).toEqual({ concurrency: 8, bandwidthMbps: 0 });
+    });
+
     it("does nothing when no window has been registered via init()", () => {
         expect(() => broadcast()).not.toThrow();
     });

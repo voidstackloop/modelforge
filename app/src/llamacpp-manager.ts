@@ -146,13 +146,21 @@ export function normalizeLlamaCppRuntimeConfig(input: LlamaCppRuntimeConfig = {}
     return { maxThreads: integer(input.maxThreads, 512), vramReserveBytes: bytes(input.vramReserveBytes), ramReserveBytes: bytes(input.ramReserveBytes), numa };
 }
 
-function resolveGpuLayers(mode: GpuLayerMode | undefined, manualLayers: number | undefined): LlamaModelOptions["gpuLayers"] {
+export function resolveGpuLayers(mode: GpuLayerMode | undefined, manualLayers: number | undefined, contextLength?: number): LlamaModelOptions["gpuLayers"] {
     const resolvedMode = mode ?? (manualLayers === undefined ? "auto" : manualLayers === 0 ? "cpu" : "manual");
     if (resolvedMode === "cpu") return 0;
-    // node-llama-cpp's "auto" is already maximum memory-safe placement and
-    // preserves the Llama instance's VRAM padding. It is therefore also the
-    // correct implementation of the user-facing "Maximum safe offload".
-    if (resolvedMode === "auto" || resolvedMode === "max") return "auto";
+    // Explicitly include the requested context in node-llama-cpp's model
+    // placement calculation. Plain "auto" only reserves space for an
+    // automatically-sized context, which can over-offload weights and then
+    // fail when the user requests a larger context.
+    if (resolvedMode === "auto") {
+        return contextLength && Number.isFinite(contextLength)
+            ? { fitContext: { contextSize: Math.max(512, Math.floor(contextLength)) } }
+            : "auto";
+    }
+    // Advanced escape hatch: request every layer and let node-llama-cpp fail
+    // clearly when current VRAM cannot hold it.
+    if (resolvedMode === "max") return "max";
     if (!Number.isInteger(manualLayers) || manualLayers! < 0) throw new Error("Manual GPU layer mode requires a non-negative integer layer count.");
     return manualLayers;
 }
@@ -614,7 +622,7 @@ export async function chat(
     }
     if (lastUserIndex === -1) throw new Error("No user message to respond to.");
 
-    const resolvedGpuLayers = resolveGpuLayers(options?.gpuLayerMode, options?.gpuLayers);
+    const resolvedGpuLayers = resolveGpuLayers(options?.gpuLayerMode, options?.gpuLayers, options?.contextLength);
     const cacheKey = modelCacheKey(modelPath, resolvedGpuLayers);
     const model = await loadModel(modelPath, resolvedGpuLayers);
     // A transition can be announced while this call is awaiting a queued or
