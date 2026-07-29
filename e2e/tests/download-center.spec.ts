@@ -18,12 +18,15 @@ test("Download Center renders and its concurrency control is interactive", async
     await expect(window.getByRole("heading", { name: "Download Center" })).toBeVisible();
     // No queued jobs on a fresh profile — confirms the empty state renders
     // rather than the page crashing on a jobs.map() over undefined/null.
-    await expect(window.getByText("No downloads yet")).toBeVisible();
+    await expect(window.getByText("No downloads in this view")).toBeVisible();
 
+    await window.getByRole("button", { name: "Download settings" }).click();
     const concurrencyInput = window.getByLabel("Concurrent jobs");
     await concurrencyInput.fill("3");
     await window.getByRole("button", { name: "Apply" }).click();
-    await expect(concurrencyInput).toHaveValue("3");
+    await window.getByRole("button", { name: "Download settings" }).click();
+    await expect(window.getByLabel("Concurrent jobs")).toHaveValue("3");
+    await window.getByRole("button", { name: "Cancel" }).click();
 
     await window.getByRole("button", { name: "Back" }).click();
     await expect(window.getByPlaceholder("Send a message...")).toBeVisible();

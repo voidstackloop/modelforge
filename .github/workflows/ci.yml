@@ -176,8 +176,8 @@ jobs:
   python-recommender:
     # ml/hardware-recommender/ is a standalone project (its own venv, own
     # train/download-dataset scripts) that isn't part of the app's build —
-    # only its *trained checkpoint* ships with the app
-    # (app/python/artifacts/hardware_recommender.pt), loaded at runtime by
+    # only its exported ONNX model ships with the app
+    # (app/python/artifacts/hardware_recommender.onnx), loaded at runtime by
     # app/python/recommender_worker.py. This job is deliberately scoped to
     # what release publishing actually depends on: the recommender package's
     # own unit tests (data/feature encoding logic, no dataset or GPU needed)
@@ -195,24 +195,30 @@ jobs:
           cache: pip
           cache-dependency-path: ml/hardware-recommender/requirements.txt
 
-      - name: Install dependencies (CPU-only torch, matching the shipped runtime)
+      - name: Install dependencies (CPU-only torch for ML tests)
         working-directory: ml/hardware-recommender
         # torch's CPU wheels live on a separate index from the rest of
-        # PyPI — installed in its own invocation, matching how
-        # app/src/python-runtime-manager.ts installs it for the packaged
-        # hardware-recommender venv, and avoiding a multi-gigabyte CUDA
-        # wheel download on a GPU-less CI runner.
+        # PyPI. Install it separately to keep the training/test stack CPU-only
+        # and avoid a multi-gigabyte CUDA wheel download on a GPU-less runner;
+        # the packaged app uses ONNX Runtime for inference and does not ship
+        # torch in its managed runtime.
         run: |
           python -m pip install --upgrade pip
           python -m pip install --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu torch==2.13.0
-          python -m pip install --only-binary=:all: $(grep -v '^torch==' requirements.txt)
+          # pip parses comments and blank lines correctly. Passing the file
+          # through shell command substitution turned the first comment into
+          # a literal `#` requirement and failed the job.
+          python -m pip install --only-binary=:all: -r requirements.txt
 
       - name: Run hardware-recommender unit tests
         working-directory: ml/hardware-recommender
         run: python -m pytest tests/ -q
 
-      - name: Verify the packaged model artifact exists
-        run: test -f app/python/artifacts/hardware_recommender.pt
+      - name: Verify the packaged model artifacts exist
+        run: |
+          test -f app/python/artifacts/hardware_recommender.onnx
+          test -f app/python/artifacts/hardware_recommender.onnx.sha256
+          test -f app/python/artifacts/hardware_recommender.meta.json
 
       - name: Smoke-test the packaged recommender worker against the shipped artifact
         working-directory: app/python
