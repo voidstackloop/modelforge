@@ -1,114 +1,128 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CheckCircle2, Download, Gauge, HardDrive, Pause, Play, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowLeft, CheckCircle2, ChevronDown, CircleAlert, Download, FolderOpen, Gauge, MoreHorizontal, Pause, Play, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Trash2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useI18n } from "@/lib/i18n";
+import { useToast } from "@/components/toast";
 import type { DiskForecast, DownloadControls, DownloadJob, DownloadJobState } from "@/types/electron";
 
-function bytes(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
-  return `${(value / 1024 ** index).toFixed(index > 1 ? 1 : 0)} ${units[index]}`;
-}
-function duration(seconds?: number): string {
-  if (!seconds || !Number.isFinite(seconds)) return "—";
-  if (seconds < 60) return `${Math.ceil(seconds)}s`;
-  const minutes = Math.floor(seconds / 60); const remainder = Math.ceil(seconds % 60);
-  return `${minutes}m ${remainder}s`;
-}
-function stateLabel(job: DownloadJob): string {
-  if (job.state === "verifying") return "Verifying checksum";
-  if (job.state === "ready") return "Ready";
-  if (job.state === "failed") return "Failed";
-  if (job.state === "paused") return "Paused (.part preserved)";
-  if (job.state === "cancelled") return "Cancelled";
-  if (job.shards.some((shard) => shard.receivedBytes > 0)) return `${job.state === "downloading" ? "Downloading" : "Partial"} (.part)`;
-  return job.state[0].toUpperCase() + job.state.slice(1);
-}
+type Filter = "active" | "queued" | "completed" | "failed" | "all";
+type Sort = "status" | "newest" | "size" | "speed" | "name";
+type ConfirmAction = "cancel" | "remove-record" | "remove-partials" | "remove-model" | "clear-completed" | "clear-cancelled";
+
+const activeStates: DownloadJobState[] = ["resolving", "downloading", "verifying", "installing"];
 const stateTone: Record<DownloadJobState, string> = {
-  queued: "bg-muted text-muted-foreground", resolving: "bg-blue-500/10 text-blue-600", downloading: "bg-blue-500/10 text-blue-600",
-  paused: "bg-amber-500/10 text-amber-600", verifying: "bg-violet-500/10 text-violet-600", installing: "bg-violet-500/10 text-violet-600",
-  ready: "bg-emerald-500/10 text-emerald-600", failed: "bg-destructive/10 text-destructive", cancelled: "bg-muted text-muted-foreground",
+  queued: "bg-muted text-muted-foreground", resolving: "bg-blue-500/10 text-blue-700 dark:text-blue-400", downloading: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  paused: "bg-amber-500/10 text-amber-700 dark:text-amber-400", verifying: "bg-violet-500/10 text-violet-700 dark:text-violet-400", installing: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
+  ready: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400", failed: "bg-destructive/10 text-destructive", cancelled: "bg-muted text-muted-foreground",
 };
 
-function ProgressBar({ value }: { value: number }) {
-  return <div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-[width] duration-200" style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></div>;
+function bytes(value: number): string { if (!Number.isFinite(value) || value <= 0) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024))); return `${(value / 1024 ** index).toFixed(index > 1 ? 1 : 0)} ${units[index]}`; }
+function duration(seconds?: number): string { if (!seconds || !Number.isFinite(seconds)) return "—"; if (seconds < 60) return `${Math.ceil(seconds)}s`; const minutes = Math.floor(seconds / 60); return `${minutes}m ${Math.ceil(seconds % 60)}s`; }
+function total(job: DownloadJob): number { return job.shards.reduce((sum, shard) => sum + shard.expectedBytes, 0); }
+function received(job: DownloadJob): number { return job.shards.reduce((sum, shard) => sum + shard.receivedBytes, 0); }
+function stateLabel(job: DownloadJob, tr: boolean): string {
+  const map: Record<DownloadJobState, [string, string]> = { queued: ["Queued", "Sırada"], resolving: ["Resolving", "Çözümleniyor"], downloading: ["Downloading", "İndiriliyor"], paused: ["Paused", "Duraklatıldı"], verifying: ["Verifying", "Doğrulanıyor"], installing: ["Installing", "Kuruluyor"], ready: ["Completed", "Tamamlandı"], failed: ["Failed", "Başarısız"], cancelled: ["Cancelled", "İptal edildi"] };
+  return map[job.state][tr ? 1 : 0];
 }
+function Progress({ value }: { value: number }) { return <div className="h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(value)}><div className="h-full bg-primary transition-[width] duration-200 motion-reduce:transition-none" style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></div>; }
 
 export default function DownloadCenter() {
-  const navigate = useNavigate();
-  const [jobs, setJobs] = useState<DownloadJob[]>([]);
-  const [controls, setControls] = useState<DownloadControls>({ concurrency: 2, bandwidthMbps: 0 });
-  const [forecasts, setForecasts] = useState<Record<string, DiskForecast>>({});
-  const [recovery, setRecovery] = useState<{ recoveredJobs: number; recoveredAt: string | null }>({ recoveredJobs: 0, recoveredAt: null });
+  const navigate = useNavigate(); const { locale } = useI18n(); const toast = useToast(); const tr = locale === "tr";
+  const [jobs, setJobs] = useState<DownloadJob[]>([]); const [controls, setControls] = useState<DownloadControls>({ concurrency: 2, bandwidthMbps: 0 }); const [draftControls, setDraftControls] = useState(controls);
+  const [forecasts, setForecasts] = useState<DiskForecast[]>([]); const [filter, setFilter] = useState<Filter>("active"); const [sort, setSort] = useState<Sort>("newest"); const [search, setSearch] = useState("");
+  const [busy, setBusy] = useState<Record<string, string>>({}); const [expanded, setExpanded] = useState<Record<string, boolean>>({}); const [settingsOpen, setSettingsOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [confirmation, setConfirmation] = useState<{ action: ConfirmAction; job?: DownloadJob; paths?: string[] } | null>(null); const [recovery, setRecovery] = useState<{ recoveredJobs: number; recoveredAt: string | null }>({ recoveredJobs: 0, recoveredAt: null });
   const hasApi = typeof window !== "undefined" && !!window.api?.downloads;
 
   useEffect(() => {
     if (!hasApi) return;
-    window.api.downloads.list().then(setJobs);
-    window.api.downloads.getControls().then(setControls);
-    window.api.downloads.recoveryStatus().then(setRecovery);
+    void Promise.all([window.api.downloads.list(), window.api.downloads.getControls(), window.api.downloads.recoveryStatus(), window.api.downloads.forecastAll()]).then(([initialJobs, initialControls, recovered, initialForecasts]) => { setJobs(initialJobs); setControls(initialControls); setDraftControls(initialControls); setRecovery(recovered); setForecasts(initialForecasts); });
     return window.api.downloads.onUpdate(setJobs);
   }, [hasApi]);
-  useEffect(() => {
-    if (!hasApi) return;
-    Promise.all(jobs.filter((job) => job.state !== "ready").map(async (job) => [job.id, await window.api.downloads.forecast(job.id)] as const))
-      .then((items) => setForecasts(Object.fromEntries(items))).catch(() => undefined);
-  }, [hasApi, jobs]);
+  const forecastKey = useMemo(() => jobs.map((job) => `${job.id}:${job.state}:${job.destinationDir}:${total(job)}`).sort().join("|"), [jobs]);
+  useEffect(() => { if (!hasApi) return; void window.api.downloads.forecastAll().then(setForecasts).catch(() => undefined); }, [hasApi, forecastKey]);
 
-  const totals = useMemo(() => jobs.reduce((result, job) => {
-    result.received += job.shards.reduce((sum, shard) => sum + shard.receivedBytes, 0);
-    result.total += job.shards.reduce((sum, shard) => sum + shard.expectedBytes, 0);
-    return result;
-  }, { received: 0, total: 0 }), [jobs]);
-  const overallPercent = totals.total ? totals.received / totals.total * 100 : 0;
-  const action = async (name: "pause" | "resume" | "retry" | "cancel" | "delete", id: string) => {
-    if (name === "delete" && !window.confirm("Delete this download record and its partial files? Completed model files are kept.")) return;
-    await window.api.downloads[name](id);
-  };
+  const queue = useMemo(() => jobs.filter((job) => !["ready", "cancelled"].includes(job.state)), [jobs]);
+  const queueTotals = useMemo(() => queue.reduce((acc, job) => ({ received: acc.received + received(job), total: acc.total + total(job) }), { received: 0, total: 0 }), [queue]);
+  const counts = useMemo(() => ({ active: jobs.filter((job) => activeStates.includes(job.state)).length, queued: jobs.filter((job) => job.state === "queued").length, failed: jobs.filter((job) => job.state === "failed").length, speed: jobs.reduce((sum, job) => sum + (activeStates.includes(job.state) ? job.bytesPerSecond ?? 0 : 0), 0) }), [jobs]);
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase(); const matchesFilter = (job: DownloadJob) => filter === "all" || filter === "active" ? filter === "all" || activeStates.includes(job.state) : filter === "queued" ? ["queued", "paused"].includes(job.state) : filter === "completed" ? job.state === "ready" : job.state === "failed";
+    const result = jobs.filter((job) => matchesFilter(job) && (!query || [job.modelName, job.publisher, job.quantization, job.backend, job.modelId].filter(Boolean).some((value) => String(value).toLowerCase().includes(query))));
+    return result.sort((a, b) => sort === "name" ? a.modelName.localeCompare(b.modelName) : sort === "size" ? total(b) - total(a) : sort === "speed" ? (b.bytesPerSecond ?? 0) - (a.bytesPerSecond ?? 0) : sort === "status" ? a.state.localeCompare(b.state) : Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  }, [jobs, filter, search, sort]);
 
-  return <main className="min-h-full bg-background p-5 md:p-8">
-    <div className="mx-auto max-w-6xl space-y-6">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => navigate(-1)} aria-label="Back"><ArrowLeft className="size-4" /></Button>
-          <span className="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary"><Download className="size-5" /></span>
-          <div><h1 className="text-2xl font-semibold tracking-tight">Download Center</h1><p className="text-sm text-muted-foreground">Persistent model transfers, verification, and recovery</p></div>
-        </div>
-        {recovery.recoveredAt && <div className="rounded-xl border bg-card px-3 py-2 text-xs text-muted-foreground"><RefreshCw className="mr-1.5 inline size-3.5" />Startup recovery: {recovery.recoveredJobs} job{recovery.recoveredJobs === 1 ? "" : "s"}</div>}
-      </header>
+  async function runAction(job: DownloadJob, name: "pause" | "resume" | "retryNow" | "cancelRetry" | "openFolder") {
+    if (busy[job.id]) return; setBusy((value) => ({ ...value, [job.id]: name }));
+    try { await window.api.downloads[name](job.id); toast.success(tr ? "İndirme işi güncellendi." : "Download job updated."); }
+    catch (reason) { toast.error((reason as Error).message); }
+    finally { setBusy((value) => ({ ...value, [job.id]: "" })); setJobs(await window.api.downloads.list()); }
+  }
 
-      <section className="grid gap-4 rounded-2xl border bg-card p-5 shadow-sm md:grid-cols-[1fr_auto]">
-        <div className="space-y-2"><div className="flex justify-between text-sm"><span className="font-medium">Overall progress</span><span>{bytes(totals.received)} / {bytes(totals.total)} · {overallPercent.toFixed(1)}%</span></div><ProgressBar value={overallPercent} /></div>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="text-xs text-muted-foreground">Concurrent jobs<Input className="mt-1 h-9 w-24" type="number" min={1} max={8} value={controls.concurrency} onChange={(event) => setControls({ ...controls, concurrency: Number(event.target.value) })} /></label>
-          <label className="text-xs text-muted-foreground">Bandwidth Mbps (0 = unlimited)<Input className="mt-1 h-9 w-44" type="number" min={0} step={1} value={controls.bandwidthMbps} onChange={(event) => setControls({ ...controls, bandwidthMbps: Number(event.target.value) })} /></label>
-          <Button onClick={async () => setControls(await window.api.downloads.setControls(controls))}><Gauge className="mr-2 size-4" />Apply</Button>
-        </div>
-      </section>
+  async function ask(action: ConfirmAction, job?: DownloadJob) {
+    let paths: string[] | undefined;
+    if (job && ["remove-partials", "remove-model"].includes(action)) { try { const plan = await window.api.downloads.describeDeletion(job.id); paths = action === "remove-model" ? plan.completedFiles : plan.partialFiles; } catch (reason) { toast.error((reason as Error).message); return; } }
+    setConfirmation({ action, job, paths });
+  }
 
-      {jobs.length === 0 ? <section className="rounded-2xl border border-dashed p-12 text-center text-muted-foreground"><Download className="mx-auto mb-3 size-8 opacity-50" /><p className="font-medium">No downloads yet</p><p className="mt-1 text-sm">Model downloads started from Settings will appear here and survive restarts.</p></section> :
-        <div className="space-y-4">{jobs.map((job) => {
-          const received = job.shards.reduce((sum, shard) => sum + shard.receivedBytes, 0);
-          const total = job.shards.reduce((sum, shard) => sum + shard.expectedBytes, 0);
-          const percent = total ? received / total * 100 : 0; const forecast = forecasts[job.id];
-          return <article key={job.id} className="rounded-2xl border bg-card p-5 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div><div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">{job.modelName}</h2><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${stateTone[job.state]}`}>{stateLabel(job)}</span>{job.recoveredAtStartup && <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-600">Recovered</span>}</div><p className="mt-1 text-xs text-muted-foreground">{job.publisher} · {job.backend}{job.quantization ? ` · ${job.quantization}` : ""}</p></div>
-              <div className="flex gap-1">
-                {["queued", "resolving", "downloading"].includes(job.state) && <Button variant="outline" size="sm" onClick={() => action("pause", job.id)}><Pause className="mr-1.5 size-3.5" />Pause</Button>}
-                {job.state === "paused" && <Button variant="outline" size="sm" onClick={() => action("resume", job.id)}><Play className="mr-1.5 size-3.5" />Resume</Button>}
-                {job.state === "failed" && <Button variant="outline" size="sm" onClick={() => action("retry", job.id)}><RotateCcw className="mr-1.5 size-3.5" />Retry</Button>}
-                {!["ready", "cancelled"].includes(job.state) && <Button variant="ghost" size="sm" onClick={() => action("cancel", job.id)}><X className="mr-1.5 size-3.5" />Cancel</Button>}
-                <Button variant="ghost" size="icon" onClick={() => action("delete", job.id)} aria-label="Delete"><Trash2 className="size-4" /></Button>
-              </div>
-            </div>
-            <div className="mt-4 space-y-2"><ProgressBar value={percent} /><div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-4"><span>{bytes(received)} / {bytes(total)} ({percent.toFixed(1)}%)</span><span>Speed: {job.bytesPerSecond ? `${bytes(job.bytesPerSecond)}/s` : "—"}</span><span>ETA: {duration(job.etaSeconds)}</span><span className={forecast?.enough === false ? "text-destructive" : ""}><HardDrive className="mr-1 inline size-3.5" />{forecast?.availableBytes == null ? "Disk unknown" : `${bytes(forecast.availableBytes)} free`}</span></div></div>
-            {job.error && <p className="mt-3 rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive">{job.error.message}</p>}
-            <details className="mt-4"><summary className="cursor-pointer text-sm font-medium">Shards ({job.shards.length})</summary><div className="mt-3 space-y-3">{job.shards.map((shard) => { const shardPercent = shard.expectedBytes ? shard.receivedBytes / shard.expectedBytes * 100 : 0; return <div key={shard.filename} className="rounded-xl border bg-background/50 p-3"><div className="mb-2 flex justify-between gap-3 text-xs"><span className="truncate font-medium">{shard.filename}</span><span className="shrink-0 text-muted-foreground">{shard.state === "verifying" ? "Verifying" : shard.state === "ready" ? <><CheckCircle2 className="mr-1 inline size-3 text-emerald-600" />Verified</> : shard.receivedBytes > 0 ? ".part" : shard.state} · {bytes(shard.receivedBytes)} / {bytes(shard.expectedBytes)}</span></div><ProgressBar value={shardPercent} /></div>; })}</div></details>
-          </article>;
-        })}</div>}
-    </div>
-  </main>;
+  async function confirm() {
+    const pending = confirmation; setConfirmation(null); if (!pending) return;
+    const targets = pending.job ? [pending.job] : jobs.filter((job) => pending.action === "clear-completed" ? job.state === "ready" : job.state === "cancelled");
+    try {
+      for (const job of targets) {
+        setBusy((value) => ({ ...value, [job.id]: pending.action }));
+        if (pending.action === "cancel") await window.api.downloads.cancel(job.id);
+        if (["remove-record", "clear-completed", "clear-cancelled"].includes(pending.action)) await window.api.downloads.removeRecord(job.id);
+        if (pending.action === "remove-partials") await window.api.downloads.removePartialData(job.id);
+        if (pending.action === "remove-model") await window.api.downloads.removeCompletedModel(job.id);
+      }
+      setJobs(await window.api.downloads.list()); toast.success(tr ? "İşlem tamamlandı." : "Action completed.");
+    } catch (reason) { toast.error((reason as Error).message); }
+    finally { setBusy({}); }
+  }
+
+  async function applyControls() {
+    try { const normalized = await window.api.downloads.setControls(draftControls); setControls(normalized); setDraftControls(normalized); toast.success(tr ? "İndirme ayarları hemen uygulandı." : "Download settings applied immediately."); }
+    catch (reason) { toast.error((reason as Error).message); }
+  }
+
+  async function runBulk(action: "pauseAll" | "resumeAll") {
+    if (bulkBusy) return; setBulkBusy(true);
+    try { await window.api.downloads[action](); setJobs(await window.api.downloads.list()); toast.success(tr ? "Toplu işlem tamamlandı." : "Bulk action completed."); }
+    catch (reason) { toast.error((reason as Error).message); }
+    finally { setBulkBusy(false); }
+  }
+
+  const remaining = Math.max(0, queueTotals.total - queueTotals.received); const free = forecasts.reduce<number | null>((minimum, item) => item.availableBytes == null ? minimum : minimum == null ? item.availableBytes : Math.min(minimum, item.availableBytes), null); const insufficient = forecasts.some((item) => item.enough === false);
+  return <main className="min-h-full bg-background p-4 md:p-6"><div className="mx-auto max-w-7xl space-y-5">
+    <header className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><Button variant="ghost" size="icon" onClick={() => navigate(-1)} aria-label={tr ? "Geri" : "Back"}><ArrowLeft className="size-4" /></Button><div><h1 className="text-2xl font-semibold tracking-tight">{tr ? "İndirme Merkezi" : "Download Center"}</h1><p className="text-sm text-muted-foreground">{tr ? "Kalıcı aktarımlar, doğrulama ve kurtarma" : "Persistent transfers, verification, and recovery"}</p></div></div><div className="flex items-center gap-2">{recovery.recoveredAt && <span className="hidden text-xs text-muted-foreground md:inline"><RefreshCw className="mr-1 inline size-3" />{recovery.recoveredJobs} {tr ? "iş kurtarıldı" : "jobs recovered"}</span>}<Button variant="outline" onClick={() => setSettingsOpen(true)}><Settings2 className="mr-2 size-4" />{tr ? "İndirme ayarları" : "Download settings"}</Button></div></header>
+    <section className="grid overflow-hidden rounded-xl border bg-card sm:grid-cols-2 lg:grid-cols-6"><HeaderMetric label={tr ? "Etkin" : "Active"} value={String(counts.active)} /><HeaderMetric label={tr ? "Sırada" : "Queued"} value={String(counts.queued)} /><HeaderMetric label={tr ? "Toplam hız" : "Aggregate speed"} value={`${bytes(counts.speed)}/s`} /><HeaderMetric label={tr ? "Kalan" : "Remaining"} value={bytes(remaining)} /><HeaderMetric label={tr ? "Disk boşluğu" : "Disk available"} value={free == null ? (tr ? "Bilinmiyor" : "Unknown") : bytes(free)} alert={insufficient} /><HeaderMetric label={tr ? "İlgi gerekli" : "Needs attention"} value={String(counts.failed)} alert={counts.failed > 0} /></section>
+    {queueTotals.total > 0 && <section className="rounded-xl border bg-card px-4 py-3"><div className="mb-2 flex justify-between text-xs"><span>{tr ? "Etkin ve sıradaki işler" : "Active and queued work"}</span><span>{bytes(queueTotals.received)} / {bytes(queueTotals.total)} · {(queueTotals.received / queueTotals.total * 100).toFixed(1)}%</span></div><Progress value={queueTotals.received / queueTotals.total * 100} /></section>}
+    <section className="space-y-3"><div className="flex flex-wrap items-center gap-2"><Tabs value={filter} onValueChange={(value) => setFilter(value as Filter)}><TabsList>{(["active", "queued", "completed", "failed", "all"] as Filter[]).map((item) => <TabsTrigger key={item} value={item}>{tr ? ({ active: "Etkin", queued: "Sırada", completed: "Tamamlanan", failed: "Başarısız", all: "Tümü" } as Record<Filter, string>)[item] : item[0].toUpperCase() + item.slice(1)}</TabsTrigger>)}</TabsList></Tabs><div className="relative min-w-52 flex-1"><Search className="absolute left-2.5 top-2 size-4 text-muted-foreground" /><Input className="h-8 pl-8" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tr ? "Model, yayıncı, kuantizasyon veya altyapı ara" : "Search model, publisher, quantization, or backend"} /></div><select aria-label={tr ? "Sırala" : "Sort"} className="h-8 rounded-lg border bg-background px-2 text-sm" value={sort} onChange={(event) => setSort(event.target.value as Sort)}><option value="newest">{tr ? "En yeni" : "Newest"}</option><option value="status">{tr ? "Durum" : "Status"}</option><option value="size">{tr ? "Boyut" : "Size"}</option><option value="speed">{tr ? "Hız" : "Speed"}</option><option value="name">{tr ? "Model adı" : "Model name"}</option></select>{counts.active > 0 && <Button size="sm" variant="outline" disabled={bulkBusy} onClick={() => void runBulk("pauseAll")}><Pause className="mr-1.5 size-3.5" />{tr ? "Tümünü duraklat" : "Pause active"}</Button>}{jobs.some((job) => job.state === "paused") && <Button size="sm" variant="outline" disabled={bulkBusy} onClick={() => void runBulk("resumeAll")}><Play className="mr-1.5 size-3.5" />{tr ? "Tümünü sürdür" : "Resume paused"}</Button>}</div>
+      {filtered.length === 0 ? <div className="rounded-xl border border-dashed p-12 text-center text-muted-foreground"><Download className="mx-auto mb-3 size-8 opacity-50" /><p className="font-medium">{search ? (tr ? "Eşleşen indirme yok" : "No matching downloads") : (tr ? "Bu görünümde indirme yok" : "No downloads in this view")}</p></div> : <div className="overflow-hidden rounded-xl border bg-card"><div className="divide-y">{filtered.map((job, index) => <DownloadRow key={job.id} job={job} queuePosition={queue.findIndex((item) => item.id === job.id) + 1 || index + 1} busy={busy[job.id]} expanded={!!expanded[job.id]} tr={tr} onToggle={() => setExpanded((value) => ({ ...value, [job.id]: !value[job.id] }))} onAction={(name) => void runAction(job, name)} onConfirm={(action) => void ask(action, job)} />)}</div></div>}
+      <div className="flex justify-end gap-2">{jobs.some((job) => job.state === "ready") && <Button size="sm" variant="ghost" onClick={() => void ask("clear-completed")}>{tr ? "Tamamlanan kayıtları temizle" : "Clear completed records"}</Button>}{jobs.some((job) => job.state === "cancelled") && <Button size="sm" variant="ghost" onClick={() => void ask("clear-cancelled")}>{tr ? "İptal edilen kayıtları temizle" : "Clear cancelled records"}</Button>}</div>
+    </section>
+    <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}><DialogContent><DialogHeader><DialogTitle>{tr ? "İndirme ayarları" : "Download settings"}</DialogTitle><DialogDescription>{tr ? "Eşzamanlılık ve bant genişliği değişiklikleri çalışan ve bekleyen işlere hemen uygulanır." : "Concurrency and bandwidth changes apply immediately to running and waiting jobs."}</DialogDescription></DialogHeader><div className="space-y-4"><label className="block text-xs text-muted-foreground">{tr ? "Eşzamanlı işler (1–8)" : "Concurrent jobs (1–8)"}<Input className="mt-1" type="number" min={1} max={8} value={draftControls.concurrency} onChange={(event) => setDraftControls({ ...draftControls, concurrency: Number(event.target.value) })} /></label><label className="block text-xs text-muted-foreground">{tr ? "Bant genişliği Mbps (0 = sınırsız)" : "Bandwidth Mbps (0 = unlimited)"}<Input className="mt-1" type="number" min={0} max={100000} value={draftControls.bandwidthMbps} onChange={(event) => setDraftControls({ ...draftControls, bandwidthMbps: Number(event.target.value) })} /></label><div className="rounded-lg border p-3 text-xs text-muted-foreground"><p className="font-medium text-foreground">{tr ? "Yeniden deneme politikası" : "Retry policy"}</p><p className="mt-1">{tr ? "Ağ ve sunucu hataları en fazla 3 otomatik yeniden deneme alır; kimlik doğrulama, izin ve sağlama toplamı hataları döngüye girmez." : "Network and server failures receive up to 3 automatic retries; authentication, permission, and checksum failures do not loop."}</p></div></div><DialogFooter><Button variant="outline" onClick={() => { setDraftControls(controls); setSettingsOpen(false); }}>{tr ? "İptal" : "Cancel"}</Button><Button onClick={() => { void applyControls(); setSettingsOpen(false); }}><Gauge className="mr-2 size-4" />{tr ? "Uygula" : "Apply"}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={!!confirmation} onOpenChange={(open) => { if (!open) setConfirmation(null); }}><DialogContent><DialogHeader><DialogTitle>{confirmTitle(confirmation?.action, tr)}</DialogTitle><DialogDescription>{confirmDescription(confirmation, tr)}</DialogDescription></DialogHeader>{confirmation?.paths && <div className="max-h-40 overflow-auto rounded-lg border p-3 font-mono text-[11px]">{confirmation.paths.length ? confirmation.paths.map((file) => <div key={file} className="break-all">{file}</div>) : (tr ? "Silinecek dosya bulunamadı." : "No files were found to delete.")}</div>}<DialogFooter><Button variant="outline" onClick={() => setConfirmation(null)}>{tr ? "İptal" : "Cancel"}</Button><Button variant={confirmation?.action === "remove-record" || confirmation?.action?.startsWith("clear") ? "default" : "destructive"} onClick={() => void confirm()}>{tr ? "Onayla" : "Confirm"}</Button></DialogFooter></DialogContent></Dialog>
+  </div></main>;
 }
+
+function HeaderMetric({ label, value, alert }: { label: string; value: string; alert?: boolean }) { return <div className="border-b p-3 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"><p className="text-[11px] text-muted-foreground">{label}</p><p className={`mt-1 truncate text-lg font-semibold ${alert ? "text-destructive" : ""}`}>{value}</p></div>; }
+
+function DownloadRow({ job, queuePosition, busy, expanded, tr, onToggle, onAction, onConfirm }: { job: DownloadJob; queuePosition: number; busy?: string; expanded: boolean; tr: boolean; onToggle(): void; onAction(name: "pause" | "resume" | "retryNow" | "cancelRetry" | "openFolder"): void; onConfirm(action: ConfirmAction): void }) {
+  const done = received(job); const expected = total(job); const percent = expected ? done / expected * 100 : 0; const retrying = !!job.nextRetryAt; const primary = activeStates.includes(job.state) || job.state === "queued" ? "pause" : job.state === "paused" || job.state === "cancelled" ? "resume" : job.state === "failed" && job.error?.retryable ? "retryNow" : job.state === "ready" ? "openFolder" : null;
+  return <article><div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(13rem,1.3fr)_minmax(12rem,1fr)_9rem_auto] md:items-center"><div className="min-w-0"><div className="flex items-center gap-2"><h2 className="truncate font-medium" title={job.modelName}>{job.modelName}</h2><span className={`shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium ${stateTone[job.state]}`}>{stateLabel(job, tr)}</span></div><p className="mt-1 truncate text-xs text-muted-foreground">{job.publisher} · {job.quantization ?? (job.backend === "llamacpp" ? "GGUF" : "—")} · {job.backend}</p></div><div className="min-w-0 space-y-1.5"><Progress value={percent} /><div className="flex justify-between text-[11px] text-muted-foreground"><span>{bytes(done)} / {bytes(expected)} · {percent.toFixed(1)}%</span><span>{job.bytesPerSecond ? `${bytes(job.bytesPerSecond)}/s · ${duration(job.etaSeconds)}` : "—"}</span></div></div><div className="text-xs text-muted-foreground">{job.state === "queued" && <p>#{queuePosition} {tr ? "sırada" : "in queue"}</p>}{retrying && <RetryCountdown at={job.nextRetryAt!} tr={tr} />}{job.shards.every((shard) => shard.verificationState === "verified") ? <p className="text-emerald-700 dark:text-emerald-400"><ShieldCheck className="mr-1 inline size-3.5" />{tr ? "Sağlama toplamı doğrulandı" : "Checksum verified"}</p> : job.state === "ready" ? <p><CheckCircle2 className="mr-1 inline size-3.5" />{tr ? "İndirildi — sağlama toplamı yok" : "Downloaded — checksum unavailable"}</p> : null}</div><div className="flex justify-end gap-1">{primary && <Button size="sm" disabled={!!busy} onClick={() => onAction(primary)}>{busy ? <RefreshCw className="mr-1.5 size-3.5 animate-spin motion-reduce:animate-none" /> : primary === "pause" ? <Pause className="mr-1.5 size-3.5" /> : primary === "openFolder" ? <FolderOpen className="mr-1.5 size-3.5" /> : primary === "retryNow" ? <RotateCcw className="mr-1.5 size-3.5" /> : <Play className="mr-1.5 size-3.5" />}{primary === "pause" ? (tr ? "Duraklat" : "Pause") : primary === "openFolder" ? (tr ? "Klasörü aç" : "Open folder") : primary === "retryNow" ? (tr ? "Şimdi dene" : "Retry now") : (tr ? "Sürdür" : "Resume")}</Button>}<DropdownMenu><DropdownMenuTrigger aria-label={tr ? "Diğer eylemler" : "More actions"} className="inline-flex size-8 items-center justify-center rounded-md hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4" /></DropdownMenuTrigger><DropdownMenuContent align="end">{retrying && <DropdownMenuItem onClick={() => onAction("cancelRetry")}><X />{tr ? "Bekleyen denemeyi iptal et" : "Cancel pending retry"}</DropdownMenuItem>}{!["ready", "cancelled"].includes(job.state) && <DropdownMenuItem onClick={() => onConfirm("cancel")}><X />{tr ? "İndirmeyi iptal et" : "Cancel transfer"}</DropdownMenuItem>}{["paused", "failed", "cancelled"].includes(job.state) && <DropdownMenuItem variant="destructive" onClick={() => onConfirm("remove-partials")}><Trash2 />{tr ? "Kısmi veriyi sil" : "Delete partial data"}</DropdownMenuItem>}{job.state === "ready" && <DropdownMenuItem variant="destructive" onClick={() => onConfirm("remove-model")}><Trash2 />{tr ? "Tamamlanan modeli sil" : "Delete completed model"}</DropdownMenuItem>}<DropdownMenuSeparator /><DropdownMenuItem onClick={() => onConfirm("remove-record")}><Trash2 />{tr ? "Geçmiş kaydını kaldır" : "Remove history record"}</DropdownMenuItem></DropdownMenuContent></DropdownMenu><Button size="icon" variant="ghost" onClick={onToggle} aria-expanded={expanded} aria-label={tr ? "Ayrıntıları göster" : "Show details"}><ChevronDown className={`size-4 transition-transform ${expanded ? "rotate-180" : ""}`} /></Button></div></div>
+    {job.error && <div className="mx-4 mb-3 flex items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive"><CircleAlert className="mt-0.5 size-4 shrink-0" /><div><p>{job.error.message}</p><p className="mt-1 font-medium">{recoveryFor(job.error.kind, tr)}</p></div></div>}
+    {expanded && <div className="border-t bg-muted/20 px-4 py-4 text-xs"><dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><div><dt className="text-muted-foreground">{tr ? "Hedef" : "Destination"}</dt><dd className="mt-1 break-all">{job.destinationDir}</dd></div><div><dt className="text-muted-foreground">{tr ? "Oluşturuldu / güncellendi" : "Created / updated"}</dt><dd className="mt-1">{new Date(job.createdAt).toLocaleString()}<br />{new Date(job.updatedAt).toLocaleString()}</dd></div><div><dt className="text-muted-foreground">{tr ? "Yeniden denemeler" : "Retries"}</dt><dd className="mt-1">{job.retryCount} / {job.maxAttempts - 1}{job.retryHistory.at(-1) && <span className="block text-muted-foreground">{job.retryHistory.at(-1)?.errorKind}</span>}</dd></div><div><dt className="text-muted-foreground">{tr ? "Sürdürme durumu" : "Resume state"}</dt><dd className="mt-1">{job.shards.some((shard) => shard.receivedBytes > 0 && shard.receivedBytes < shard.expectedBytes) ? (tr ? "Geçerli .part verisi kaydedildi" : "Partial .part data retained") : "—"}</dd></div></dl><div className="mt-4 space-y-2">{job.shards.map((shard) => { const shardPercent = shard.expectedBytes ? shard.receivedBytes / shard.expectedBytes * 100 : 0; return <div key={shard.filename} className="grid gap-2 rounded-lg border bg-background p-3 sm:grid-cols-[1fr_12rem]"><div className="min-w-0"><p className="truncate font-medium" title={shard.filename}>{shard.filename}</p><p className="mt-1 text-muted-foreground">{shard.verificationState === "verified" ? (tr ? "SHA-256 doğrulandı" : "SHA-256 verified") : shard.sha256 ? (tr ? "SHA-256 bekliyor" : "SHA-256 pending") : (tr ? "Sağlama toplamı kullanılamıyor" : "Checksum unavailable")}</p></div><div><Progress value={shardPercent} /><p className="mt-1 text-right text-muted-foreground">{bytes(shard.receivedBytes)} / {bytes(shard.expectedBytes)}</p></div></div>; })}</div></div>}
+  </article>;
+}
+
+function RetryCountdown({ at, tr }: { at: string; tr: boolean }) { const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); return <p className="text-amber-700 dark:text-amber-400">{tr ? `Otomatik deneme: ${time}` : `Automatic retry: ${time}`}</p>; }
+function recoveryFor(kind: string, tr: boolean): string { const en: Record<string, string> = { auth_required: "Sign in to Hugging Face and verify repository access.", license_required: "Accept the model license, then retry.", not_found: "Verify the repository and filename.", disk_space: "Free disk space or choose another model directory.", permission: "Check write permissions for the model directory.", verification_failed: "The file was removed; download it again from a trusted source.", network: "Check connectivity; valid partial data will be reused.", unknown: "Review details and retry after resolving the reported cause." }; const trMap: Record<string, string> = { auth_required: "Hugging Face oturumunu ve depo erişimini doğrulayın.", license_required: "Model lisansını kabul edip yeniden deneyin.", not_found: "Depo ve dosya adını doğrulayın.", disk_space: "Diskte yer açın veya başka bir model klasörü seçin.", permission: "Model klasörü yazma izinlerini kontrol edin.", verification_failed: "Dosya kaldırıldı; güvenilir kaynaktan yeniden indirin.", network: "Bağlantıyı kontrol edin; geçerli kısmi veri yeniden kullanılacak.", unknown: "Ayrıntıları inceleyip nedeni çözdükten sonra yeniden deneyin." }; return (tr ? trMap : en)[kind] ?? (tr ? trMap.unknown : en.unknown); }
+function confirmTitle(action: ConfirmAction | undefined, tr: boolean): string { const en: Record<ConfirmAction, string> = { cancel: "Cancel this transfer?", "remove-record": "Remove history record?", "remove-partials": "Delete partial download data?", "remove-model": "Delete the completed model?", "clear-completed": "Clear completed records?", "clear-cancelled": "Clear cancelled records?" }; const trMap: Record<ConfirmAction, string> = { cancel: "Bu aktarım iptal edilsin mi?", "remove-record": "Geçmiş kaydı kaldırılsın mı?", "remove-partials": "Kısmi indirme verisi silinsin mi?", "remove-model": "Tamamlanan model silinsin mi?", "clear-completed": "Tamamlanan kayıtlar temizlensin mi?", "clear-cancelled": "İptal edilen kayıtlar temizlensin mi?" }; return action ? (tr ? trMap : en)[action] : ""; }
+function confirmDescription(value: { action: ConfirmAction; job?: DownloadJob; paths?: string[] } | null, tr: boolean): string { if (!value) return ""; if (value.action === "remove-record" || value.action.startsWith("clear")) return tr ? "Yalnızca geçmiş kaydı kaldırılır; model ve kısmi dosyalar korunur." : "Only history records are removed; model and partial files are kept."; if (value.action === "cancel") return tr ? "Aktif ağ işlemi durur ve kısmi verinin kaldırılması için ayrı bir işlem gerekir." : "Network activity stops; removing partial data remains a separate action."; return tr ? "Yalnızca aşağıda ana süreç tarafından doğrulanan dosyalar silinir. Bu işlem geri alınamaz." : "Only the files validated by the main process below will be deleted. This cannot be undone."; }

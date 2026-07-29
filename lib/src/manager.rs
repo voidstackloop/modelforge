@@ -1,6 +1,6 @@
 use crate::download::job::{JobSpec, ShardEvent, ShardEventFn, ShardSpec, run_job};
 use crate::download::{DownloadControls, SpeedTracker};
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwapOption;
 use dashmap::{DashMap, mapref::entry::Entry};
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -8,7 +8,7 @@ use napi_derive::napi;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex as StdMutex};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 /// Default number of jobs allowed to run their network I/O simultaneously —
@@ -20,6 +20,73 @@ const DEFAULT_GLOBAL_CONCURRENCY: usize = 2;
 struct JobHandle {
     cancel: CancellationToken,
     pause: CancellationToken,
+}
+
+struct ResizableSemaphoreState {
+    limit: usize,
+    pending_shrink: usize,
+}
+
+struct ResizableSemaphore {
+    semaphore: Arc<Semaphore>,
+    state: StdMutex<ResizableSemaphoreState>,
+}
+
+struct ResizablePermit {
+    permit: Option<OwnedSemaphorePermit>,
+    owner: Arc<ResizableSemaphore>,
+}
+
+impl ResizableSemaphore {
+    fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            semaphore: Arc::new(Semaphore::new(limit.max(1))),
+            state: StdMutex::new(ResizableSemaphoreState {
+                limit: limit.max(1),
+                pending_shrink: 0,
+            }),
+        })
+    }
+
+    fn set_limit(&self, requested: usize) {
+        let limit = requested.max(1);
+        let mut state = self.state.lock().unwrap();
+        if limit > state.limit {
+            let mut increase = limit - state.limit;
+            let cancelled_shrink = increase.min(state.pending_shrink);
+            state.pending_shrink -= cancelled_shrink;
+            increase -= cancelled_shrink;
+            if increase > 0 {
+                self.semaphore.add_permits(increase);
+            }
+        } else if limit < state.limit {
+            let decrease = state.limit - limit;
+            let removed = self.semaphore.forget_permits(decrease);
+            state.pending_shrink += decrease - removed;
+        }
+        state.limit = limit;
+    }
+
+    async fn acquire(self: &Arc<Self>) -> Result<ResizablePermit, tokio::sync::AcquireError> {
+        let permit = self.semaphore.clone().acquire_owned().await?;
+        Ok(ResizablePermit {
+            permit: Some(permit),
+            owner: self.clone(),
+        })
+    }
+}
+
+impl Drop for ResizablePermit {
+    fn drop(&mut self) {
+        let Some(permit) = self.permit.take() else {
+            return;
+        };
+        let mut state = self.owner.state.lock().unwrap();
+        if state.pending_shrink > 0 {
+            state.pending_shrink -= 1;
+            permit.forget();
+        }
+    }
 }
 
 #[napi(object)]
@@ -128,7 +195,7 @@ impl JobEvent {
 #[napi]
 pub struct DownloadManager {
     jobs: Arc<DashMap<String, JobHandle>>,
-    job_semaphore: Arc<ArcSwap<Semaphore>>,
+    job_semaphore: Arc<ResizableSemaphore>,
     bandwidth_limiter: Arc<ArcSwapOption<DefaultDirectRateLimiter>>,
 }
 
@@ -143,17 +210,14 @@ impl DownloadManager {
 
         Self {
             jobs: Arc::new(DashMap::new()),
-            job_semaphore: Arc::new(ArcSwap::from_pointee(Semaphore::new(
-                DEFAULT_GLOBAL_CONCURRENCY,
-            ))),
+            job_semaphore: ResizableSemaphore::new(DEFAULT_GLOBAL_CONCURRENCY),
             bandwidth_limiter: Arc::new(ArcSwapOption::from(None)),
         }
     }
 
     #[napi]
     pub fn set_global_concurrency(&self, limit: u32) {
-        self.job_semaphore
-            .store(Arc::new(Semaphore::new(limit.max(1) as usize)));
+        self.job_semaphore.set_limit(limit.max(1) as usize);
     }
 
     #[napi]
@@ -215,7 +279,6 @@ impl DownloadManager {
             }
         }
 
-        let semaphore = self.job_semaphore.load_full();
         let permit = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
@@ -223,7 +286,12 @@ impl DownloadManager {
                 on_event.call(Ok(JobEvent::job_state(&job.id, "cancelled")), ThreadsafeFunctionCallMode::Blocking);
                 return Ok(());
             }
-            permit = semaphore.acquire_owned() => permit,
+            _ = pause.cancelled() => {
+                self.jobs.remove(&job.id);
+                on_event.call(Ok(JobEvent::job_state(&job.id, "paused")), ThreadsafeFunctionCallMode::Blocking);
+                return Ok(());
+            }
+            permit = self.job_semaphore.acquire() => permit,
         };
         let Ok(_permit) = permit else {
             self.jobs.remove(&job.id);
@@ -392,4 +460,44 @@ fn build_shard_event_fn(
             );
         }
     })
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn increasing_limit_releases_waiters_without_replacing_the_queue() {
+        let gate = ResizableSemaphore::new(1);
+        let first = gate.acquire().await.unwrap();
+        let waiting_gate = gate.clone();
+        let waiter = tokio::spawn(async move { waiting_gate.acquire().await.unwrap() });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        gate.set_limit(2);
+        let second = tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(second);
+        drop(first);
+    }
+
+    #[tokio::test]
+    async fn decreasing_limit_is_applied_as_active_permits_return() {
+        let gate = ResizableSemaphore::new(2);
+        let first = gate.acquire().await.unwrap();
+        let second = gate.acquire().await.unwrap();
+        gate.set_limit(1);
+        drop(first);
+        let waiting_gate = gate.clone();
+        let waiter = tokio::spawn(async move { waiting_gate.acquire().await.unwrap() });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        drop(second);
+        tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }

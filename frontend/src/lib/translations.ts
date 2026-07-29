@@ -130,6 +130,8 @@ export interface Dictionary {
     runLint: string;
     runFormat: string;
     newFile: string;
+    modifiesFiles: string;
+    replaceAllOccurrences: string;
     modelRuntime: string;
     modelRuntimeHint: string;
     modelRuntimeAutomatic: string;
@@ -137,6 +139,28 @@ export interface Dictionary {
     modelRuntimeLlamaCpp: string;
     modelRuntimeVllm: string;
     modelRuntimeMlx: string;
+    recommendationGoal: string;
+    recommendationGoalHint: string;
+    recommendationGoalBalanced: string;
+    recommendationGoalQuality: string;
+    recommendationGoalSpeed: string;
+    recommendationGoalMemory: string;
+    recommendationGoalEnergy: string;
+    recommendationGoalAgent: string;
+    recommendedForYourPc: string;
+    toolCallingBadge: string;
+    fitBestFit: string;
+    fitRunsWell: string;
+    fitMaySlow: string;
+    fitDoesNotFit: string;
+    advancedDetails: string;
+    recommendedRuntime: string;
+    measured: string;
+    outcomeRaw: string;
+    estimatedWeight: string;
+    estimatedKvCache: string;
+    runtimeOverhead: string;
+    gpuOffload: string;
     ragEmbeddingModel: string;
     ragEmbeddingModelHint: string;
     ragCollections: string;
@@ -175,6 +199,13 @@ export interface Dictionary {
     editTags: string;
     addTag: string;
     add: string;
+    done: string;
+    moreActions: string;
+    deleteConversation: string;
+    collapseSidebar: string;
+    expandSidebar: string;
+    newChatInProject: string;
+    editProject: string;
     pinnedMessages: string;
     you: string;
     assistant: string;
@@ -189,6 +220,15 @@ export interface Dictionary {
     gpuAmdRocmNote: string;
     gpuIntelVulkanNote: string;
     gpuNoneDetectedNote: string;
+    gpuSelectionModeLabel: string;
+    gpuSelectionModeHint: string;
+    gpuSelectionModeAuto: string;
+    gpuSelectionModeSingle: string;
+    gpuSelectionModeGroup: string;
+    gpuSelectionModeAll: string;
+    gpuSelectionModeCpu: string;
+    gpuStaleSelectionNote: string;
+    gpuUseAutomaticInstead: string;
     otherBackendsSection: string;
     otherBackendsHint: string;
     rocmServerPathLabel: string;
@@ -213,6 +253,7 @@ export interface Dictionary {
     settingsTabChat: string;
     settingsTabVoice: string;
     settingsTabData: string;
+    settingsTabAccounts: string;
     keyboardShortcuts: string;
     keyboardShortcutsHelp: string;
     shortcutCommandPalette: string;
@@ -224,6 +265,10 @@ export interface Dictionary {
     shortcutStopGenerating: string;
     compareModels: string;
     usageDashboard: string;
+    downloadCenter: string;
+    runtimeManager: string;
+    navWorkspaceGroup: string;
+    navConversationsGroup: string;
     usageTotalCost: string;
     usageTotalTokens: string;
     usageTotalSessions: string;
@@ -236,6 +281,7 @@ export interface Dictionary {
     compareRun: string;
     compareRunToSee: string;
     noModelsAvailable: string;
+    searchModelsPlaceholder: string;
     settingsTabAutomation: string;
     scheduledTasksSection: string;
     scheduledTasksHint: string;
@@ -314,6 +360,7 @@ export interface Dictionary {
     copiedAsMarkdown: string;
     ollamaOfflineBanner: string;
     copied: string;
+    copyCode: string;
     openLogsFolder: string;
     checkForUpdates: string;
     language: string;
@@ -322,8 +369,13 @@ export interface Dictionary {
     colorModeLight: string;
     colorModeDark: string;
     colorModeSystem: string;
-    accentColor: string;
-    accentColorNames: { default: string; blue: string; green: string; purple: string; orange: string; rose: string };
+    colorTheme: string;
+    colorThemeHint: string;
+    colorThemeNames: Record<
+        "default" | "blue" | "green" | "purple" | "orange" | "rose" |
+        "monokai" | "dracula" | "nord" | "solarized" | "gruvbox" | "catppuccin",
+        string
+    >;
     general: string;
     providers: string;
     models: string;
@@ -535,6 +587,8 @@ export const en: Dictionary = {
     runLint: "Lint",
     runFormat: "Format",
     newFile: "New file",
+    modifiesFiles: "Modifies files",
+    replaceAllOccurrences: "replaces all occurrences",
     modelRuntime: "Model runtime",
     modelRuntimeHint: "Which backend runs your models. Automatic picks per model based on its format (GGUF, safetensors, MLX) and your detected hardware (NVIDIA/AMD/Intel/Apple GPU, Apple Silicon) — GGUF goes to llama.cpp, safetensors on an NVIDIA/AMD GPU goes to vLLM, MLX-format models on Apple Silicon go to MLX, and anything else falls back to Transformers.",
     modelRuntimeAutomatic: "Automatic (recommended)",
@@ -542,6 +596,28 @@ export const en: Dictionary = {
     modelRuntimeLlamaCpp: "llama.cpp",
     modelRuntimeVllm: "vLLM",
     modelRuntimeMlx: "MLX",
+    recommendationGoal: "Recommendation goal",
+    recommendationGoalHint: "What the \"best\" model pick should optimize for. Balanced weighs quality, speed, memory efficiency, and tool-calling reliability evenly.",
+    recommendationGoalBalanced: "Balanced",
+    recommendationGoalQuality: "Best quality",
+    recommendationGoalSpeed: "Fastest response",
+    recommendationGoalMemory: "Lowest memory",
+    recommendationGoalEnergy: "Lowest energy",
+    recommendationGoalAgent: "Best for Agent mode",
+    recommendedForYourPc: "Recommended for your PC",
+    toolCallingBadge: "Tool calling",
+    fitBestFit: "Best fit",
+    fitRunsWell: "Runs well",
+    fitMaySlow: "May be slow",
+    fitDoesNotFit: "Does not fit",
+    advancedDetails: "Advanced details",
+    recommendedRuntime: "Runtime",
+    measured: "measured",
+    outcomeRaw: "Detail",
+    estimatedWeight: "weights",
+    estimatedKvCache: "KV cache",
+    runtimeOverhead: "overhead",
+    gpuOffload: "GPU offload",
     ragEmbeddingModel: "RAG embedding model",
     ragEmbeddingModelHint: "Used to index newly attached folders for retrieval. Existing collections keep whatever model they were created with — changing this only affects new ones.",
     ragCollections: "Indexed collections",
@@ -580,6 +656,13 @@ export const en: Dictionary = {
     editTags: "Edit tags",
     addTag: "Add tag...",
     add: "Add",
+    done: "Done",
+    moreActions: "More actions",
+    deleteConversation: "Delete conversation",
+    collapseSidebar: "Collapse sidebar",
+    expandSidebar: "Expand sidebar",
+    newChatInProject: "New chat in project",
+    editProject: "Edit project",
     pinnedMessages: "Pinned",
     you: "You",
     assistant: "Assistant",
@@ -595,6 +678,15 @@ export const en: Dictionary = {
         "AMD GPUs are accelerated through Vulkan here. For native ROCm acceleration, run your models through the Ollama backend instead — it supports ROCm directly.",
     gpuIntelVulkanNote: "Intel GPUs (Arc and integrated) are accelerated through Vulkan.",
     gpuNoneDetectedNote: "No GPU detected — inference will run on the CPU.",
+    gpuSelectionModeLabel: "Default GPU selection",
+    gpuSelectionModeHint: "Which GPUs a runtime uses by default, before any per-runtime override. A saved device that's no longer detected is never silently swapped for another one — it's flagged as stale in the Runtime Manager instead.",
+    gpuSelectionModeAuto: "Automatic (recommended)",
+    gpuSelectionModeSingle: "One specific GPU",
+    gpuSelectionModeGroup: "A specific group of GPUs",
+    gpuSelectionModeAll: "All compatible GPUs",
+    gpuSelectionModeCpu: "CPU only",
+    gpuStaleSelectionNote: "This saved GPU selection no longer matches detected hardware.",
+    gpuUseAutomaticInstead: "Use automatic selection instead",
     otherBackendsSection: "Other GPU backends (ROCm & MLX)",
     otherBackendsHint: "Backends the built-in llama.cpp engine can't serve — run as local server processes the app manages for you.",
     rocmServerPathLabel: "ROCm llama-server binary",
@@ -614,11 +706,12 @@ export const en: Dictionary = {
     pullWithOllama: "Pull with Ollama",
     downloadForLlamaCpp: "Download for llama.cpp",
     settingsTabGeneral: "General",
-    settingsTabModels: "Models",
-    settingsTabIntegrations: "Integrations",
-    settingsTabChat: "Chat & Prompts",
+    settingsTabModels: "Models & Hardware",
+    settingsTabIntegrations: "Integrations & MCP",
+    settingsTabChat: "Agent & Tools",
     settingsTabVoice: "Voice",
-    settingsTabData: "Data",
+    settingsTabData: "Usage & Diagnostics",
+    settingsTabAccounts: "Accounts",
     keyboardShortcuts: "Keyboard shortcuts",
     keyboardShortcutsHelp: "Everything you can do without touching the mouse.",
     shortcutCommandPalette: "Command palette",
@@ -630,6 +723,10 @@ export const en: Dictionary = {
     shortcutStopGenerating: "Stop generating",
     compareModels: "Compare models",
     usageDashboard: "Usage dashboard",
+    downloadCenter: "Download Center",
+    runtimeManager: "Runtime Manager",
+    navWorkspaceGroup: "Workspace",
+    navConversationsGroup: "Conversations",
     usageTotalCost: "Estimated total cost",
     usageTotalTokens: "Total tokens",
     usageTotalSessions: "Chats with usage",
@@ -642,6 +739,7 @@ export const en: Dictionary = {
     compareRun: "Run",
     compareRunToSee: "Run the comparison to see this model's response.",
     noModelsAvailable: "No models available yet — install one in Settings first.",
+    searchModelsPlaceholder: "Search models...",
     settingsTabAutomation: "Automation",
     scheduledTasksSection: "Scheduled tasks",
     scheduledTasksHint: "Run a saved prompt on a repeating interval while the app is open — results are appended to a dedicated chat for that task. This runs only while Modelforge is open, not as a background service, and doesn't use Agent mode tools.",
@@ -720,6 +818,7 @@ export const en: Dictionary = {
     ollamaOfflineBanner: "Ollama isn't running — this model won't respond until it's started.",
     copyDiagnosticInfo: "Copy diagnostic info",
     copied: "Copied",
+    copyCode: "Copy",
     openLogsFolder: "Open logs folder",
     checkForUpdates: "Check for updates",
     language: "Language",
@@ -728,14 +827,21 @@ export const en: Dictionary = {
     colorModeLight: "Light",
     colorModeDark: "Dark",
     colorModeSystem: "System",
-    accentColor: "Accent color",
-    accentColorNames: {
-        default: "Default (gray)",
+    colorTheme: "Color theme",
+    colorThemeHint: "Choose a neutral accent or a full interface palette adapted from an open-source community theme.",
+    colorThemeNames: {
+        default: "Default",
         blue: "Blue",
         green: "Green",
         purple: "Purple",
         orange: "Orange",
         rose: "Rose",
+        monokai: "Monokai",
+        dracula: "Dracula",
+        nord: "Nord",
+        solarized: "Solarized",
+        gruvbox: "Gruvbox",
+        catppuccin: "Catppuccin",
     },
     general: "General",
     providers: "Providers",
@@ -950,6 +1056,8 @@ export const tr: Dictionary = {
     runLint: "Lint",
     runFormat: "Biçimlendir",
     newFile: "Yeni dosya",
+    modifiesFiles: "Dosyaları değiştirir",
+    replaceAllOccurrences: "tüm eşleşmeleri değiştirir",
     modelRuntime: "Model çalışma zamanı",
     modelRuntimeHint: "Modellerinizi hangi arka ucun çalıştıracağı. Otomatik, her modeli formatına (GGUF, safetensors, MLX) ve algılanan donanımınıza (NVIDIA/AMD/Intel/Apple GPU, Apple Silicon) göre seçer — GGUF llama.cpp'ye, NVIDIA/AMD GPU'da safetensors vLLM'e, Apple Silicon'da MLX formatındaki modeller MLX'e gider; geri kalan her şey Transformers'a düşer.",
     modelRuntimeAutomatic: "Otomatik (önerilen)",
@@ -957,6 +1065,28 @@ export const tr: Dictionary = {
     modelRuntimeLlamaCpp: "llama.cpp",
     modelRuntimeVllm: "vLLM",
     modelRuntimeMlx: "MLX",
+    recommendationGoal: "Öneri hedefi",
+    recommendationGoalHint: "\"En iyi\" model seçiminin neyi önceliklendireceği. Dengeli, kaliteyi, hızı, bellek verimliliğini ve araç çağırma güvenilirliğini eşit ağırlıklandırır.",
+    recommendationGoalBalanced: "Dengeli",
+    recommendationGoalQuality: "En iyi kalite",
+    recommendationGoalSpeed: "En hızlı yanıt",
+    recommendationGoalMemory: "En düşük bellek",
+    recommendationGoalEnergy: "En düşük enerji",
+    recommendationGoalAgent: "Agent modu için en iyi",
+    recommendedForYourPc: "Bilgisayarınız için önerilen",
+    toolCallingBadge: "Araç çağırma",
+    fitBestFit: "En uygun",
+    fitRunsWell: "İyi çalışır",
+    fitMaySlow: "Yavaş olabilir",
+    fitDoesNotFit: "Sığmıyor",
+    advancedDetails: "Gelişmiş ayrıntılar",
+    recommendedRuntime: "Çalışma zamanı",
+    measured: "ölçülen",
+    outcomeRaw: "Ayrıntı",
+    estimatedWeight: "ağırlıklar",
+    estimatedKvCache: "KV önbelleği",
+    runtimeOverhead: "ek yük",
+    gpuOffload: "GPU aktarımı",
     ragEmbeddingModel: "RAG gömme modeli",
     ragEmbeddingModelHint: "Yeni eklenen klasörleri erişim için indekslemek üzere kullanılır. Mevcut koleksiyonlar oluşturuldukları modeli korur — bunu değiştirmek yalnızca yenilerini etkiler.",
     ragCollections: "İndekslenmiş koleksiyonlar",
@@ -995,6 +1125,13 @@ export const tr: Dictionary = {
     editTags: "Etiketleri düzenle",
     addTag: "Etiket ekle...",
     add: "Ekle",
+    done: "Bitti",
+    moreActions: "Diğer işlemler",
+    deleteConversation: "Sohbeti sil",
+    collapseSidebar: "Kenar çubuğunu daralt",
+    expandSidebar: "Kenar çubuğunu genişlet",
+    newChatInProject: "Projede yeni sohbet",
+    editProject: "Projeyi düzenle",
     pinnedMessages: "Sabitlenenler",
     you: "Siz",
     assistant: "Asistan",
@@ -1010,6 +1147,15 @@ export const tr: Dictionary = {
         "AMD GPU'lar burada Vulkan üzerinden hızlandırılır. Yerel ROCm hızlandırması için modellerinizi ROCm'u doğrudan destekleyen Ollama arka ucu üzerinden çalıştırın.",
     gpuIntelVulkanNote: "Intel GPU'lar (Arc ve tümleşik) Vulkan üzerinden hızlandırılır.",
     gpuNoneDetectedNote: "GPU algılanmadı — çıkarım CPU üzerinde çalışacak.",
+    gpuSelectionModeLabel: "Varsayılan GPU seçimi",
+    gpuSelectionModeHint: "Herhangi bir çalışma zamanına özgü geçersiz kılmadan önce bir çalışma zamanının varsayılan olarak hangi GPU'ları kullanacağı. Artık algılanmayan kayıtlı bir aygıt sessizce başka biriyle değiştirilmez — bunun yerine Çalışma Zamanı Yöneticisi'nde eskimiş olarak işaretlenir.",
+    gpuSelectionModeAuto: "Otomatik (önerilen)",
+    gpuSelectionModeSingle: "Belirli bir GPU",
+    gpuSelectionModeGroup: "Belirli bir GPU grubu",
+    gpuSelectionModeAll: "Uyumlu tüm GPU'lar",
+    gpuSelectionModeCpu: "Yalnızca CPU",
+    gpuStaleSelectionNote: "Bu kayıtlı GPU seçimi artık algılanan donanımla eşleşmiyor.",
+    gpuUseAutomaticInstead: "Bunun yerine otomatik seçimi kullan",
     otherBackendsSection: "Diğer GPU arka uçları (ROCm ve MLX)",
     otherBackendsHint: "Yerleşik llama.cpp motorunun sunamadığı arka uçlar — uygulamanın sizin için yönettiği yerel sunucu süreçleri olarak çalışır.",
     rocmServerPathLabel: "ROCm llama-server ikili dosyası",
@@ -1029,11 +1175,12 @@ export const tr: Dictionary = {
     pullWithOllama: "Ollama ile indir",
     downloadForLlamaCpp: "llama.cpp için indir",
     settingsTabGeneral: "Genel",
-    settingsTabModels: "Modeller",
-    settingsTabIntegrations: "Entegrasyonlar",
-    settingsTabChat: "Sohbet ve Promptlar",
+    settingsTabModels: "Modeller ve Donanım",
+    settingsTabIntegrations: "Entegrasyonlar ve MCP",
+    settingsTabChat: "Ajan ve Araçlar",
     settingsTabVoice: "Ses",
-    settingsTabData: "Veri",
+    settingsTabData: "Kullanım ve Tanılama",
+    settingsTabAccounts: "Hesaplar",
     keyboardShortcuts: "Klavye kısayolları",
     keyboardShortcutsHelp: "Fareye dokunmadan yapabileceğiniz her şey.",
     shortcutCommandPalette: "Komut paleti",
@@ -1045,6 +1192,10 @@ export const tr: Dictionary = {
     shortcutStopGenerating: "Üretimi durdur",
     compareModels: "Modelleri karşılaştır",
     usageDashboard: "Kullanım paneli",
+    downloadCenter: "İndirme Merkezi",
+    runtimeManager: "Çalışma Zamanı Yöneticisi",
+    navWorkspaceGroup: "Çalışma alanı",
+    navConversationsGroup: "Sohbetler",
     usageTotalCost: "Tahmini toplam maliyet",
     usageTotalTokens: "Toplam token",
     usageTotalSessions: "Kullanımı olan sohbetler",
@@ -1057,6 +1208,7 @@ export const tr: Dictionary = {
     compareRun: "Çalıştır",
     compareRunToSee: "Bu modelin yanıtını görmek için karşılaştırmayı çalıştırın.",
     noModelsAvailable: "Henüz kullanılabilir model yok — önce Ayarlar'dan bir tane kurun.",
+    searchModelsPlaceholder: "Modelleri ara...",
     settingsTabAutomation: "Otomasyon",
     scheduledTasksSection: "Zamanlanmış görevler",
     scheduledTasksHint: "Uygulama açıkken kayıtlı bir promptu tekrarlayan aralıklarla çalıştırın — sonuçlar o görev için ayrılmış bir sohbete eklenir. Bu yalnızca Modelforge açıkken çalışır, arka plan servisi değildir ve Agent modu araçlarını kullanmaz.",
@@ -1135,6 +1287,7 @@ export const tr: Dictionary = {
     copiedAsMarkdown: "Sohbet Markdown olarak kopyalandı",
     ollamaOfflineBanner: "Ollama çalışmıyor — başlatılana kadar bu model yanıt vermeyecek.",
     copied: "Kopyalandı",
+    copyCode: "Kopyala",
     openLogsFolder: "Günlük klasörünü aç",
     checkForUpdates: "Güncellemeleri denetle",
     language: "Dil",
@@ -1143,14 +1296,21 @@ export const tr: Dictionary = {
     colorModeLight: "Açık",
     colorModeDark: "Koyu",
     colorModeSystem: "Sistem",
-    accentColor: "Vurgu rengi",
-    accentColorNames: {
-        default: "Varsayılan (gri)",
+    colorTheme: "Renk teması",
+    colorThemeHint: "Nötr bir vurgu veya açık kaynak topluluğu temasından uyarlanmış tam bir arayüz paleti seçin.",
+    colorThemeNames: {
+        default: "Varsayılan",
         blue: "Mavi",
         green: "Yeşil",
         purple: "Mor",
         orange: "Turuncu",
         rose: "Gül kurusu",
+        monokai: "Monokai",
+        dracula: "Dracula",
+        nord: "Nord",
+        solarized: "Solarized",
+        gruvbox: "Gruvbox",
+        catppuccin: "Catppuccin",
     },
     general: "Genel",
     providers: "Sağlayıcılar",

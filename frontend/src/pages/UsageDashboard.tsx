@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, BarChart3, Leaf, Zap } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { MetricCard, EmptyState } from "@/components/ds";
 import { useI18n } from "@/lib/i18n";
 import { PROVIDER_LABELS } from "@/lib/providers";
 import { formatCost } from "@/lib/pricing";
@@ -17,11 +18,11 @@ function energyCost(value: number, currency: string): string {
 
 function EnergyCard({ label, totals, currency }: { label: string; totals: EnergyTotals; currency: string }) {
     return (
-        <div className="rounded-lg border border-border p-4">
-            <p className="text-xs text-muted-foreground">{label}</p>
-            <p className="mt-1 text-xl font-semibold">{energyCost(totals.cost, currency)}</p>
-            <p className="mt-1 text-xs text-muted-foreground">{formatEnergy(totals.energyKwh)} · {totals.requestCount} requests</p>
-        </div>
+        <MetricCard
+            label={label}
+            value={energyCost(totals.cost, currency)}
+            hint={`${formatEnergy(totals.energyKwh)} · ${totals.requestCount} requests`}
+        />
     );
 }
 
@@ -127,19 +128,17 @@ export default function UsageDashboard() {
                             </div>
 
                             <div className="grid gap-4 lg:grid-cols-3">
-                                <div className="rounded-lg border border-border p-4">
-                                    <p className="text-xs text-muted-foreground">Cost per million generated tokens</p>
-                                    <p className="mt-1 text-xl font-semibold">{energyCost(energy.costPerMillionGeneratedTokens, energy.currency)}</p>
-                                </div>
-                                <div className="rounded-lg border border-border p-4">
-                                    <p className="text-xs text-muted-foreground">Measured versus estimated</p>
-                                    <p className="mt-1 text-xl font-semibold">{energy.measuredPercent.toFixed(1)}% measured</p>
-                                    <p className="mt-1 text-xs text-muted-foreground">{(100 - energy.measuredPercent).toFixed(1)}% estimated</p>
-                                </div>
-                                <div className="rounded-lg border border-border p-4">
-                                    <p className="flex items-center gap-1 text-xs text-muted-foreground"><Leaf className="size-3.5" /> Carbon estimate</p>
-                                    <p className="mt-1 text-xl font-semibold">{energy.lifetime.carbonGrams.toFixed(1)} gCO₂e</p>
-                                </div>
+                                <MetricCard label="Cost per million generated tokens" value={energyCost(energy.costPerMillionGeneratedTokens, energy.currency)} />
+                                <MetricCard
+                                    label="Measured versus estimated"
+                                    value={`${energy.measuredPercent.toFixed(1)}% measured`}
+                                    hint={`${(100 - energy.measuredPercent).toFixed(1)}% estimated`}
+                                />
+                                <MetricCard
+                                    label="Carbon estimate"
+                                    icon={<Leaf className="size-3.5" />}
+                                    value={`${energy.lifetime.carbonGrams.toFixed(1)} gCO₂e`}
+                                />
                             </div>
 
                             <div className="grid gap-4 lg:grid-cols-2">
@@ -172,22 +171,13 @@ export default function UsageDashboard() {
                     )}
 
                     {usages.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">{t.usageNoData}</p>
+                        <EmptyState icon={<BarChart3 className="size-5" />} title={t.usageNoData} />
                     ) : (
                         <>
                             <div className="grid grid-cols-3 gap-3">
-                                <div className="rounded-lg border border-border p-4">
-                                    <p className="text-xs text-muted-foreground">{t.usageTotalCost}</p>
-                                    <p className="mt-1 text-2xl font-semibold">{formatCost(totalCost)}</p>
-                                </div>
-                                <div className="rounded-lg border border-border p-4">
-                                    <p className="text-xs text-muted-foreground">{t.usageTotalTokens}</p>
-                                    <p className="mt-1 text-2xl font-semibold">{totalTokens.toLocaleString()}</p>
-                                </div>
-                                <div className="rounded-lg border border-border p-4">
-                                    <p className="text-xs text-muted-foreground">{t.usageTotalSessions}</p>
-                                    <p className="mt-1 text-2xl font-semibold">{usages.length}</p>
-                                </div>
+                                <MetricCard label={t.usageTotalCost} value={formatCost(totalCost)} />
+                                <MetricCard label={t.usageTotalTokens} value={totalTokens.toLocaleString()} />
+                                <MetricCard label={t.usageTotalSessions} value={usages.length} />
                             </div>
 
                             <div>

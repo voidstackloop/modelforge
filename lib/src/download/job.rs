@@ -94,29 +94,49 @@ async fn run_job_with(
             });
         });
 
-        run(
-            url,
-            shard.filename.clone(),
-            shard.path.clone(),
-            job.token.clone(),
-            progress_fn,
-            ctl.clone(),
-        )
-        .await?;
+        let existing_complete = tokio::fs::metadata(&shard.path)
+            .await
+            .is_ok_and(|metadata| {
+                shard.expected_bytes == 0 || metadata.len() == shard.expected_bytes
+            });
+        if !existing_complete {
+            run(
+                url,
+                shard.filename.clone(),
+                shard.path.clone(),
+                job.token.clone(),
+                progress_fn,
+                ctl.clone(),
+            )
+            .await?;
+        } else {
+            on_event(ShardEvent::Progress {
+                filename: shard.filename.clone(),
+                received: shard.expected_bytes,
+            });
+        }
 
         if let Some(expected_sha256) = &shard.sha256 {
             on_event(ShardEvent::State {
                 filename: shard.filename.clone(),
                 state: "verifying",
             });
-            if let Err(e) =
-                verify::verify_sha256(Path::new(&shard.path), &shard.filename, expected_sha256)
-                    .await
-            {
+            let verification = tokio::select! {
+                biased;
+                _ = ctl.cancel.cancelled() => Err(DownloadError::Cancelled { filename: shard.filename.clone() }),
+                _ = ctl.pause.cancelled() => Err(DownloadError::Paused { filename: shard.filename.clone() }),
+                result = verify::verify_sha256(Path::new(&shard.path), &shard.filename, expected_sha256) => result,
+            };
+            if let Err(e) = verification {
                 // Corrupt bytes, not an incomplete transfer — the finished
                 // file is not trustworthy and isn't left around to be
                 // mistaken for a real, usable model.
-                tokio::fs::remove_file(&shard.path).await.ok();
+                if matches!(
+                    e,
+                    DownloadError::VerificationFailed { .. } | DownloadError::Cancelled { .. }
+                ) {
+                    tokio::fs::remove_file(&shard.path).await.ok();
+                }
                 return Err(e);
             }
         }

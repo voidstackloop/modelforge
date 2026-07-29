@@ -5,13 +5,14 @@ import { logger } from "./logger";
 import { getDownloadManager, type JobEvent, type JsDownloadJob } from "./native-downloader";
 
 const MAX_AUTO_RETRIES = 3;
+const MAX_BACKOFF_MS = 60_000;
 
 // How often raw JobEvents get coalesced into a `downloads:update` broadcast
 // — matches the ~100ms cadence the Rust side's own progress ticker already
 // uses, so this never becomes the bottleneck. A job's terminal state always
 // broadcasts immediately regardless (see `driveJob`'s `finally`), so the UI
 // never has to wait out this throttle to see a job actually finish.
-const BROADCAST_THROTTLE_MS = 100;
+const BROADCAST_THROTTLE_MS = 250;
 let lastBroadcastAt = 0;
 
 function throttledBroadcast(): void {
@@ -31,6 +32,12 @@ export function clearRetryTimer(jobId: string): void {
     const timer = retryTimers.get(jobId);
     if (timer) clearTimeout(timer);
     retryTimers.delete(jobId);
+}
+
+export function cancelPendingRetry(jobId: string): void {
+    clearRetryTimer(jobId);
+    const job = getJob(jobId);
+    if (job?.nextRetryAt) updateJob(jobId, { nextRetryAt: undefined });
 }
 
 function toJsDownloadJob(job: DownloadJob): JsDownloadJob {
@@ -60,7 +67,11 @@ function handleEvent(event: JobEvent): void {
     switch (event.kind) {
         case "shard_state":
             if (event.shardFilename && event.shardState) {
-                updateJob(job.id, { shards: withShardPatch(job, event.shardFilename, { state: event.shardState as DownloadShard["state"] }) });
+                const verificationState = event.shardState === "verifying" ? "verifying" as const : undefined;
+                updateJob(job.id, { shards: withShardPatch(job, event.shardFilename, {
+                    state: event.shardState as DownloadShard["state"],
+                    ...(verificationState ? { verificationState } : {}),
+                }) });
             }
             break;
         case "shard_progress":
@@ -71,17 +82,28 @@ function handleEvent(event: JobEvent): void {
                     totalBytes: event.totalBytes,
                     bytesPerSecond: event.bytesPerSec,
                     etaSeconds: event.etaSeconds,
-                });
+                }, "progress");
             }
             break;
         case "job_state":
             if (event.jobState) {
-                updateJob(job.id, { state: event.jobState as DownloadJob["state"] });
+                const state = event.jobState as DownloadJob["state"];
+                const shards = state === "ready"
+                    ? job.shards.map((shard) => ({ ...shard, state, verificationState: shard.sha256 ? "verified" as const : "unavailable" as const }))
+                    : job.shards;
+                updateJob(job.id, { state, shards, nextRetryAt: undefined, bytesPerSecond: undefined, etaSeconds: undefined });
             }
             break;
         case "job_error":
             updateJob(job.id, {
                 state: "failed",
+                nextRetryAt: undefined,
+                retryHistory: [...job.retryHistory, {
+                    attempt: job.retryCount + 1,
+                    at: new Date().toISOString(),
+                    errorKind: (event.errorKind ?? "unknown") as DownloadErrorKind,
+                    message: event.errorMessage ?? "Download failed.",
+                }],
                 error: {
                     message: event.errorMessage ?? "Download failed.",
                     kind: (event.errorKind ?? "unknown") as DownloadErrorKind,
@@ -101,14 +123,19 @@ function maybeAutoRetry(jobId: string): void {
     const job = getJob(jobId);
     if (!job || job.state !== "failed" || !job.error?.retryable || job.retryCount >= MAX_AUTO_RETRIES) return;
 
-    const backoffMs = 1000 * 2 ** job.retryCount;
+    const baseBackoffMs = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** job.retryCount);
+    const jitter = 0.8 + Math.random() * 0.4;
+    const backoffMs = Math.round(baseBackoffMs * jitter);
     if (retryTimers.has(jobId)) return;
     const expectedRetryCount = job.retryCount;
+    updateJob(jobId, { nextRetryAt: new Date(Date.now() + backoffMs).toISOString() });
+    downloadQueue.broadcast();
     const timer = setTimeout(() => {
         retryTimers.delete(jobId);
         const current = getJob(jobId);
         if (!current || current.state !== "failed" || !current.error?.retryable || current.retryCount !== expectedRetryCount) return;
-        updateJob(jobId, { state: "queued", retryCount: expectedRetryCount + 1 });
+        updateJob(jobId, { state: "queued", retryCount: expectedRetryCount + 1, nextRetryAt: undefined, error: undefined });
+        downloadQueue.broadcast();
         wake();
     }, backoffMs);
     timer.unref();
@@ -163,4 +190,11 @@ export function pause(jobId: string): void {
 export function cancel(jobId: string): void {
     clearRetryTimer(jobId);
     getDownloadManager().cancelJob(jobId);
+}
+
+export async function cancelAndWait(jobId: string, timeoutMs = 5_000): Promise<void> {
+    cancel(jobId);
+    const deadline = Date.now() + timeoutMs;
+    while (active.has(jobId) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    if (active.has(jobId)) throw new Error("The download worker did not stop in time; partial files were kept.");
 }

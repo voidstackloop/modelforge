@@ -3,7 +3,7 @@ import type { ToolDefinition } from "../providers/types";
 export const AGENT_TOOLS: ToolDefinition[] = [
     {
         name: "read_file",
-        description: "Read the contents of a text file within the workspace.",
+        description: "Read the contents of a text file within the workspace. Fails on binary files (images, compiled artifacts, etc.) — those aren't readable this way.",
         parameters: {
             type: "object",
             properties: {
@@ -96,7 +96,7 @@ export const AGENT_TOOLS: ToolDefinition[] = [
     },
     {
         name: "list_dir",
-        description: "List files and subdirectories at a path within the workspace.",
+        description: "List files and subdirectories at a path within the workspace. Capped at 500 entries — a truncation notice is appended as the last entry when a directory has more, listing a subdirectory instead of the root usually avoids it.",
         parameters: {
             type: "object",
             properties: {
@@ -107,7 +107,7 @@ export const AGENT_TOOLS: ToolDefinition[] = [
     },
     {
         name: "search_files",
-        description: "Search for a text string across files in the workspace and return matching lines.",
+        description: "Search for a text string across files in the workspace and return matching lines. Stops at 50 matches (a notice is appended when the cap is hit — there may be more that weren't found); binary files are skipped. Scope with `path` to a subdirectory for a more complete search of a specific area.",
         parameters: {
             type: "object",
             properties: {
@@ -276,6 +276,19 @@ export const AGENT_TOOLS: ToolDefinition[] = [
         },
     },
     {
+        name: "git_blame",
+        description: "Show who last changed each line of a tracked file, and in which commit — use to find context for a piece of code before changing it (e.g. why a workaround exists).",
+        parameters: {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "File path, relative to the workspace root." },
+                start_line: { type: "number", description: "Optional: first line to blame (1-indexed). Omit to blame the whole file." },
+                end_line: { type: "number", description: "Optional: last line to blame (inclusive). Required if start_line is given." },
+            },
+            required: ["path"],
+        },
+    },
+    {
         name: "web_search",
         description: "Search the web for a query and return the top results (title, URL, snippet). Use this to find information not available locally.",
         parameters: {
@@ -366,7 +379,7 @@ export const AGENT_TOOLS: ToolDefinition[] = [
     {
         name: "find_symbol_references",
         description:
-            "Find where a function, class, variable, or other identifier is defined and referenced across the workspace. Faster and more targeted than search_files for navigating code — use this before editing something to see everywhere it's used.",
+            "Find where a function, class, variable, or other identifier is defined and referenced across the workspace. Faster and more targeted than search_files for navigating code — use this before editing something to see everywhere it's used. Stops at 50 matches (a notice is appended when the cap is hit); binary files are skipped.",
         parameters: {
             type: "object",
             properties: {

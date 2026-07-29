@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 import { MermaidDiagram } from "@/components/mermaid-diagram";
 import "highlight.js/styles/github-dark.css";
 
@@ -14,6 +15,7 @@ const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
 
 function CodeBlock({ className, children }: { className?: string; children: React.ReactNode }) {
+    const { t } = useI18n();
     const [copied, setCopied] = useState(false);
     const text = String(children).replace(/\n$/, "");
     const language = className?.replace("hljs language-", "").replace("language-", "").trim();
@@ -26,11 +28,14 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
 
     return (
         <div className="my-2 overflow-hidden rounded-lg border border-border">
-            <div className="flex items-center justify-between bg-muted px-3 py-1 text-xs text-muted-foreground">
-                <span>{language || "text"}</span>
-                <button onClick={handleCopy} className="flex items-center gap-1 hover:text-foreground">
+            <div className="flex items-center justify-between border-b border-border bg-muted/60 px-3 py-1.5 text-xs">
+                <span className="font-mono font-medium text-muted-foreground">{language || "text"}</span>
+                <button
+                    onClick={handleCopy}
+                    className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                >
                     {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-                    {copied ? "Copied" : "Copy"}
+                    {copied ? t.copied : t.copyCode}
                 </button>
             </div>
             <pre className="overflow-x-auto p-3 text-xs leading-relaxed">

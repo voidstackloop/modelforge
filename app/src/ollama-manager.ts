@@ -2,12 +2,31 @@ import { spawn, ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { logger } from "./logger";
 import type { ChatMessage, ChatChunk, ChatOptions, ToolDefinition } from "./providers/types";
+import { buildGpuVisibilityEnv } from "./gpu-selection";
+import type { GpuInfo } from "./system-specs";
 
 const DEFAULT_HOST = "http://127.0.0.1:11434";
 let HOST = DEFAULT_HOST;
 let MODELS_DIR: string | undefined;
 let child: ChildProcess | null = null;
 let weStartedIt = false;
+// Resolved GPU group to filter `ollama serve`'s own device visibility down
+// to, via env var — set by the caller after resolving a saved selection
+// against live hardware (see gpu-selection.ts). This ONLY restricts which
+// devices Ollama can see; Ollama still does its own model scheduling across
+// whatever's visible (there is no app-level layer/tensor-parallel control
+// over Ollama — it schedules independently, unlike vLLM/llama-server), and
+// takes effect on the *next* spawn only, same as OLLAMA_MODELS above.
+let GPU_SELECTION: GpuInfo[] = [];
+
+export function setGpuSelection(gpus: GpuInfo[]): void {
+    GPU_SELECTION = gpus;
+}
+
+function gpuVisibilityEnv(): Record<string, string> {
+    const vendor = GPU_SELECTION[0]?.vendor;
+    return vendor ? buildGpuVisibilityEnv(vendor, GPU_SELECTION) : {};
+}
 
 export function setHost(url: string | null | undefined): void {
     HOST = url && url.trim() ? url.trim().replace(/\/+$/, "") : DEFAULT_HOST;
@@ -83,9 +102,10 @@ export async function start(): Promise<OllamaStartResult> {
     }
 
     try {
+        const envAdditions = { ...(MODELS_DIR ? { OLLAMA_MODELS: MODELS_DIR } : {}), ...gpuVisibilityEnv() };
         child = spawn("ollama", ["serve"], {
             stdio: "ignore",
-            env: MODELS_DIR ? { ...process.env, OLLAMA_MODELS: MODELS_DIR } : process.env,
+            env: Object.keys(envAdditions).length > 0 ? { ...process.env, ...envAdditions } : process.env,
         });
         weStartedIt = true;
 

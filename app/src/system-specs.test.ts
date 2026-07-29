@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { classifyGpuVendor, detectModelFormat, recommendModels, recommendModelsWithML, resolveAutomaticRuntime, type SystemSpecs } from "./system-specs";
+import { classifyGpuVendor, computeGpuTopology, detectModelFormat, parseMigInstancesFromNvidiaSmiL, recommendModels, recommendModelsWithML, resolveAutomaticRuntime, type GpuInfo, type GpuTopology, type SystemSpecs } from "./system-specs";
+
+function baseTopology(overrides: Partial<GpuTopology> = {}): GpuTopology {
+    return {
+        interconnect: "none", homogeneous: true, deviceCount: 0, aggregateVramGB: null,
+        smallestGpuVramGB: null, largestGpuVramGB: null, usableVramGB: null,
+        peerToPeerCapable: false, tensorParallelRecommended: false, layerSplitOnly: false,
+        ...overrides,
+    };
+}
 
 function baseSpecs(overrides: Partial<SystemSpecs> = {}): SystemSpecs {
     return {
@@ -15,6 +24,7 @@ function baseSpecs(overrides: Partial<SystemSpecs> = {}): SystemSpecs {
         largestGpuVramGB: null,
         gpuInterconnect: "none",
         tensorParallelSupported: false,
+        gpuTopology: baseTopology(),
         cpuMemoryBandwidthGBps: 50,
         cpuMemoryBandwidthMeasured: false,
         ...overrides,
@@ -117,6 +127,114 @@ describe("recommendModels", () => {
         expect(model.runtimeOverheadGB).toBeGreaterThan(0);
         expect(model.estimatedWeightGB).toBeGreaterThan(3);
         expect(model.measuredTokensPerSecond).toBe(17.5);
+    });
+});
+
+describe("computeGpuTopology", () => {
+    it("treats equal-VRAM NVIDIA pairs as homogeneous and tensor-parallel recommended", () => {
+        const topology = computeGpuTopology([
+            { name: "RTX 4090", vramGB: 24, vendor: "nvidia" },
+            { name: "RTX 4090", vramGB: 24, vendor: "nvidia" },
+        ], "nvlink");
+        expect(topology.homogeneous).toBe(true);
+        expect(topology.tensorParallelRecommended).toBe(true);
+        expect(topology.layerSplitOnly).toBe(false);
+        expect(topology.aggregateVramGB).toBeCloseTo(48, 1);
+        expect(topology.smallestGpuVramGB).toBe(24);
+    });
+
+    it("treats a large VRAM mismatch as heterogeneous, limited by the smallest card", () => {
+        const topology = computeGpuTopology([
+            { name: "RTX 4090", vramGB: 24, vendor: "nvidia" },
+            { name: "GTX 1660", vramGB: 6, vendor: "nvidia" },
+        ], "pcie");
+        expect(topology.homogeneous).toBe(false);
+        expect(topology.tensorParallelRecommended).toBe(false);
+        expect(topology.layerSplitOnly).toBe(true);
+        expect(topology.smallestGpuVramGB).toBe(6);
+    });
+
+    it("treats AMD XGMI/Infinity Fabric the same as NVIDIA NVLink for peer-to-peer and tensor-parallel eligibility", () => {
+        const topology = computeGpuTopology([
+            { name: "Instinct MI300X", vramGB: 192, vendor: "amd" },
+            { name: "Instinct MI300X", vramGB: 192, vendor: "amd" },
+        ], "xgmi");
+        expect(topology.peerToPeerCapable).toBe(true);
+        expect(topology.tensorParallelRecommended).toBe(true);
+    });
+
+    it("never recommends tensor parallelism across mixed NVIDIA+AMD vendors", () => {
+        const topology = computeGpuTopology([
+            { name: "RTX 4090", vramGB: 24, vendor: "nvidia" },
+            { name: "Radeon RX 7900", vramGB: 24, vendor: "amd" },
+        ], "unknown");
+        expect(topology.homogeneous).toBe(false);
+        expect(topology.tensorParallelRecommended).toBe(false);
+    });
+
+    it("does not treat aggregate VRAM as one contiguous pool", () => {
+        const topology = computeGpuTopology([
+            { name: "GPU 0", vramGB: 12, vendor: "nvidia" },
+            { name: "GPU 1", vramGB: 12, vendor: "nvidia" },
+        ], "pcie");
+        // Aggregate is the sum, but usableVramGB is per-device-reserved sum,
+        // never equated with a single 24GB-class card's behavior elsewhere.
+        expect(topology.aggregateVramGB).toBe(24);
+        expect(topology.usableVramGB).toBeLessThan(24);
+        expect(topology.largestGpuVramGB).toBe(12);
+    });
+
+    it("reports single-GPU topology without recommending any parallel strategy", () => {
+        const topology = computeGpuTopology([{ name: "Solo GPU", vramGB: 16, vendor: "nvidia" }], "none");
+        expect(topology.deviceCount).toBe(1);
+        expect(topology.tensorParallelRecommended).toBe(false);
+        expect(topology.layerSplitOnly).toBe(false);
+    });
+
+    it("handles zero GPUs (CPU-only) without throwing", () => {
+        const topology = computeGpuTopology([], "none");
+        expect(topology.deviceCount).toBe(0);
+        expect(topology.aggregateVramGB).toBeNull();
+        expect(topology.tensorParallelRecommended).toBe(false);
+    });
+});
+
+describe("parseMigInstancesFromNvidiaSmiL", () => {
+    const physicalGpus: GpuInfo[] = [
+        { name: "NVIDIA A100-SXM4-40GB", vramGB: 40, vendor: "nvidia", id: "nvidia:GPU-1111", index: 0, busId: "0000:01:00.0", driverVersion: "550.54", displayOnly: true, computeAvailable: false },
+        { name: "NVIDIA A100-SXM4-40GB", vramGB: 40, vendor: "nvidia", id: "nvidia:GPU-4444", index: 1 },
+    ];
+
+    const sampleOutput = [
+        "GPU 0: NVIDIA A100-SXM4-40GB (UUID: GPU-1111)",
+        "  MIG 3g.20gb     Device  0: (UUID: MIG-2222)",
+        "  MIG 1g.5gb      Device  1: (UUID: MIG-3333)",
+        "GPU 1: NVIDIA A100-SXM4-40GB (UUID: GPU-4444)",
+    ].join("\n");
+
+    it("enumerates each MIG instance as its own compute-available device with a UUID-based id", () => {
+        const instances = parseMigInstancesFromNvidiaSmiL(sampleOutput, physicalGpus);
+        expect(instances).toHaveLength(2);
+        expect(instances[0].id).toBe("nvidia:MIG-2222");
+        expect(instances[0].computeAvailable).toBe(true);
+        expect(instances[0].vramGB).toBe(20);
+        expect(instances[1].id).toBe("nvidia:MIG-3333");
+        expect(instances[1].vramGB).toBe(5);
+    });
+
+    it("attributes each instance to its correct parent GPU, not just the first one seen", () => {
+        const instances = parseMigInstancesFromNvidiaSmiL(sampleOutput, physicalGpus);
+        expect(instances.every((instance) => instance.migInfo?.includes("GPU 0"))).toBe(true);
+    });
+
+    it("returns nothing for a GPU with no configured MIG instances", () => {
+        const noInstances = "GPU 0: NVIDIA RTX 4090 (UUID: GPU-5555)";
+        expect(parseMigInstancesFromNvidiaSmiL(noInstances, physicalGpus)).toEqual([]);
+    });
+
+    it("does not throw on malformed or unexpected output", () => {
+        expect(() => parseMigInstancesFromNvidiaSmiL("garbage\n\tnot a real line\n", physicalGpus)).not.toThrow();
+        expect(parseMigInstancesFromNvidiaSmiL("", physicalGpus)).toEqual([]);
     });
 });
 

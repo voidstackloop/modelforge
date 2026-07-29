@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from . import physics
+
 QUANTIZATIONS: dict[str, float] = {
     "Q2_K": 2.625,
     "Q3_K_M": 3.50,
@@ -22,11 +24,17 @@ FEATURE_COLUMNS = [
     "ram_gb",
     "vram_gb",
     "cpu_cores",
+    "gpu_count",
+    "aggregate_vram_gb",
     "platform",
     "gpu_backend",
 ]
 
-TARGET_COLUMNS = ["fit_status", "recommended_runtime", "context_tokens", "tokens_per_second"]
+TARGET_COLUMNS = [
+    "fit_status", "recommended_runtime", "context_tokens", "tokens_per_second",
+    "prompt_tokens_per_second", "time_to_first_token_ms", "model_load_time_ms",
+    "energy_per_token_j", "peak_ram_gb", "peak_vram_gb",
+]
 
 
 @dataclass(frozen=True)
@@ -35,17 +43,22 @@ class Estimate:
     runtime: str
     context_tokens: int
     tokens_per_second: float
+    prefill_tokens_per_second: float
+    time_to_first_token_ms: float
+    model_load_time_ms: float
+    energy_per_token_j: float
+    peak_vram_gb: float
+    peak_ram_gb: float
 
 
 def estimated_weight_gb(params_b: float, quant_bits: float) -> float:
-    # Quantized weights plus tensors/runtime metadata. This deliberately errs
-    # slightly high; real GGUF sizes should replace it when available.
-    return params_b * quant_bits / 8.0 * 1.12 + 0.35
+    return physics.estimated_weight_gb(params_b, quant_bits)
 
 
 def label_example(row: pd.Series) -> Estimate:
     params = max(float(row["model_params_b"]), 0.1)
     ram = max(float(row["ram_gb"]), 0.0)
+    aggregate_vram = max(float(row.get("aggregate_vram_gb", row["vram_gb"])), 0.0)
     vram = max(float(row["vram_gb"]), 0.0)
     cores = max(int(row["cpu_cores"]), 1)
     backend = str(row["gpu_backend"])
@@ -53,60 +66,30 @@ def label_example(row: pd.Series) -> Estimate:
     bits = float(row["quant_bits"])
     is_moe = bool(row["is_moe"])
 
-    weight_gb = estimated_weight_gb(params, bits) * (1.08 if is_moe else 1.0)
-    os_reserve = max(2.0, ram * 0.12)
-    usable_ram = max(0.0, ram - os_reserve)
-    usable_vram = max(0.0, vram * 0.88)
-    accelerator = backend not in {"none", "cpu"} and vram >= 0.5
-    total_usable = usable_ram + (0.0 if platform == "macos" and backend == "metal" else usable_vram)
-
-    if weight_gb > total_usable * 0.94:
-        status = "Insufficient memory"
-    elif accelerator and weight_gb <= usable_vram * 0.90:
-        status = "Runs comfortably"
-    elif accelerator and weight_gb <= total_usable * 0.90:
-        status = "May require partial GPU offload"
-    elif weight_gb <= usable_ram * 0.88:
-        status = "CPU only"
-    else:
-        status = "Insufficient memory"
+    memory = physics.estimate_memory(params, bits, is_moe, ram, aggregate_vram, backend, platform)
+    context = physics.context_tokens_estimate(memory.headroom_gb, params)
+    speed = physics.decode_tokens_per_second(params, bits, memory.status, backend, memory.usable_vram_gb, memory.weight_gb, cores)
+    prefill = physics.prefill_tokens_per_second(speed, memory.accelerator)
+    ttft = physics.time_to_first_token_ms(prefill)
+    load_ms = physics.model_load_time_ms(memory.weight_gb, backend)
+    energy = physics.energy_per_token_j(speed, backend)
 
     if platform == "macos" and backend == "metal":
         runtime = "mlx" if bits >= 4.0 else "llama.cpp-metal"
     elif backend == "rocm":
         runtime = "vllm" if bits >= 8.0 and params >= 7 else "llama.cpp-rocm"
     elif backend == "cuda":
-        runtime = "vllm" if bits >= 8.0 and weight_gb <= usable_vram * 0.82 else "llama.cpp-cuda"
+        runtime = "vllm" if bits >= 8.0 and memory.weight_gb <= memory.usable_vram_gb * 0.82 else "llama.cpp-cuda"
     elif backend in {"vulkan", "directml"}:
         runtime = "llama.cpp-vulkan"
     else:
         runtime = "llama.cpp-cpu"
 
-    if status == "Runs comfortably":
-        memory_headroom = max(0.0, usable_vram - weight_gb)
-    elif status == "May require partial GPU offload":
-        memory_headroom = max(0.0, total_usable - weight_gb)
-    else:
-        memory_headroom = max(0.0, usable_ram - weight_gb)
-    # A conservative architecture-agnostic KV estimate. GQA/MQA models can use
-    # less, while older full multi-head attention models can use considerably
-    # more. Keep 30% of remaining memory for graph/work buffers and batching.
-    kv_gb_per_1k = max(0.12, 0.17 * np.sqrt(params / 7.0))
-    context = int(np.clip((memory_headroom * 0.70 / kv_gb_per_1k) * 1024, 2048, 131072))
-    context = 2 ** int(np.floor(np.log2(max(context, 2048))))
-
-    gpu_factor = {"cuda": 1.0, "metal": 0.82, "rocm": 0.85, "vulkan": 0.62, "directml": 0.42}.get(backend, 0.0)
-    if status == "Insufficient memory":
-        speed = 0.0
-    elif status == "Runs comfortably":
-        speed = (42.0 * gpu_factor * (4.75 / bits)) / np.sqrt(params / 7.0)
-    elif status == "May require partial GPU offload":
-        offload_ratio = min(1.0, usable_vram / max(weight_gb, 0.1))
-        speed = (9.0 + 28.0 * gpu_factor * offload_ratio) / np.sqrt(params / 7.0)
-    else:
-        speed = (1.8 * np.sqrt(cores) * (4.75 / bits)) / np.sqrt(params / 7.0)
-
-    return Estimate(status, runtime, context, round(float(np.clip(speed, 0.0, 250.0)), 2))
+    return Estimate(
+        memory.status, runtime, context, round(speed, 2), round(prefill, 2),
+        round(ttft, 1), round(load_ms, 1), round(energy, 4),
+        round(memory.peak_vram_gb, 2), round(memory.peak_ram_gb, 2),
+    )
 
 
 def normalize_catalog(raw: pd.DataFrame) -> pd.DataFrame:
@@ -142,9 +125,30 @@ def build_training_examples(catalog: pd.DataFrame, samples: int, seed: int = 42)
     base.loc[base.gpu_backend == "none", "vram_gb"] = 0
     base.loc[base.gpu_backend == "metal", "platform"] = "macos"
 
+    # Multi-GPU rigs: vram_gb is the primary/largest GPU's usable VRAM;
+    # gpu_count/aggregate_vram_gb model pooling extra cards add. Apple's
+    # unified-memory "GPU" and single-card machines both stay at count 1.
+    base["gpu_count"] = 1
+    multi_gpu_eligible = base.gpu_backend.isin(["cuda", "rocm"]) & (base.vram_gb > 0)
+    extra_gpu_counts = rng.choice([1, 2, 2, 3, 4], size=samples)
+    base.loc[multi_gpu_eligible, "gpu_count"] = extra_gpu_counts[multi_gpu_eligible]
+    base.loc[base.gpu_backend == "none", "gpu_count"] = 0
+    base["aggregate_vram_gb"] = base.vram_gb * base.gpu_count.clip(lower=1)
+    base.loc[base.gpu_backend == "none", "aggregate_vram_gb"] = 0.0
+
     estimates = [label_example(row) for _, row in base.iterrows()]
     base["fit_status"] = [x.status for x in estimates]
+    base["fit_status_known"] = True
     base["recommended_runtime"] = [x.runtime for x in estimates]
     base["context_tokens"] = [x.context_tokens for x in estimates]
+    base["context_tokens_known"] = True
     base["tokens_per_second"] = [x.tokens_per_second for x in estimates]
+    base["prompt_tokens_per_second"] = [x.prefill_tokens_per_second for x in estimates]
+    base["time_to_first_token_ms"] = [x.time_to_first_token_ms for x in estimates]
+    base["model_load_time_ms"] = [x.model_load_time_ms for x in estimates]
+    base["energy_per_token_j"] = [x.energy_per_token_j for x in estimates]
+    base["peak_vram_gb"] = [x.peak_vram_gb for x in estimates]
+    base["peak_ram_gb"] = [x.peak_ram_gb for x in estimates]
+    for column in ("prompt_tokens_per_second", "time_to_first_token_ms", "model_load_time_ms", "energy_per_token_j", "peak_vram_gb", "peak_ram_gb"):
+        base[f"{column}_known"] = True
     return base

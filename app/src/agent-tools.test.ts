@@ -24,6 +24,7 @@ import {
     gitDiff,
     gitLog,
     gitCommit,
+    gitBlame,
     readNotes,
     writeNotes,
     fetchUrl,
@@ -37,6 +38,15 @@ import {
     findSymbolReferences,
     applyPatch,
 } from "./agent-tools";
+
+const pythonAvailable = (() => {
+    try {
+        execSync(process.platform === "win32" ? "py -3 --version" : "python3 --version", { stdio: "ignore" });
+        return true;
+    } catch {
+        return false;
+    }
+})();
 
 // 5000ms was tight enough that a slow spawn on Windows CI could still hit
 // vitest's outer testTimeout (see app/vitest.config.ts) before this helper's
@@ -98,6 +108,11 @@ describe("agent-tools", () => {
         it("refuses to read a directory as a file", () => {
             fs.mkdirSync(path.join(workspace, "adir"));
             expect(() => readFile(workspace, "adir")).toThrow(/directory, not a file/);
+        });
+
+        it("refuses to read a binary file instead of returning mangled text", () => {
+            fs.writeFileSync(path.join(workspace, "image.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a]));
+            expect(() => readFile(workspace, "image.png")).toThrow(/binary file/);
         });
 
         it("truncates very large files instead of returning them whole", () => {
@@ -241,6 +256,13 @@ describe("agent-tools", () => {
             expect(entries).toContain("file.txt");
             expect(entries).toContain("subdir/");
         });
+
+        it("appends a truncation notice instead of silently capping the list", () => {
+            for (let i = 0; i < 505; i++) fs.writeFileSync(path.join(workspace, `f${i}.txt`), "");
+            const entries = listDir(workspace, ".");
+            expect(entries.length).toBe(501);
+            expect(entries.at(-1)).toContain("truncated");
+        });
     });
 
     describe("searchFiles", () => {
@@ -248,6 +270,14 @@ describe("agent-tools", () => {
             fs.writeFileSync(path.join(workspace, "code.txt"), "line one\nfindme here\nline three");
             const results = searchFiles(workspace, "findme");
             expect(results).toEqual([{ file: "code.txt", line: 2, text: "findme here" }]);
+        });
+
+        it("appends a truncation notice instead of silently capping results", () => {
+            const lines = Array.from({ length: 60 }, (_, i) => `findme ${i}`).join("\n");
+            fs.writeFileSync(path.join(workspace, "many.txt"), lines);
+            const results = searchFiles(workspace, "findme");
+            expect(results.length).toBe(51);
+            expect(results.at(-1)?.text).toContain("stopped at 50");
         });
 
         it("skips ignored directories like node_modules", () => {
@@ -542,7 +572,10 @@ describe("agent-tools", () => {
         it("runs in the specified cwd within the workspace", async () => {
             fs.mkdirSync(path.join(workspace, "sub"));
             fs.writeFileSync(path.join(workspace, "sub", "marker.txt"), "");
-            const output = await executeTool(workspace, "run_command", { command: "ls", cwd: "sub" });
+            const output = await executeTool(workspace, "run_command", {
+                command: process.platform === "win32" ? "dir /b" : "ls",
+                cwd: "sub",
+            });
             expect(output).toContain("marker.txt");
         });
 
@@ -558,7 +591,7 @@ describe("agent-tools", () => {
             expect(output).toContain("hi from js");
         });
 
-        it("runs a Python snippet via python3", async () => {
+        (pythonAvailable ? it : it.skip)("runs a Python snippet via the platform Python launcher", async () => {
             const output = await runCode(workspace, "python", "print('hi from py')");
             expect(output).toContain("Exit code: 0");
             expect(output).toContain("hi from py");
@@ -728,6 +761,23 @@ describe("agent-tools", () => {
             const output = await gitLog(workspace);
             expect(output).toContain("Exit code:");
         });
+
+        it("git_blame attributes each line to the commit that introduced it", async () => {
+            await gitCommit(workspace, "add a.txt");
+            const output = await gitBlame(workspace, "a.txt");
+            expect(output).toContain("hello");
+        });
+
+        it("git_blame does not let a path argument reach the shell", async () => {
+            await gitCommit(workspace, "add a.txt");
+            const marker = path.join(workspace, "blame-injection-marker");
+            await gitBlame(workspace, `a.txt$(touch ${marker})`).catch(() => undefined);
+            expect(fs.existsSync(marker)).toBe(false);
+        });
+
+        it("git_blame rejects an empty path", async () => {
+            await expect(gitBlame(workspace, "")).rejects.toThrow(/must not be empty/);
+        });
     });
 
     describe("dangerous command blocking", () => {
@@ -757,9 +807,12 @@ describe("agent-tools", () => {
             expect(output).toContain("safe");
         });
 
-        it("does not block rm -rf of a relative subfolder", async () => {
+        it("does not block deletion of a relative subfolder", async () => {
             fs.mkdirSync(path.join(workspace, "build"));
-            const output = await runCommand(workspace, "rm -rf build");
+            const output = await runCommand(
+                workspace,
+                process.platform === "win32" ? "rmdir /s /q build" : "rm -rf build",
+            );
             expect(output).toContain("Exit code: 0");
         });
     });

@@ -32,7 +32,7 @@ import {
     killAllBackgroundCommands,
     killBackgroundCommandsForWorkspace,
 } from "./agent-tools/execution";
-import { gitStatus, gitDiff, gitLog, gitCommit } from "./agent-tools/git";
+import { gitStatus, gitDiff, gitLog, gitCommit, gitBlame } from "./agent-tools/git";
 import { NETWORK_TOOLS, fetchUrl, httpRequest, webSearch } from "./agent-tools/network";
 import type { WebSearchResult } from "./agent-tools/network";
 import { githubListRepositories, githubRepositoryTree, githubReadFile } from "./agent-tools/github";
@@ -68,7 +68,7 @@ export {
     killAllBackgroundCommands,
     killBackgroundCommandsForWorkspace,
 };
-export { gitStatus, gitDiff, gitLog, gitCommit };
+export { gitStatus, gitDiff, gitLog, gitCommit, gitBlame };
 export { fetchUrl, httpRequest, webSearch };
 export type { WebSearchResult };
 export { githubListRepositories, githubRepositoryTree, githubReadFile };
@@ -157,6 +157,13 @@ export async function executeTool(workspaceRoot: string, name: string, args: Rec
             return gitLog(workspaceRoot, typeof args.count === "number" ? args.count : 10);
         case "git_commit":
             return gitCommit(workspaceRoot, String(args.message ?? ""));
+        case "git_blame":
+            return gitBlame(
+                workspaceRoot,
+                String(args.path ?? ""),
+                typeof args.start_line === "number" ? args.start_line : undefined,
+                typeof args.end_line === "number" ? args.end_line : undefined
+            );
         case "web_search":
             return webSearch(String(args.query ?? ""));
         case "github_list_repositories":

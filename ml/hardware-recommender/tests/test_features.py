@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 
 from recommender.features import estimated_weight_gb, label_example
-from recommender.model import CONTEXT_CLASSES, FIT_CLASSES, RUNTIME_CLASSES, HardwareRecommender, INPUT_SIZE
+from recommender.model import INPUT_SIZE, REGRESSION_TARGETS, RUNTIME_CLASSES, HardwareRecommender
 
 
 def row(**overrides):
@@ -35,7 +35,6 @@ def test_weight_estimate_increases_with_precision():
 
 def test_multitask_model_output_shapes():
     output = HardwareRecommender()(torch.zeros(2, INPUT_SIZE))
-    assert output["fit"].shape == (2, len(FIT_CLASSES))
     assert output["runtime"].shape == (2, len(RUNTIME_CLASSES))
-    assert output["context"].shape == (2, len(CONTEXT_CLASSES))
-    assert output["log_speed"].shape == (2,)
+    assert output["residual_mean"].shape == (2, len(REGRESSION_TARGETS))
+    assert output["residual_log_var"].shape == (2, len(REGRESSION_TARGETS))

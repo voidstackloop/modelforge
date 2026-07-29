@@ -71,10 +71,9 @@ impl DownloadError {
     /// the caller's retry bookkeeping entirely rather than answered here.
     pub fn retryable(&self) -> bool {
         match self {
-            DownloadError::InsufficientDiskSpace { .. } => false,
-            DownloadError::HttpStatus { status, .. } => {
-                *status == 401 || *status == 403 || *status >= 500
-            }
+            DownloadError::InsufficientDiskSpace { .. }
+            | DownloadError::VerificationFailed { .. } => false,
+            DownloadError::HttpStatus { status, .. } => *status >= 500,
             _ => true,
         }
     }

@@ -43,10 +43,12 @@ pub async fn run(
             req = req.header(RANGE, format!("bytes={existing_bytes}-"));
         }
 
-        let res = req
-            .send()
-            .await
-            .map_err(|e| DownloadError::Unreachable(e.to_string()))?;
+        let res = tokio::select! {
+            biased;
+            _ = ctl.cancel.cancelled() => return Err(DownloadError::Cancelled { filename: filename.to_string() }),
+            _ = ctl.pause.cancelled() => return Err(DownloadError::Paused { filename: filename.to_string() }),
+            result = req.send() => result.map_err(|e| DownloadError::Unreachable(e.to_string()))?,
+        };
         let status = res.status();
 
         // Our partial is already >= what the server has now (stale, or the

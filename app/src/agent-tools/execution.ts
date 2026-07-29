@@ -127,7 +127,11 @@ export async function runCode(
     const tmpFile = path.join(os.tmpdir(), `modelforge-code-${randomUUID()}.${ext}`);
     fs.writeFileSync(tmpFile, code);
     try {
-        const interpreter = language === "python" ? "python3" : "node";
+        // The Python launcher is named `py` on a standard Windows install;
+        // `python3` is the conventional executable on Unix.
+        const interpreter = language === "python"
+            ? (process.platform === "win32" ? "py -3" : "python3")
+            : "node";
         return await runCommand(workspaceRoot, `${interpreter} "${tmpFile}"`, relativeCwd, network);
     } finally {
         fs.rmSync(tmpFile, { force: true });

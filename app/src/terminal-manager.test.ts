@@ -63,7 +63,7 @@ describe("terminal-manager", () => {
         expect(listTerminals(workspace).find((t) => t.id === id)?.alive).toBe(false);
     });
 
-    it("closes and forgets only the terminals belonging to the given workspace", () => {
+    it("closes and forgets only the terminals belonging to the given workspace", async () => {
         const otherWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "terminal-manager-test-other-"));
         createTerminal(workspace, {}, () => {}, () => {});
         const b = createTerminal(otherWorkspace, {}, () => {}, () => {});
@@ -74,7 +74,14 @@ describe("terminal-manager", () => {
         expect(listTerminals(workspace)).toEqual([]);
         expect(listTerminals(otherWorkspace).map((t) => t.id)).toEqual([b.id]);
         closeTerminal(b.id);
-        fs.rmSync(otherWorkspace, { recursive: true, force: true });
+        await waitFor(() => {
+            try {
+                fs.rmSync(otherWorkspace, { recursive: true, force: true });
+                return !fs.existsSync(otherWorkspace);
+            } catch {
+                return false;
+            }
+        });
     });
 
     it("throws for an unknown terminal id", () => {

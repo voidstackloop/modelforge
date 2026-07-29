@@ -34,9 +34,11 @@ import {
     ExternalLink,
     Shield,
     ShieldAlert,
+    Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge, type StatusTone } from "@/components/ds";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
@@ -64,6 +66,7 @@ import type {
     McpServerStatus,
     LocalGgufModel,
     LlamaCppGpuBackend,
+    GpuSelectionMode,
     HfModelSummary,
     HfGgufFile,
     ScheduledTask,
@@ -89,7 +92,7 @@ import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, formatModelRef, parseMo
 import { useSessions } from "@/lib/sessions-context";
 import { useI18n } from "@/lib/i18n";
 import type { Locale } from "@/lib/translations";
-import { useTheme, ACCENT_COLORS, type AccentColor } from "@/components/theme-provider";
+import { useTheme, COLOR_THEMES, type ColorTheme } from "@/components/theme-provider";
 import { speakText } from "@/lib/tts";
 import { cn } from "@/lib/utils";
 
@@ -99,12 +102,30 @@ const SETTINGS_SEARCH_ITEMS: { tab: SettingsTab; label: string; keywords: string
     { tab: "general", label: "Appearance, density & motion", keywords: "theme color compact comfortable animation reduced motion language server gpu cache" },
     { tab: "models", label: "Models & hardware", keywords: "ollama hugging face download vram recommendation gguf" },
     { tab: "accounts", label: "Connected accounts", keywords: "github hugging face account token profile repository" },
-    { tab: "integrations", label: "Providers & MCP", keywords: "api key custom gpu backend figma mcp openai claude gemini" },
-    { tab: "chat", label: "Chat & agent behavior", keywords: "prompt temperature context tokens agent steps tool calls" },
+    { tab: "integrations", label: "Integrations & MCP", keywords: "api key custom gpu backend figma mcp openai claude gemini" },
+    { tab: "chat", label: "Agent & tools", keywords: "prompt temperature context tokens agent steps tool calls sandbox verification" },
     { tab: "voice", label: "Voice & speech", keywords: "microphone transcription tts read aloud voice" },
     { tab: "automation", label: "Automation", keywords: "scheduled task interval prompt" },
-    { tab: "data", label: "Data, activity & diagnostics", keywords: "export import logs memory activity clear" },
+    { tab: "data", label: "Usage, energy & diagnostics", keywords: "export import logs memory activity clear energy cost benchmark downloads storage" },
 ];
+
+// Maps the backend's technical RecommendationOutcome (system-specs.ts) to a
+// plain-language fit tier + semantic tone — the raw outcome string is still
+// shown in the row's detail line, this is purely a friendlier headline.
+const OUTCOME_TONE: Record<string, StatusTone> = {
+    "Runs fully on GPU": "success",
+    "Requires tensor parallelism": "success",
+    "Runs with partial offload": "info",
+    "CPU-only but usable": "warning",
+    "Likely out of memory": "error",
+};
+const OUTCOME_LABEL_KEY = {
+    "Runs fully on GPU": "fitBestFit",
+    "Requires tensor parallelism": "fitBestFit",
+    "Runs with partial offload": "fitRunsWell",
+    "CPU-only but usable": "fitMaySlow",
+    "Likely out of memory": "fitDoesNotFit",
+} as const satisfies Record<string, "fitBestFit" | "fitRunsWell" | "fitMaySlow" | "fitDoesNotFit">;
 
 const MANAGED_MODEL_CATALOG = [
     { backend: "mlx" as const, id: "mlx-community/Llama-3.2-3B-Instruct-4bit", label: "Llama 3.2 3B", note: "Fast · 4-bit · Apple Silicon" },
@@ -129,16 +150,22 @@ function normalizeModelTag(input: string): string {
         .replace(/^huggingface\.co\//i, "hf.co/");
 }
 
-// Static preview swatches for the accent color picker — independent of the
-// live CSS variables so the dot always shows the same recognizable hue
-// regardless of which theme is currently active.
-const ACCENT_SWATCHES: Record<AccentColor, string> = {
-    default: "oklch(0.556 0 0)",
-    blue: "oklch(0.55 0.2 260)",
-    green: "oklch(0.55 0.16 145)",
-    purple: "oklch(0.55 0.22 300)",
-    orange: "oklch(0.62 0.19 55)",
-    rose: "oklch(0.58 0.22 10)",
+// Fixed previews stay recognizable while another palette is active. The first
+// color is the surface, the second the primary accent, and the third a familiar
+// supporting color from the palette.
+const COLOR_THEME_SWATCHES: Record<ColorTheme, readonly [string, string, string]> = {
+    default: ["#18181b", "#71717a", "#fafafa"],
+    blue: ["#172554", "#3b82f6", "#dbeafe"],
+    green: ["#14532d", "#22c55e", "#dcfce7"],
+    purple: ["#3b0764", "#a855f7", "#f3e8ff"],
+    orange: ["#431407", "#f97316", "#ffedd5"],
+    rose: ["#4c0519", "#f43f5e", "#ffe4e6"],
+    monokai: ["#272822", "#f92672", "#a6e22e"],
+    dracula: ["#282a36", "#bd93f9", "#50fa7b"],
+    nord: ["#2e3440", "#88c0d0", "#a3be8c"],
+    solarized: ["#002b36", "#2aa198", "#b58900"],
+    gruvbox: ["#282828", "#fe8019", "#b8bb26"],
+    catppuccin: ["#1e1e2e", "#cba6f7", "#89b4fa"],
 };
 
 function formatBytes(bytes: number) {
@@ -147,7 +174,7 @@ function formatBytes(bytes: number) {
 
 export default function Settings() {
     const { t, locale, setLocale } = useI18n();
-    const { theme, setTheme, accent, setAccent } = useTheme();
+    const { theme, setTheme, colorTheme, setColorTheme } = useTheme();
     const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
     useEffect(() => {
@@ -358,7 +385,7 @@ export default function Settings() {
     async function downloadForLlamaCpp(modelId: string, filename: string, expectedBytes: number | null) {
         const key = `${modelId}/${filename}`;
         setHfDownloading((d) => ({ ...d, [key]: 0 }));
-        await window.api.downloads.create({ modelId, filename, expectedBytes: expectedBytes ?? 0 });
+        await window.api.downloads.create({ modelId, filename, expectedBytes: expectedBytes ?? 0, sha256: hfFiles.find((file) => file.path === filename)?.sha256 });
         setHfDownloading((d) => {
             const next = { ...d };
             delete next[key];
@@ -1044,7 +1071,7 @@ export default function Settings() {
                             <Boxes className="size-4 shrink-0" /> {t.settingsTabModels}
                         </TabsTrigger>
                         <TabsTrigger value="accounts" className="justify-start gap-2">
-                            <UserRound className="size-4 shrink-0" /> Accounts
+                            <UserRound className="size-4 shrink-0" /> {t.settingsTabAccounts}
                         </TabsTrigger>
                         <TabsTrigger value="integrations" className="justify-start gap-2">
                             <Plug className="size-4 shrink-0" /> {t.settingsTabIntegrations}
@@ -1122,26 +1149,6 @@ export default function Settings() {
                                     )}
                                 </div>
                                 {modelsDirStatus && <p className="text-xs text-muted-foreground">{modelsDirStatus}</p>}
-                            </SettingsRow>
-                            <SettingsRow label={t.modelRuntime} description={t.modelRuntimeHint} stacked>
-                                <Select
-                                    value={settings?.preferredRuntime ?? "automatic"}
-                                    onValueChange={async (v) => {
-                                        await saveSettings({ preferredRuntime: v as AppSettings["preferredRuntime"] });
-                                        window.api.system.getRecommendations().then(setRecommendations);
-                                    }}
-                                >
-                                    <SelectTrigger size="sm" className="w-56">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="automatic">{t.modelRuntimeAutomatic}</SelectItem>
-                                        <SelectItem value="ollama">{t.modelRuntimeOllama}</SelectItem>
-                                        <SelectItem value="llamacpp">{t.modelRuntimeLlamaCpp}</SelectItem>
-                                        <SelectItem value="vllm">{t.modelRuntimeVllm}</SelectItem>
-                                        <SelectItem value="mlx">{t.modelRuntimeMlx}</SelectItem>
-                                    </SelectContent>
-                                </Select>
                             </SettingsRow>
                             <SettingsRow label={t.ragEmbeddingModel} description={t.ragEmbeddingModelHint} stacked>
                                 <Select
@@ -1235,6 +1242,23 @@ export default function Settings() {
                                         );
                                     })()}
                                 </SettingsRow>
+                                <SettingsRow label={t.gpuSelectionModeLabel} description={t.gpuSelectionModeHint}>
+                                    <Select
+                                        value={settings.defaultGpuSelectionMode ?? "auto"}
+                                        onValueChange={(v) => saveSettings({ defaultGpuSelectionMode: v as GpuSelectionMode })}
+                                    >
+                                        <SelectTrigger size="sm" className="w-56">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="auto">{t.gpuSelectionModeAuto}</SelectItem>
+                                            <SelectItem value="single">{t.gpuSelectionModeSingle}</SelectItem>
+                                            <SelectItem value="group">{t.gpuSelectionModeGroup}</SelectItem>
+                                            <SelectItem value="all">{t.gpuSelectionModeAll}</SelectItem>
+                                            <SelectItem value="cpu">{t.gpuSelectionModeCpu}</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </SettingsRow>
                                 <SettingsRow label={t.warmModelCache} description={t.warmModelCacheHint}>
                                     <Select value={String(settings.llamaCppMaxCachedModels ?? 2)} onValueChange={(v) => saveSettings({ llamaCppMaxCachedModels: Number(v) })}>
                                         <SelectTrigger size="sm" className="w-44"><SelectValue /></SelectTrigger>
@@ -1245,6 +1269,21 @@ export default function Settings() {
                                             <SelectItem value="4">{t.warmModelCacheOption4}</SelectItem>
                                         </SelectContent>
                                     </Select>
+                                </SettingsRow>
+                                <SettingsRow label="llama.cpp CPU threads" description="Blank uses node-llama-cpp's useful math-core count. A manual cap is shared across concurrent contexts.">
+                                    <Input className="w-44" type="number" min={1} max={512} placeholder="Auto" value={settings.llamaCppMaxThreads ?? ""} onChange={(event) => saveSettings({ llamaCppMaxThreads: event.target.value === "" ? undefined : Number(event.target.value) })} />
+                                </SettingsRow>
+                                <SettingsRow label="Memory safety reserves" description="Reserved independently from automatic placement; never disables node-llama-cpp memory checks." stacked>
+                                    <div className="grid max-w-md grid-cols-2 gap-3">
+                                        <label className="text-xs text-muted-foreground">VRAM reserve (GB)<Input className="mt-1" type="number" min={0.25} max={64} step={0.25} placeholder="Runtime default" value={settings.llamaCppVramReserveGB ?? ""} onChange={(event) => saveSettings({ llamaCppVramReserveGB: event.target.value === "" ? undefined : Number(event.target.value) })} /></label>
+                                        <label className="text-xs text-muted-foreground">RAM reserve (GB)<Input className="mt-1" type="number" min={0.5} max={256} step={0.5} placeholder="Runtime default" value={settings.llamaCppRamReserveGB ?? ""} onChange={(event) => saveSettings({ llamaCppRamReserveGB: event.target.value === "" ? undefined : Number(event.target.value) })} /></label>
+                                    </div>
+                                </SettingsRow>
+                                <SettingsRow label="Context tuning" description="Context-only changes reuse loaded model weights; Flash Attention Auto is recommended." stacked>
+                                    <div className="grid max-w-md grid-cols-2 gap-3">
+                                        <label className="text-xs text-muted-foreground">Batch size<Input className="mt-1" type="number" min={1} max={65536} placeholder="Auto" value={settings.llamaCppBatchSize ?? ""} onChange={(event) => saveSettings({ llamaCppBatchSize: event.target.value === "" ? undefined : Number(event.target.value) })} /></label>
+                                        <label className="text-xs text-muted-foreground">Flash Attention<Select value={settings.llamaCppFlashAttention ?? "auto"} onValueChange={(value) => saveSettings({ llamaCppFlashAttention: value as AppSettings["llamaCppFlashAttention"] })}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="auto">Auto</SelectItem><SelectItem value="on">On</SelectItem><SelectItem value="off">Off</SelectItem></SelectContent></Select></label>
+                                    </div>
                                 </SettingsRow>
                                 <SettingsRow label={t.modelsDir} description={t.llamaCppModelsDirHint} stacked>
                                     <div className="flex flex-wrap items-center gap-2">
@@ -1433,25 +1472,33 @@ export default function Settings() {
                                     </SelectContent>
                                 </Select>
                             </SettingsRow>
-                            <SettingsRow label={t.accentColor} stacked>
-                                <div className="flex flex-wrap gap-2">
-                                    {ACCENT_COLORS.map((c) => (
+                            <SettingsRow label={t.colorTheme} description={t.colorThemeHint} stacked>
+                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                    {COLOR_THEMES.map((candidate) => (
                                         <button
-                                            key={c}
+                                            key={candidate}
                                             type="button"
-                                            onClick={() => setAccent(c)}
-                                            aria-label={t.accentColorNames[c]}
-                                            aria-pressed={accent === c}
-                                            title={t.accentColorNames[c]}
+                                            onClick={() => setColorTheme(candidate)}
+                                            aria-label={t.colorThemeNames[candidate]}
+                                            aria-pressed={colorTheme === candidate}
                                             className={cn(
-                                                "flex size-8 items-center justify-center rounded-full border-2 transition-colors",
-                                                accent === c ? "border-foreground" : "border-transparent"
+                                                "flex min-h-11 items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs transition-colors hover:bg-muted",
+                                                colorTheme === candidate
+                                                    ? "border-primary bg-primary/8 text-foreground"
+                                                    : "border-border text-muted-foreground"
                                             )}
                                         >
-                                            <span
-                                                className="size-6 rounded-full"
-                                                style={{ backgroundColor: ACCENT_SWATCHES[c] }}
-                                            />
+                                            <span className="flex shrink-0 -space-x-1" aria-hidden="true">
+                                                {COLOR_THEME_SWATCHES[candidate].map((swatch) => (
+                                                    <span
+                                                        key={swatch}
+                                                        className="size-4 rounded-full border border-white/30"
+                                                        style={{ backgroundColor: swatch }}
+                                                    />
+                                                ))}
+                                            </span>
+                                            <span className="min-w-0 flex-1 truncate font-medium">{t.colorThemeNames[candidate]}</span>
+                                            {colorTheme === candidate && <Check className="size-3.5 shrink-0 text-primary" />}
                                         </button>
                                     ))}
                                 </div>
@@ -1588,6 +1635,50 @@ export default function Settings() {
                             </SettingsSection>
                         )}
 
+                        <SettingsSection title={t.recommendationGoal} description={t.recommendationGoalHint} className="mt-8">
+                            <SettingsRow label={t.recommendationGoal} stacked>
+                                <Select
+                                    value={settings?.recommendationGoal ?? "balanced"}
+                                    onValueChange={async (v) => {
+                                        await saveSettings({ recommendationGoal: v as AppSettings["recommendationGoal"] });
+                                        window.api.system.getRecommendations().then(setRecommendations);
+                                    }}
+                                >
+                                    <SelectTrigger size="sm" className="w-56">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="balanced">{t.recommendationGoalBalanced}</SelectItem>
+                                        <SelectItem value="quality">{t.recommendationGoalQuality}</SelectItem>
+                                        <SelectItem value="speed">{t.recommendationGoalSpeed}</SelectItem>
+                                        <SelectItem value="memory">{t.recommendationGoalMemory}</SelectItem>
+                                        <SelectItem value="energy">{t.recommendationGoalEnergy}</SelectItem>
+                                        <SelectItem value="agent">{t.recommendationGoalAgent}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </SettingsRow>
+                            <SettingsRow label={t.modelRuntime} description={t.modelRuntimeHint} stacked>
+                                <Select
+                                    value={settings?.preferredRuntime ?? "automatic"}
+                                    onValueChange={async (v) => {
+                                        await saveSettings({ preferredRuntime: v as AppSettings["preferredRuntime"] });
+                                        window.api.system.getRecommendations().then(setRecommendations);
+                                    }}
+                                >
+                                    <SelectTrigger size="sm" className="w-56">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="automatic">{t.modelRuntimeAutomatic}</SelectItem>
+                                        <SelectItem value="ollama">{t.modelRuntimeOllama}</SelectItem>
+                                        <SelectItem value="llamacpp">{t.modelRuntimeLlamaCpp}</SelectItem>
+                                        <SelectItem value="vllm">{t.modelRuntimeVllm}</SelectItem>
+                                        <SelectItem value="mlx">{t.modelRuntimeMlx}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </SettingsRow>
+                        </SettingsSection>
+
                         <SettingsSection title={t.ollamaModelsSection} className="mt-8">
                             <div className="p-3">
                                 <div className="relative">
@@ -1643,28 +1734,34 @@ export default function Settings() {
                                 : recommendations?.models.map((m) => {
                                       const isInstalled = installedNames.has(m.name);
                                       const progress = pulling[m.name];
+                                      const tone = OUTCOME_TONE[m.outcome] ?? "neutral";
+                                      const labelKey = OUTCOME_LABEL_KEY[m.outcome as keyof typeof OUTCOME_LABEL_KEY];
                                       return (
                                           <SettingsRow key={m.name} stacked>
                                               <div className="flex items-center justify-between gap-3">
                                                   <div className="min-w-0">
                                                       <div className="flex flex-wrap items-center gap-1.5">
                                                           <span className="text-sm font-medium">{m.label}</span>
-                                                          {m.recommended && <Badge>Recommended for your PC</Badge>}
+                                                          <StatusBadge tone={tone}>{labelKey ? t[labelKey] : m.outcome}</StatusBadge>
+                                                          {m.recommended && <Badge>{t.recommendedForYourPc}</Badge>}
                                                           {m.supportsTools && (
-                                                              <Badge variant="secondary" title="Reliable tool/function calling — a good fit for Agent mode">
-                                                                  🔧 Tool calling
+                                                              <Badge variant="secondary" className="gap-1" title="Reliable tool/function calling — a good fit for Agent mode">
+                                                                  <Wrench className="size-3" /> {t.toolCallingBadge}
                                                               </Badge>
                                                           )}
-                                                          <Badge variant={m.outcome === "Likely out of memory" ? "destructive" : "secondary"}>{m.outcome}</Badge>
                                                       </div>
                                                       <p className="text-xs text-muted-foreground">{m.description}</p>
                                                       <p className="text-xs text-muted-foreground">{m.reason}</p>
                                                       <p className="text-xs text-muted-foreground">
-                                                          {m.quantization} · weights {m.estimatedWeightGB} GB · KV cache {m.estimatedKvCacheGB} GB · overhead {m.runtimeOverheadGB} GB · {m.expectedGpuOffloadPercent}% GPU offload
+                                                          {m.quantization} · {t.recommendedRuntime}: {m.recommendedRuntime} · ~{m.estimatedTokensPerSecond} tok/s
+                                                          {m.measuredTokensPerSecond !== undefined ? ` · ${t.measured} ${m.measuredTokensPerSecond} tok/s` : ""}
                                                       </p>
-                                                      <p className="text-xs text-muted-foreground">
-                                                          Runtime: {m.recommendedRuntime} · estimated {m.estimatedTokensPerSecond} tok/s{m.measuredTokensPerSecond !== undefined ? ` · measured ${m.measuredTokensPerSecond} tok/s` : ""}
-                                                      </p>
+                                                      <details className="mt-1 text-xs text-muted-foreground">
+                                                          <summary className="cursor-pointer select-none hover:text-foreground">{t.advancedDetails}</summary>
+                                                          <p className="mt-1">
+                                                              {t.outcomeRaw}: {m.outcome} · {t.estimatedWeight} {m.estimatedWeightGB} GB · {t.estimatedKvCache} {m.estimatedKvCacheGB} GB · {t.runtimeOverhead} {m.runtimeOverheadGB} GB · {m.expectedGpuOffloadPercent}% {t.gpuOffload}
+                                                          </p>
+                                                      </details>
                                                   </div>
                                                   {isInstalled ? (
                                                       <Button
@@ -2507,19 +2604,17 @@ export default function Settings() {
                                                 />
                                             </div>
                                             <div className="flex flex-col gap-1">
-                                                <label htmlFor="setting-gpuLayers" className="text-xs text-muted-foreground">{t.gpuLayers}</label>
-                                                <Input
-                                                    id="setting-gpuLayers"
-                                                    type="number"
-                                                    min={0}
-                                                    step={1}
-                                                    placeholder={t.gpuLayersAuto}
-                                                    title={t.gpuLayersHelp}
-                                                    value={settings.gpuLayers ?? ""}
-                                                    onChange={(e) =>
-                                                        saveSettings({ gpuLayers: e.target.value === "" ? undefined : Number(e.target.value) })
-                                                    }
-                                                />
+                                                <label className="text-xs text-muted-foreground">{t.gpuLayers}</label>
+                                                <Select value={settings.gpuLayerMode ?? "auto"} onValueChange={(value) => saveSettings({ gpuLayerMode: value as AppSettings["gpuLayerMode"], gpuLayers: value === "manual" ? settings.gpuLayers ?? 1 : undefined })}>
+                                                    <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="auto">Automatic (recommended)</SelectItem>
+                                                        <SelectItem value="cpu">CPU only</SelectItem>
+                                                        <SelectItem value="max">Maximum safe offload</SelectItem>
+                                                        <SelectItem value="manual">Manual layer count</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                                {settings.gpuLayerMode === "manual" && <Input id="setting-gpuLayers" type="number" min={0} step={1} title={t.gpuLayersHelp} value={settings.gpuLayers ?? 1} onChange={(e) => saveSettings({ gpuLayers: Number(e.target.value) })} />}
                                             </div>
                                             <div className="flex flex-col gap-1">
                                                 <label htmlFor="setting-frequencyPenalty" className="text-xs text-muted-foreground">{t.frequencyPenalty}</label>

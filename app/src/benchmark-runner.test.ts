@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approximateTokens, buildContextPrompt, contextTestSizes, runBenchmark, type BenchmarkChatExecutor } from "./benchmark-runner";
+import { approximateTokens, benchmarkPlacementOptions, buildContextPrompt, contextTestSizes, runBenchmark, type BenchmarkChatExecutor } from "./benchmark-runner";
 
 describe("benchmark helpers", () => {
     it("builds bounded power-of-two context steps plus an exact cap", () => {
@@ -11,6 +11,13 @@ describe("benchmark helpers", () => {
         const prompt = buildContextPrompt(4096);
         expect(approximateTokens(prompt)).toBeGreaterThan(4000);
         expect(approximateTokens(prompt)).toBeLessThan(5200);
+    });
+
+    it("uses explicit safe placement modes instead of a magic GPU layer sentinel", () => {
+        expect(benchmarkPlacementOptions("default")).toEqual({});
+        expect(benchmarkPlacementOptions("cpu")).toEqual({ gpuLayerMode: "cpu", gpuLayers: 0 });
+        expect(benchmarkPlacementOptions("gpu")).toEqual({ gpuLayerMode: "max" });
+        expect(JSON.stringify(benchmarkPlacementOptions("gpu"))).not.toContain("999");
     });
 
     it("returns health, timing, comparison and context results", async () => {
@@ -31,4 +38,3 @@ describe("benchmark helpers", () => {
         expect(result.contextTests).toHaveLength(2);
     });
 });
-

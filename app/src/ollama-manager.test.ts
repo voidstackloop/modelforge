@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { setHost, getHost, setModelsDir, getModelsDir } from "./ollama-manager";
+import { setHost, getHost, setModelsDir, getModelsDir, setGpuSelection } from "./ollama-manager";
 
 describe("ollama-manager config", () => {
     it("defaults to the local Ollama host", () => {
@@ -32,5 +32,10 @@ describe("ollama-manager config", () => {
     it("clears the models directory override for an empty string", () => {
         setModelsDir("");
         expect(getModelsDir()).toBeUndefined();
+    });
+
+    it("accepts a resolved GPU selection for device-visibility filtering without throwing", () => {
+        expect(() => setGpuSelection([{ name: "RTX 4090", vramGB: 24, vendor: "nvidia", index: 0 }])).not.toThrow();
+        setGpuSelection([]); // reset for other tests
     });
 });

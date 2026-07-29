@@ -75,6 +75,25 @@ const timeOfUseTariffSchema = z.object({
     pricePerKwh: z.number(),
 });
 
+// --- GPU selection / per-runtime config (settings.json, runtime startup) --
+
+export const gpuSelectionSchema = z.object({
+    mode: z.enum(["auto", "single", "group", "all", "cpu"]),
+    // Stable GpuInfo.id values — validated as non-empty strings only; actual
+    // device existence is checked against live hardware at startup
+    // (resolveGpuSelection in gpu-selection.ts), not here.
+    deviceIds: z.array(z.string().min(1)).max(64),
+});
+
+export const runtimeGpuConfigSchema = z.object({
+    selection: gpuSelectionSchema.optional(),
+    tensorSplit: z.array(z.number().finite().positive()).max(16).optional(),
+    splitMode: z.enum(["layer", "tensor", "row"]).transform((value) => value === "row" ? "tensor" as const : value).optional(),
+    mainGpuId: z.string().optional(),
+    tensorParallelSize: z.number().int().min(1).max(16).optional(),
+    memoryReserveGB: z.number().min(0).max(64).optional(),
+});
+
 // .partial() — every field optional, matching AppSettings being persisted/
 // patched as `Partial<AppSettings>` (settings:save sends a partial patch;
 // settings.json itself only ever contains whatever's been saved so far).
@@ -94,6 +113,7 @@ export const appSettingsSchema = z
         presencePenalty: z.number(),
         contextLength: z.number(),
         gpuLayers: z.number(),
+        gpuLayerMode: z.enum(["auto", "cpu", "max", "manual"]),
         seed: z.number(),
         topK: z.number(),
         repeatPenalty: z.number(),
@@ -106,6 +126,12 @@ export const appSettingsSchema = z
         reduceMotion: z.boolean(),
         agentMaxSteps: z.number(),
         llamaCppMaxCachedModels: z.number(),
+        llamaCppMaxThreads: z.number(),
+        llamaCppVramReserveGB: z.number(),
+        llamaCppRamReserveGB: z.number(),
+        llamaCppNumaPolicy: z.enum(["auto", "distribute", "isolate", "numactl", "mirror"]),
+        llamaCppBatchSize: z.number(),
+        llamaCppFlashAttention: z.enum(["auto", "on", "off"]),
         ttsVoiceURI: z.string(),
         ttsAutoRead: z.boolean(),
         mcpServers: z.array(mcpServerConfigSchema),
@@ -113,6 +139,7 @@ export const appSettingsSchema = z
         llamaCppGpuBackend: z.enum(["auto", "vulkan", "cuda", "metal", "cpu"]),
         ragEmbeddingModel: z.string(),
         preferredRuntime: z.enum(["automatic", "ollama", "llamacpp", "vllm", "mlx"]),
+        recommendationGoal: z.enum(["quality", "speed", "memory", "energy", "agent", "balanced"]),
         customProviders: z.array(customProviderConfigSchema),
         onboardingComplete: z.boolean(),
         keybindings: z.record(z.string(), z.string()),
@@ -140,6 +167,12 @@ export const appSettingsSchema = z
         downloadGlobalConcurrency: z.number(),
         downloadBandwidthMbps: z.number(),
         gridIntensityGCo2PerKwh: z.number(),
+        defaultGpuSelectionMode: z.enum(["auto", "single", "group", "all", "cpu"]),
+        // Keyed by runtime backend id (validated as a non-empty string here
+        // rather than a closed enum — z.record with an enum key schema
+        // requires every enum member present, which would break a config
+        // that only has some backends set).
+        runtimeGpuConfigs: z.record(z.string().min(1), runtimeGpuConfigSchema),
     })
     .partial()
     .passthrough();
@@ -199,6 +232,7 @@ export const agentToolArgsSchemas: Record<string, z.ZodType> = {
     git_diff: z.object({ staged: z.boolean().optional(), path: optionalString }),
     git_log: z.object({ count: z.number().optional() }),
     git_commit: z.object({ message: stringField }),
+    git_blame: z.object({ path: stringField, start_line: z.number().optional(), end_line: z.number().optional() }),
     web_search: z.object({ query: stringField }),
     github_list_repositories: z.object({
         visibility: z.enum(["all", "public", "private"]).optional(),

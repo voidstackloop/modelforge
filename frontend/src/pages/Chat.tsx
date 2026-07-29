@@ -36,7 +36,6 @@ import {
     CheckCircle2,
     Circle,
     ListChecks,
-    ShieldQuestion,
     AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -62,10 +61,9 @@ import { extractVariables, fillTemplate } from "@/lib/prompt-templates";
 import { PromptVariableDialog } from "@/components/prompt-variable-dialog";
 import { ScreenshotPickerDialog } from "@/components/screenshot-picker-dialog";
 import { speakText, stopSpeaking } from "@/lib/tts";
-import { computeLineDiff } from "@/lib/diff";
 import { useToast } from "@/components/toast";
 import { isTransientError } from "@/lib/transient-errors";
-import { canAlwaysAllow } from "@/lib/tool-approval";
+import { ToolApprovalCard } from "@/components/tool-approval-card";
 import {
     COMPACTION_BUDGET_TOKENS,
     COMPACTION_KEEP_RECENT,
@@ -251,8 +249,9 @@ const MessageBubble = memo(function MessageBubble({
                         isError ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/50"
                     )}
                 >
-                    <div className={cn("mb-1 font-sans font-medium", isError ? "text-destructive" : "text-foreground")}>
-                        {isError ? "⚠️" : "🔧"} {m.toolName} {isError ? t.toolFailed : t.toolResult}
+                    <div className={cn("mb-1 flex items-center gap-1.5 font-sans font-medium", isError ? "text-destructive" : "text-foreground")}>
+                        {isError ? <AlertTriangle className="size-3.5 shrink-0" /> : <Wrench className="size-3.5 shrink-0" />}
+                        {m.toolName} {isError ? t.toolFailed : t.toolResult}
                     </div>
                     <pre className="max-h-48 overflow-auto whitespace-pre-wrap">{m.content}</pre>
                 </div>
@@ -270,9 +269,10 @@ const MessageBubble = memo(function MessageBubble({
                     {m.toolCalls.map((tc) => (
                         <div
                             key={tc.id}
-                            className="rounded-lg border border-border bg-muted/50 px-3 py-1.5 font-mono text-xs text-muted-foreground"
+                            className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/50 px-3 py-1.5 font-mono text-xs text-muted-foreground"
                         >
-                            🔧 {tc.name}({Object.entries(tc.arguments).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", ")})
+                            <Wrench className="size-3 shrink-0" />
+                            {tc.name}({Object.entries(tc.arguments).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", ")})
                         </div>
                     ))}
                 </div>
@@ -878,6 +878,10 @@ export default function Chat() {
             presencePenalty: params.presencePenalty ?? project?.params?.presencePenalty ?? settings?.presencePenalty,
             contextLength: params.contextLength ?? project?.params?.contextLength ?? settings?.contextLength,
             gpuLayers: params.gpuLayers ?? project?.params?.gpuLayers ?? settings?.gpuLayers,
+            gpuLayerMode: params.gpuLayerMode ?? project?.params?.gpuLayerMode ?? ((params.gpuLayers ?? project?.params?.gpuLayers) !== undefined ? (params.gpuLayers ?? project?.params?.gpuLayers) === 0 ? "cpu" : "manual" : settings?.gpuLayerMode ?? "auto"),
+            cpuThreads: params.cpuThreads ?? project?.params?.cpuThreads ?? settings?.llamaCppMaxThreads,
+            batchSize: params.batchSize ?? project?.params?.batchSize ?? settings?.llamaCppBatchSize,
+            flashAttention: params.flashAttention ?? project?.params?.flashAttention ?? settings?.llamaCppFlashAttention ?? "auto",
             seed: params.seed ?? project?.params?.seed ?? settings?.seed,
             topK: params.topK ?? project?.params?.topK ?? settings?.topK,
             repeatPenalty: params.repeatPenalty ?? project?.params?.repeatPenalty ?? settings?.repeatPenalty,
@@ -980,10 +984,6 @@ export default function Chat() {
         const compactedHistory = await maybeCompactHistory(baseMessages);
         const requestHistory = compactedHistory ?? history;
 
-        // Timing an in-flight network stream, not computing render output —
-        // the react-hooks purity rule can't tell this closure only runs once
-        // per user-initiated send, not during render.
-        // eslint-disable-next-line react-hooks/purity
         const streamStartedAt = Date.now();
 
         setMessages([...baseMessages, { role: "assistant", content: "" }]);
@@ -1535,6 +1535,7 @@ export default function Chat() {
             {
                 key: "ollama",
                 label: PROVIDER_LABELS.ollama,
+                scope: "local",
                 items: models.map((m) => ({ ref: formatModelRef("ollama", m.name), name: m.name, sizeBytes: m.size })),
             },
         ];
@@ -1542,6 +1543,7 @@ export default function Chat() {
             groups.push({
                 key: "llamacpp",
                 label: PROVIDER_LABELS.llamacpp,
+                scope: "local",
                 items: llamaCppModels.map((m) => ({
                     ref: formatModelRef("llamacpp", m.name),
                     name: m.label,
@@ -1553,6 +1555,7 @@ export default function Chat() {
             groups.push({
                 key: "mlx",
                 label: PROVIDER_LABELS.mlx,
+                scope: "local",
                 items: settings!.mlxModels!.map((id) => ({ ref: formatModelRef("mlx", id), name: id })),
             });
         }
@@ -1560,6 +1563,7 @@ export default function Chat() {
             groups.push({
                 key: "rocm",
                 label: PROVIDER_LABELS.rocm,
+                scope: "local",
                 items: llamaCppModels.map((m) => ({
                     ref: formatModelRef("rocm", m.name),
                     name: m.label,
@@ -1571,12 +1575,14 @@ export default function Chat() {
             groups.push({
                 key: "vllm",
                 label: PROVIDER_LABELS.vllm,
+                scope: "local",
                 items: settings!.vllmModels!.map((id) => ({ ref: formatModelRef("vllm", id), name: id })),
             });
         }
         groups.push({
             key: "openai",
             label: PROVIDER_LABELS.openai,
+            scope: "cloud",
             items: [
                 ...OPENAI_MODELS.map((m) => ({ ref: formatModelRef("openai", m.id), name: m.label })),
                 { ref: formatModelRef("openai", CUSTOM_SENTINEL), name: "Custom model ID...", customSentinelProvider: "openai" as ProviderId },
@@ -1585,6 +1591,7 @@ export default function Chat() {
         groups.push({
             key: "anthropic",
             label: PROVIDER_LABELS.anthropic,
+            scope: "cloud",
             items: [
                 ...ANTHROPIC_MODELS.map((m) => ({ ref: formatModelRef("anthropic", m.id), name: m.label })),
                 { ref: formatModelRef("anthropic", CUSTOM_SENTINEL), name: "Custom model ID...", customSentinelProvider: "anthropic" as ProviderId },
@@ -1593,6 +1600,7 @@ export default function Chat() {
         groups.push({
             key: "gemini",
             label: PROVIDER_LABELS.gemini,
+            scope: "cloud",
             items: [
                 ...GEMINI_MODELS.map((m) => ({ ref: formatModelRef("gemini", m.id), name: m.label })),
                 { ref: formatModelRef("gemini", CUSTOM_SENTINEL), name: "Custom model ID...", customSentinelProvider: "gemini" as ProviderId },
@@ -1602,6 +1610,7 @@ export default function Chat() {
             groups.push({
                 key: `custom-${provider.id}`,
                 label: provider.name,
+                scope: "cloud",
                 items: provider.modelIds.map((modelId) => ({
                     ref: formatCustomModelRef(provider.id, modelId),
                     name: modelId,
@@ -1961,7 +1970,7 @@ export default function Chat() {
                             <div className="flex flex-col gap-1">
                                 <label className="text-xs text-muted-foreground">
                                     {t.gpuLayers}
-                                    {parsedModel?.provider !== "ollama" ? " (Ollama only)" : ""}
+                                    {parsedModel?.provider !== "ollama" && parsedModel?.provider !== "llamacpp" ? " (local runtimes only)" : ""}
                                 </label>
                                 <Input
                                     type="number"
@@ -1971,9 +1980,9 @@ export default function Chat() {
                                     title={t.gpuLayersHelp}
                                     value={params.gpuLayers ?? currentProject?.params?.gpuLayers ?? settings?.gpuLayers ?? ""}
                                     onChange={(e) =>
-                                        updateParam({ gpuLayers: e.target.value === "" ? undefined : Number(e.target.value) })
+                                        updateParam({ gpuLayers: e.target.value === "" ? undefined : Number(e.target.value), gpuLayerMode: e.target.value === "" ? "auto" : Number(e.target.value) === 0 ? "cpu" : "manual" })
                                     }
-                                    disabled={parsedModel?.provider !== "ollama"}
+                                    disabled={parsedModel?.provider !== "ollama" && parsedModel?.provider !== "llamacpp"}
                                     className="h-8 text-xs"
                                 />
                             </div>
@@ -2146,120 +2155,16 @@ export default function Chat() {
                             />
                         );
                     })}
-                    {pendingToolCalls.map((call) => {
-                        if (call.name === "request_checkpoint") {
-                            const summary = String(call.arguments.summary ?? "");
-                            const question = call.arguments.question ? String(call.arguments.question) : null;
-                            return (
-                                <div
-                                    key={call.id}
-                                    className="flex max-w-[85%] flex-col gap-2 self-start rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm"
-                                >
-                                    <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
-                                        <ShieldQuestion className="size-3.5" /> {t.agentCheckpoint}
-                                    </div>
-                                    <p>{summary}</p>
-                                    {question && <p className="text-muted-foreground">{question}</p>}
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        <Button size="sm" onClick={() => respondToCheckpoint(call, true)} className="gap-1.5">
-                                            <Check className="size-3.5" /> {t.continueAgent}
-                                        </Button>
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => respondToCheckpoint(call, false)}
-                                            className="gap-1.5"
-                                        >
-                                            <Square className="size-3.5" /> {t.stopAgent}
-                                        </Button>
-                                    </div>
-                                </div>
-                            );
-                        }
-                        const isWrite = call.name === "write_file";
-                        const preview = writeDiffPreviews[call.id];
-                        const newContent = String(call.arguments.content ?? "");
-                        const diffLines =
-                            isWrite && preview ? computeLineDiff(preview.oldContent ?? "", newContent) : null;
-                        const MAX_RENDERED_LINES = 400;
-                        return (
-                            <div
-                                key={call.id}
-                                className="flex max-w-[85%] flex-col gap-2 self-start rounded-lg border border-border bg-muted/50 p-3 text-sm"
-                            >
-                                {isWrite ? (
-                                    <div className="flex flex-col gap-1.5">
-                                        <div className="font-mono text-xs text-muted-foreground">
-                                            🔧 <span className="font-medium text-foreground">write_file</span>{" "}
-                                            {String(call.arguments.path ?? "")}
-                                            {preview?.oldContent === null && (
-                                                <span className="ml-1.5 rounded bg-primary/15 px-1 text-primary">
-                                                    {t.newFile}
-                                                </span>
-                                            )}
-                                        </div>
-                                        {diffLines ? (
-                                            <pre className="max-h-64 overflow-auto rounded border border-border bg-background p-2 font-mono text-xs">
-                                                {diffLines.slice(0, MAX_RENDERED_LINES).map((line, idx) => (
-                                                    <div
-                                                        key={idx}
-                                                        className={cn(
-                                                            "whitespace-pre-wrap",
-                                                            line.type === "add" &&
-                                                                "bg-green-500/15 text-green-700 dark:text-green-400",
-                                                            line.type === "remove" &&
-                                                                "bg-red-500/15 text-red-700 dark:text-red-400"
-                                                        )}
-                                                    >
-                                                        {line.type === "add" ? "+ " : line.type === "remove" ? "- " : "  "}
-                                                        {line.text}
-                                                    </div>
-                                                ))}
-                                                {diffLines.length > MAX_RENDERED_LINES && (
-                                                    <div className="text-muted-foreground">
-                                                        … {diffLines.length - MAX_RENDERED_LINES} more lines
-                                                    </div>
-                                                )}
-                                            </pre>
-                                        ) : (
-                                            <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-                                        )}
-                                    </div>
-                                ) : (
-                                    <div className="font-mono text-xs text-muted-foreground">
-                                        🔧 <span className="font-medium text-foreground">{call.name}</span>(
-                                        {Object.entries(call.arguments)
-                                            .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
-                                            .join(", ")}
-                                        )
-                                    </div>
-                                )}
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <Button size="sm" onClick={() => respondToToolCall(call, true)} className="gap-1.5">
-                                        <Check className="size-3.5" /> {t.allow}
-                                    </Button>
-                                    <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() => respondToToolCall(call, false)}
-                                        className="gap-1.5"
-                                    >
-                                        <X className="size-3.5" /> {t.deny}
-                                    </Button>
-                                    {canAlwaysAllow(call.name) && (
-                                        <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            onClick={() => alwaysAllowTool(call)}
-                                            className="text-xs text-muted-foreground"
-                                        >
-                                            {t.alwaysAllowThisSession}
-                                        </Button>
-                                    )}
-                                </div>
-                            </div>
-                        );
-                    })}
+                    {pendingToolCalls.map((call) => (
+                        <ToolApprovalCard
+                            key={call.id}
+                            call={call}
+                            writeDiffPreview={writeDiffPreviews[call.id]}
+                            onRespond={respondToToolCall}
+                            onRespondCheckpoint={respondToCheckpoint}
+                            onAlwaysAllow={alwaysAllowTool}
+                        />
+                    ))}
                     <div ref={bottomRef} />
                 </div>
             </ScrollArea>

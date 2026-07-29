@@ -41,8 +41,10 @@ pub async fn run(
     tsfn: ProgressFn,
     ctl: DownloadControls,
 ) -> Result<(), DownloadError> {
-    let existing =
-        DownloadState::load(state_path).filter(|s| s.matches(total_bytes, etag.as_deref()));
+    let part_length_matches =
+        std::fs::metadata(part_path).is_ok_and(|metadata| metadata.len() == total_bytes);
+    let existing = DownloadState::load(state_path)
+        .filter(|s| part_length_matches && s.matches(total_bytes, etag.as_deref()));
 
     let state = match existing {
         Some(s) => s,
@@ -197,7 +199,12 @@ async fn download_chunk(
                 return Err(e);
             }
             Err(_) if attempt < MAX_ATTEMPTS_PER_CHUNK => {
-                tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                tokio::select! {
+                    biased;
+                    _ = ctl.cancel.cancelled() => return Err(DownloadError::Cancelled { filename: filename.to_string() }),
+                    _ = ctl.pause.cancelled() => return Err(DownloadError::Paused { filename: filename.to_string() }),
+                    _ = tokio::time::sleep(Duration::from_millis(500 * attempt as u64)) => {}
+                }
             }
             Err(e) => return Err(e),
         }
@@ -229,10 +236,12 @@ async fn download_chunk_once(
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
-    let res = req
-        .send()
-        .await
-        .map_err(|e| DownloadError::Raw(e.to_string()))?;
+    let res = tokio::select! {
+        biased;
+        _ = ctl.cancel.cancelled() => return Err(DownloadError::Cancelled { filename: filename.to_string() }),
+        _ = ctl.pause.cancelled() => return Err(DownloadError::Paused { filename: filename.to_string() }),
+        result = req.send() => result.map_err(|e| DownloadError::Raw(e.to_string()))?,
+    };
     if res.status() != StatusCode::PARTIAL_CONTENT {
         return Err(DownloadError::Raw(format!(
             "chunk {} request failed (HTTP {})",

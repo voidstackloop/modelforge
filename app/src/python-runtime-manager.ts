@@ -29,9 +29,12 @@ export const PYTHON_RUNTIME_MANIFESTS: Record<PythonRuntimeFamily, PythonRuntime
     // CPU-only inference for the trained hardware-recommender model (see
     // ml/hardware-recommender/) — no GPU/accelerator requirement, runs
     // natively on every platform including Windows (unlike vllm-*, which
-    // needs WSL there), so it's pinned to the CPU-only torch wheel to keep
-    // the download small.
-    "hardware-recommender": { family: "hardware-recommender", version: 1, python: ">=3.10,<3.14", packages: { torch: "2.13.0", numpy: "2.2.6" }, diskRequirementBytes: 2 * 1024 ** 3, expectedDownloadBytes: 300 * 1024 ** 2, protocolVersion: 1, compatibility: "Any platform (CPU-only inference)", documentationUrl: "https://github.com/voidstackloop/modelforge/tree/main/ml/hardware-recommender" },
+    // needs WSL there). Runs the model through onnxruntime rather than
+    // torch (recommender_worker.py loads the exported .onnx, not a .pt
+    // checkpoint) — torch is only needed to train the model, and requiring
+    // a ~200MB+ install just to run inference on a ~40KB network was
+    // disproportionate. onnxruntime's CPU wheel is a fraction of the size.
+    "hardware-recommender": { family: "hardware-recommender", version: 2, python: ">=3.10,<3.14", packages: { onnxruntime: "1.28.0", numpy: "2.2.6" }, diskRequirementBytes: 512 * 1024 ** 2, expectedDownloadBytes: 40 * 1024 ** 2, protocolVersion: 1, compatibility: "Any platform (CPU-only inference)", documentationUrl: "https://github.com/voidstackloop/modelforge/tree/main/ml/hardware-recommender" },
 };
 
 function environmentRoot(): string { return path.join(app.getPath("userData"), "python-runtimes"); }
@@ -100,28 +103,16 @@ function commands(manifest: PythonRuntimeManifest, destination: string): { insta
         const body = `python3.12 -m venv ${destination} && ${python} -m pip install --upgrade pip==26.1 && ${pip}`;
         return { installCommand: `wsl.exe -- bash -lc ${posixQuote(body)}`, repairCommand: `wsl.exe -- bash -lc ${posixQuote(pip.replace("pip install", "pip install --force-reinstall"))}`, removeCommand: `wsl.exe -- rm -rf -- ${destination}` };
     }
-    // torch's CPU-only wheels live on a separate index — mixed into
-    // --index-url with the rest of PyPI, pip can't reliably tell "prefer the
-    // CPU build of torch, but still get numpy from PyPI" (both indexes are
-    // searched for every package), so torch is installed from the CPU index
-    // in its own pip invocation and everything else from the default index.
-    const hardwareRecommenderTarget = (forceReinstall: boolean) => {
-        const force = forceReinstall ? " --force-reinstall" : "";
-        const rest = Object.entries(manifest.packages).filter(([name]) => name !== "torch").map(([name, version]) => `${name}==${version}`).join(" ");
-        const torchInstall = `${quote(python)} -m pip install --only-binary=:all:${force} --index-url https://download.pytorch.org/whl/cpu torch==${manifest.packages.torch}`;
-        return rest ? `${torchInstall} && ${quote(python)} -m pip install --only-binary=:all:${force} ${rest}` : torchInstall;
-    };
+    // hardware-recommender used to need a CPU-only-wheel index for torch;
+    // onnxruntime (see recommender_worker.py/the manifest below) is a normal
+    // PyPI wheel, so it goes through the same plain pip install as mlx.
     const target = manifest.family === "vllm-rocm"
         ? `VLLM_TARGET_DEVICE=rocm ${quote(python)} -m pip install --no-cache-dir ${packages}`
-        : manifest.family === "hardware-recommender"
-            ? hardwareRecommenderTarget(false)
-            : `${quote(python)} -m pip install --only-binary=:all: ${packages}`;
+        : `${quote(python)} -m pip install --only-binary=:all: ${packages}`;
     const installCommand = `${basePythonCommand()} -m venv ${quote(destination)} && ${quote(python)} -m pip install --upgrade pip==26.1 && ${target}`;
     const repairTarget = manifest.family === "vllm-rocm"
         ? target
-        : manifest.family === "hardware-recommender"
-            ? hardwareRecommenderTarget(true)
-            : `${quote(python)} -m pip install --force-reinstall --only-binary=:all: ${packages}`;
+        : `${quote(python)} -m pip install --force-reinstall --only-binary=:all: ${packages}`;
     const removeCommand = process.platform === "win32" ? `Remove-Item -LiteralPath ${quote(destination)} -Recurse -Force` : `rm -rf -- ${quote(destination)}`;
     return { installCommand, repairCommand: repairTarget, removeCommand };
 }
@@ -154,6 +145,60 @@ export async function getPythonEnvironmentStatuses(): Promise<PythonEnvironmentS
     const specs = await getSpecs(); return Promise.all((Object.keys(PYTHON_RUNTIME_MANIFESTS) as PythonRuntimeFamily[]).map((family) => inspectEnvironment(family, specs)));
 }
 
+export type PythonEnvironmentOperation = "install" | "repair";
+export interface PythonEnvironmentProgress { step: number; totalSteps: number; message: string; stream: "manager" | "stdout" | "stderr" }
+
+export interface PythonEnvironmentProcessStep { command: string; args: string[]; env?: NodeJS.ProcessEnv; label: string }
+
+function requireFamily(value: unknown): PythonRuntimeFamily {
+    if (value !== "mlx" && value !== "vllm-cuda" && value !== "vllm-rocm" && value !== "hardware-recommender") throw new Error("Invalid Python runtime family.");
+    return value;
+}
+
+export function buildPythonEnvironmentOperationSteps(family: PythonRuntimeFamily, operation: PythonEnvironmentOperation): PythonEnvironmentProcessStep[] {
+    const manifest = PYTHON_RUNTIME_MANIFESTS[family]; const destination = environmentDestination(family); const python = environmentPython(family);
+    const packageArgs = Object.entries(manifest.packages).map(([name, version]) => `${name}==${version}`);
+    if (usesWsl(family)) {
+        const installPackages = `${python} -m pip install ${operation === "repair" ? "--force-reinstall " : ""}${family === "vllm-rocm" ? "--no-cache-dir" : "--only-binary=:all:"} ${packageArgs.join(" ")}`;
+        const body = operation === "install" ? `python3.12 -m venv ${destination} && ${python} -m pip install --upgrade pip==26.1 && ${family === "vllm-rocm" ? "VLLM_TARGET_DEVICE=rocm " : ""}${installPackages}` : `${family === "vllm-rocm" ? "VLLM_TARGET_DEVICE=rocm " : ""}${installPackages}`;
+        return [{ command: "wsl.exe", args: ["--", "bash", "-lc", body], label: operation === "install" ? "Create and populate WSL environment" : "Repair WSL packages" }];
+    }
+    const env = family === "vllm-rocm" ? { ...process.env, VLLM_TARGET_DEVICE: "rocm" } : process.env;
+    if (operation === "repair") return [{ command: python, args: ["-m", "pip", "install", "--force-reinstall", ...(family === "vllm-rocm" ? ["--no-cache-dir"] : ["--only-binary=:all:"]), ...packageArgs], env, label: "Repair pinned packages" }];
+    const base = process.platform === "win32" ? { command: "py", args: ["-3.12"] } : { command: "python3.12", args: [] as string[] };
+    return [
+        { command: base.command, args: [...base.args, "-m", "venv", destination], label: "Create isolated environment" },
+        { command: python, args: ["-m", "pip", "install", "--upgrade", "pip==26.1"], label: "Install pinned pip" },
+        { command: python, args: ["-m", "pip", "install", ...(family === "vllm-rocm" ? ["--no-cache-dir"] : ["--only-binary=:all:"]), ...packageArgs], env, label: "Install pinned packages" },
+    ];
+}
+
+async function runProcessStep(step: PythonEnvironmentProcessStep, index: number, total: number, onProgress: (progress: PythonEnvironmentProgress) => void, signal?: AbortSignal): Promise<void> {
+    onProgress({ step: index + 1, totalSteps: total, message: step.label, stream: "manager" });
+    await new Promise<void>((resolve, reject) => {
+        let settled = false; const child = spawn(step.command, step.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: step.env });
+        const finish = (error?: Error) => { if (settled) return; settled = true; signal?.removeEventListener("abort", abort); error ? reject(error) : resolve(); };
+        const abort = () => { if (child.pid) killProcessTree(child.pid, "SIGTERM"); finish(new Error("Environment operation cancelled. The environment may be partially installed; run Repair after reviewing its status.")); };
+        signal?.addEventListener("abort", abort, { once: true });
+        for (const [stream, output] of [["stdout", child.stdout], ["stderr", child.stderr]] as const) {
+            output?.setEncoding("utf8"); output?.on("data", (chunk: string) => { for (const line of chunk.split(/\r?\n/).filter(Boolean)) onProgress({ step: index + 1, totalSteps: total, message: line.slice(0, 2_000), stream }); });
+        }
+        child.once("error", (error) => finish(error));
+        child.once("exit", (code, exitSignal) => code === 0 ? finish() : finish(new Error(`${step.label} failed (code ${code ?? "unknown"}, signal ${exitSignal ?? "none"}). The environment may be partial; inspect it and run Repair.`)));
+        if (signal?.aborted) abort();
+    });
+}
+
+export async function executePythonEnvironmentOperation(familyInput: unknown, operation: PythonEnvironmentOperation, onProgress: (progress: PythonEnvironmentProgress) => void, signal?: AbortSignal): Promise<PythonEnvironmentStatus> {
+    const family = requireFamily(familyInput); if (operation !== "install" && operation !== "repair") throw new Error("Invalid Python environment operation.");
+    const specs = await getSpecs(); const initial = await inspectEnvironment(family, specs);
+    if (initial.state === "incompatible") throw new Error(initial.issues.join(" "));
+    const steps = buildPythonEnvironmentOperationSteps(family, operation);
+    for (let index = 0; index < steps.length; index++) await runProcessStep(steps[index], index, steps.length, onProgress, signal);
+    onProgress({ step: steps.length, totalSteps: steps.length, message: "Reinspecting environment", stream: "manager" });
+    return inspectEnvironment(family, specs);
+}
+
 interface WorkerResponse { protocol: number; id: string; ok: boolean; result?: unknown; error?: { code: string; message: string } }
 // A request has no inherent deadline otherwise: if the worker process stays
 // alive but stops responding (stuck in a long computation, deadlocked, or
@@ -173,7 +218,7 @@ export interface ManagedPythonWorkerOptions {
     timeoutMs?: number;
     // Overrides the spawned command/args — used by tests to substitute a
     // small fake worker (e.g. `node -e "<script>"`) for the real Python
-    // interpreter/script, since CI can't assume a working Python+torch venv
+    // interpreter/script, since CI can't assume a working Python venv with the right packages
     // is present just to test request plumbing. Production callers never
     // set these; environmentPython()/the packaged script path are used.
     command?: string;

@@ -10,6 +10,7 @@ export interface HfModelSummary {
 export interface HfGgufFile {
     path: string;
     sizeBytes: number | null;
+    sha256?: string;
 }
 
 async function hfFetchJson<T>(url: string, token?: string | null): Promise<T> {
@@ -36,10 +37,10 @@ export async function searchGgufModels(query: string, limit = 20, token?: string
 
 export async function listGgufFiles(modelId: string, token?: string | null): Promise<HfGgufFile[]> {
     const url = `${HF_API}/models/${modelId}/tree/main`;
-    const data = await hfFetchJson<{ path: string; type: string; size?: number }[]>(url, token);
+    const data = await hfFetchJson<{ path: string; type: string; size?: number; lfs?: { oid?: string; size?: number } }[]>(url, token);
     return data
         .filter((entry) => entry.type === "file" && entry.path.toLowerCase().endsWith(".gguf"))
-        .map((entry) => ({ path: entry.path, sizeBytes: entry.size ?? null }));
+        .map((entry) => ({ path: entry.path, sizeBytes: entry.lfs?.size ?? entry.size ?? null, sha256: entry.lfs?.oid?.match(/^[a-f0-9]{64}$/i)?.[0] }));
 }
 
 export interface DownloadProgress {

@@ -1,6 +1,354 @@
 {
-  "fit_status_accuracy": 0.9811557788944724,
-  "runtime_accuracy": 0.9996859296482412,
-  "context_accuracy": 0.9001256281407035,
-  "speed_mae_tokens_per_second": 7.233838948772181
+  "validation": {
+    "n": 40240,
+    "runtime": {
+      "confusion_matrix": [
+        [
+          5159,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          13450,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          4513,
+          0,
+          0,
+          0,
+          5
+        ],
+        [
+          0,
+          0,
+          0,
+          1688,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          9954,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          3307,
+          0
+        ],
+        [
+          0,
+          10,
+          3,
+          0,
+          0,
+          0,
+          2151
+        ]
+      ],
+      "recall": [
+        1.0,
+        1.0,
+        0.9988933156263834,
+        1.0,
+        1.0,
+        1.0,
+        0.993992606284658
+      ],
+      "macro_f1": 0.9992251686805353
+    },
+    "speed": {
+      "median_abs_error": 0.00892019271850586,
+      "p90_abs_error": 0.03952138125896454,
+      "median_pct_error": 0.000410695094615221,
+      "p90_pct_error": 0.0012698521604761481
+    },
+    "regression_targets": {
+      "peak_vram_gb": {
+        "median_abs_error": 0.002141118049621582,
+        "p90_abs_error": 0.011131763458251953
+      },
+      "peak_ram_gb": {
+        "median_abs_error": 0.0012445449829101562,
+        "p90_abs_error": 0.004571245983242989
+      },
+      "tokens_per_second": {
+        "median_abs_error": 0.00892019271850586,
+        "p90_abs_error": 0.03952138125896454
+      },
+      "prompt_tokens_per_second": {
+        "median_abs_error": 0.0584259033203125,
+        "p90_abs_error": 0.3860595226287842
+      },
+      "time_to_first_token_ms": {
+        "median_abs_error": 0.5135498046875,
+        "p90_abs_error": 40.33977508544922
+      },
+      "model_load_time_ms": {
+        "median_abs_error": 0.89208984375,
+        "p90_abs_error": 2.9917945861816406
+      },
+      "energy_per_token_j": {
+        "median_abs_error": 0.006272315979003906,
+        "p90_abs_error": 0.06295621395111084
+      }
+    },
+    "calibration": {
+      "peak_vram_gb": {
+        "within_90pct_interval": 0.9992045539287578
+      },
+      "tokens_per_second": {
+        "within_90pct_interval": 0.9997763419483101
+      }
+    },
+    "derived_fit_agreement_rate": 0.9342273467853115,
+    "derived_context_agreement_rate": 0.6448427121193132,
+    "by_platform": {
+      "linux": {
+        "n": 12983,
+        "speed_median_abs_error": 0.00843048095703125
+      },
+      "macos": {
+        "n": 10624,
+        "speed_median_abs_error": 0.009395599365234375
+      },
+      "windows": {
+        "n": 16633,
+        "speed_median_abs_error": 0.009047508239746094
+      }
+    },
+    "by_gpu_backend": {
+      "cuda": {
+        "n": 15028,
+        "speed_median_abs_error": 0.0148773193359375
+      },
+      "directml": {
+        "n": 1939,
+        "speed_median_abs_error": 0.005767822265625
+      },
+      "metal": {
+        "n": 4995,
+        "speed_median_abs_error": 0.010860443115234375
+      },
+      "none": {
+        "n": 5159,
+        "speed_median_abs_error": 0.006134510040283203
+      },
+      "rocm": {
+        "n": 5104,
+        "speed_median_abs_error": 0.006460666656494141
+      },
+      "vulkan": {
+        "n": 8015,
+        "speed_median_abs_error": 0.0060882568359375
+      }
+    },
+    "by_provenance": {
+      "published": {
+        "n": 345,
+        "speed_median_abs_error": 6.768101692199707
+      },
+      "synthetic": {
+        "n": 39895,
+        "speed_median_abs_error": 0.008802413940429688
+      }
+    }
+  },
+  "unseen_family": {
+    "n": 1218,
+    "runtime": {
+      "confusion_matrix": [
+        [
+          100,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          231,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          3,
+          73,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          39,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          12,
+          0,
+          0,
+          690,
+          7,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          43,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          20
+        ]
+      ],
+      "recall": [
+        1.0,
+        1.0,
+        0.9605263157894737,
+        1.0,
+        0.9732016925246827,
+        1.0,
+        1.0
+      ],
+      "macro_f1": 0.9799384691927356
+    },
+    "speed": {
+      "median_abs_error": 0.00029785989318042994,
+      "p90_abs_error": 0.00844192411750555,
+      "median_pct_error": 9.544420754536986e-05,
+      "p90_pct_error": 0.0026079732924699783
+    },
+    "regression_targets": {
+      "peak_vram_gb": {
+        "median_abs_error": 0.011466026306152344,
+        "p90_abs_error": 0.06969562917947769
+      },
+      "peak_ram_gb": {
+        "median_abs_error": 0.010498046875,
+        "p90_abs_error": 0.17349395155906677
+      },
+      "tokens_per_second": {
+        "median_abs_error": 0.00029785989318042994,
+        "p90_abs_error": 0.00844192411750555
+      },
+      "prompt_tokens_per_second": {
+        "median_abs_error": 0.0014366498216986656,
+        "p90_abs_error": 0.03826788440346718
+      },
+      "time_to_first_token_ms": {
+        "median_abs_error": 77152.0,
+        "p90_abs_error": 637774.1875
+      },
+      "model_load_time_ms": {
+        "median_abs_error": 17.71484375,
+        "p90_abs_error": 61.457794189453125
+      },
+      "energy_per_token_j": {
+        "median_abs_error": 0.52056884765625,
+        "p90_abs_error": 5.627953052520752
+      }
+    },
+    "calibration": {
+      "peak_vram_gb": {
+        "within_90pct_interval": 1.0
+      },
+      "tokens_per_second": {
+        "within_90pct_interval": 1.0
+      }
+    },
+    "derived_fit_agreement_rate": 0.9586776859504132,
+    "derived_context_agreement_rate": 0.9066115702479339,
+    "by_platform": {
+      "linux": {
+        "n": 414,
+        "speed_median_abs_error": 5.581447567237774e-06
+      },
+      "macos": {
+        "n": 264,
+        "speed_median_abs_error": 0.0004784560587722808
+      },
+      "windows": {
+        "n": 540,
+        "speed_median_abs_error": 0.00038721365854144096
+      }
+    },
+    "by_gpu_backend": {
+      "cuda": {
+        "n": 232,
+        "speed_median_abs_error": 0.0004105567932128906
+      },
+      "directml": {
+        "n": 584,
+        "speed_median_abs_error": 0.0
+      },
+      "metal": {
+        "n": 82,
+        "speed_median_abs_error": 0.000583173765335232
+      },
+      "none": {
+        "n": 100,
+        "speed_median_abs_error": 0.003698874032124877
+      },
+      "rocm": {
+        "n": 95,
+        "speed_median_abs_error": 0.0002780812792479992
+      },
+      "vulkan": {
+        "n": 125,
+        "speed_median_abs_error": 0.0
+      }
+    },
+    "by_provenance": {
+      "published": {
+        "n": 8,
+        "speed_median_abs_error": 1.5640220642089844
+      },
+      "synthetic": {
+        "n": 1210,
+        "speed_median_abs_error": 0.0002628916408866644
+      }
+    }
+  }
 }

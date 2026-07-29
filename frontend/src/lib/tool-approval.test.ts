@@ -6,6 +6,7 @@ describe("canAlwaysAllow", () => {
         expect(canAlwaysAllow("read_file")).toBe(true);
         expect(canAlwaysAllow("list_dir")).toBe(true);
         expect(canAlwaysAllow("git_diff")).toBe(true);
+        expect(canAlwaysAllow("git_blame")).toBe(true);
         expect(canAlwaysAllow("find_symbol_references")).toBe(true);
     });
 

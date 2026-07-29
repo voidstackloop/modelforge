@@ -7,6 +7,9 @@ import {
     FolderPlus,
     FolderOpen,
     MessageSquare,
+    MoreHorizontal,
+    PanelLeftClose,
+    PanelLeftOpen,
     Pencil,
     Plus,
     RotateCw,
@@ -28,6 +31,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { SectionHeader } from "@/components/ds";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { CommandPalette } from "@/components/command-palette";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
@@ -40,6 +46,8 @@ import { extractVariables, fillTemplate } from "@/lib/prompt-templates";
 import { PromptVariableDialog } from "@/components/prompt-variable-dialog";
 import { DEFAULT_KEYBINDINGS, matchesBinding, subscribeKeybindings, type KeybindingAction } from "@/lib/keybindings";
 import { formatRelativeTime } from "@/lib/format-time";
+
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "sidebar-collapsed";
 
 function SessionRow({
     session,
@@ -56,6 +64,7 @@ function SessionRow({
 }) {
     const { t } = useI18n();
     const [tagInput, setTagInput] = useState("");
+    const [tagEditorOpen, setTagEditorOpen] = useState(false);
     const tags = session.tags ?? [];
 
     function addTag() {
@@ -70,87 +79,137 @@ function SessionRow({
     }
 
     return (
-        <div
-            onClick={onOpen}
-            className={cn(
-                "group relative flex cursor-pointer items-center gap-2 rounded-xl border px-2.5 py-2.5 text-sm transition-all",
-                active
-                    ? "border-primary/25 bg-primary/10 text-foreground shadow-sm"
-                    : "border-transparent text-muted-foreground hover:border-border/70 hover:bg-muted/60"
-            )}
-        >
-            <MessageSquare className="size-3.5 shrink-0" />
-            <span className="flex-1 truncate">{session.title}</span>
-            {tags.length > 0 && (
-                <span className="hidden shrink-0 items-center gap-1 sm:flex">
-                    {tags.slice(0, 2).map((tg) => (
-                        <span
-                            key={tg}
-                            className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground group-hover:bg-background"
-                        >
-                            {tg}
-                        </span>
-                    ))}
-                    {tags.length > 2 && <span className="text-[10px] text-muted-foreground">+{tags.length - 2}</span>}
-                </span>
-            )}
-            <span className="hidden shrink-0 text-[10px] tabular-nums text-muted-foreground/70 group-hover:hidden sm:inline">
-                {formatRelativeTime(session.updatedAt)}
-            </span>
-            <Popover>
-                <PopoverTrigger
-                    render={
-                        <button
-                            onClick={(e) => e.stopPropagation()}
-                            className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
-                            aria-label={`${t.editTags}: ${session.title}`}
-                        >
-                            <Tag className="size-3.5" />
-                        </button>
-                    }
-                />
-                <PopoverContent align="start" className="w-56" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex flex-col gap-2">
-                        <p className="text-xs font-medium">{t.editTags}</p>
-                        {tags.length > 0 && (
-                            <div className="flex flex-wrap gap-1">
-                                {tags.map((tg) => (
-                                    <span
-                                        key={tg}
-                                        className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs"
-                                    >
-                                        #{tg}
-                                        <button onClick={() => removeTag(tg)} aria-label={`Remove tag ${tg}`}>
-                                            <X className="size-3" />
-                                        </button>
-                                    </span>
-                                ))}
-                            </div>
-                        )}
-                        <div className="flex gap-1.5">
-                            <Input
-                                autoFocus
-                                value={tagInput}
-                                onChange={(e) => setTagInput(e.target.value)}
-                                onKeyDown={(e) => e.key === "Enter" && addTag()}
-                                placeholder={t.addTag}
-                                className="h-7 text-xs"
-                            />
-                            <Button size="sm" variant="outline" onClick={addTag} disabled={!tagInput.trim()}>
-                                {t.add}
-                            </Button>
-                        </div>
-                    </div>
-                </PopoverContent>
-            </Popover>
-            <button
-                onClick={onDelete}
-                className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                aria-label="Delete conversation"
+        <div>
+            <div
+                onClick={onOpen}
+                className={cn(
+                    "group relative flex cursor-pointer items-center gap-2 rounded-xl border px-2.5 py-2.5 text-sm transition-all",
+                    active
+                        ? "border-primary/25 bg-primary/10 text-foreground shadow-sm"
+                        : "border-transparent text-muted-foreground hover:border-border/70 hover:bg-muted/60"
+                )}
             >
-                <Trash2 className="size-3.5" />
-            </button>
+                <MessageSquare className="size-3.5 shrink-0" />
+                <span className="flex-1 truncate">{session.title}</span>
+                {tags.length > 0 && (
+                    <span className="hidden shrink-0 items-center gap-1 sm:flex">
+                        {tags.slice(0, 2).map((tg) => (
+                            <span
+                                key={tg}
+                                className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground group-hover:bg-background"
+                            >
+                                {tg}
+                            </span>
+                        ))}
+                        {tags.length > 2 && <span className="text-[10px] text-muted-foreground">+{tags.length - 2}</span>}
+                    </span>
+                )}
+                <span className="hidden shrink-0 text-[10px] tabular-nums text-muted-foreground/70 group-hover:hidden sm:inline">
+                    {formatRelativeTime(session.updatedAt)}
+                </span>
+                <DropdownMenu>
+                    <DropdownMenuTrigger
+                        render={
+                            <button
+                                onClick={(e) => e.stopPropagation()}
+                                className="shrink-0 rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 data-popup-open:opacity-100"
+                                aria-label={`${t.moreActions}: ${session.title}`}
+                            >
+                                <MoreHorizontal className="size-3.5" />
+                            </button>
+                        }
+                    />
+                    <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenuItem onClick={() => setTagEditorOpen(true)}>
+                            <Tag className="size-3.5" />
+                            {t.editTags}
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                            <Trash2 className="size-3.5" />
+                            {t.deleteConversation}
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
+            </div>
+            {tagEditorOpen && (
+                <div
+                    className="mt-1 ml-5 flex flex-col gap-2 rounded-lg border border-border bg-card p-2.5"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <p className="text-xs font-medium">{t.editTags}</p>
+                    {tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                            {tags.map((tg) => (
+                                <span key={tg} className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs">
+                                    #{tg}
+                                    <button onClick={() => removeTag(tg)} aria-label={`Remove tag ${tg}`}>
+                                        <X className="size-3" />
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                    <div className="flex gap-1.5">
+                        <Input
+                            autoFocus
+                            value={tagInput}
+                            onChange={(e) => setTagInput(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && addTag()}
+                            placeholder={t.addTag}
+                            className="h-7 text-xs"
+                        />
+                        <Button size="sm" variant="outline" onClick={addTag} disabled={!tagInput.trim()}>
+                            {t.add}
+                        </Button>
+                    </div>
+                    <Button size="sm" variant="ghost" className="self-end" onClick={() => setTagEditorOpen(false)}>
+                        {t.done}
+                    </Button>
+                </div>
+            )}
         </div>
+    );
+}
+
+/** A sidebar nav item that collapses to an icon-only button with a
+ * right-side tooltip in rail mode, or a full icon+label row otherwise. */
+function SidebarNavLink({
+    to,
+    icon,
+    label,
+    collapsed,
+    disabled,
+}: {
+    to: string;
+    icon: React.ReactNode;
+    label: string;
+    collapsed: boolean;
+    disabled?: boolean;
+}) {
+    const navigate = useNavigate();
+    const location = useLocation();
+    const active = location.pathname === to;
+    const button = (
+        <Button
+            onClick={() => navigate(to)}
+            size="sm"
+            variant="ghost"
+            className={cn("nav-action w-full gap-2", collapsed ? "justify-center px-0" : "justify-start", active && "nav-action-active")}
+            aria-current={active ? "page" : undefined}
+            aria-label={collapsed ? label : undefined}
+            disabled={disabled}
+        >
+            {icon}
+            {!collapsed && label}
+        </Button>
+    );
+    if (!collapsed) return button;
+    return (
+        <Tooltip>
+            <TooltipTrigger render={button} />
+            <TooltipContent side="right">{label}</TooltipContent>
+        </Tooltip>
     );
 }
 
@@ -237,13 +296,20 @@ function ProjectGroup({
                     <FolderOpen className="size-3.5 shrink-0" />
                     <span className="flex-1 truncate font-medium">{project.name}</span>
                 </button>
-                <button
-                    onClick={() => onNewChat(project.id)}
-                    className="shrink-0 opacity-0 hover:text-foreground group-hover:opacity-100"
-                    aria-label="New chat in project"
-                >
-                    <Plus className="size-3.5" />
-                </button>
+                <Tooltip>
+                    <TooltipTrigger
+                        render={
+                            <button
+                                onClick={() => onNewChat(project.id)}
+                                className="shrink-0 opacity-0 hover:text-foreground group-hover:opacity-100"
+                                aria-label={t.newChatInProject}
+                            >
+                                <Plus className="size-3.5" />
+                            </button>
+                        }
+                    />
+                    <TooltipContent>{t.newChatInProject}</TooltipContent>
+                </Tooltip>
                 <Popover
                     onOpenChange={(open) => {
                         if (open) window.api.settings.get().then((s) => setPresets(s.promptPresets));
@@ -253,7 +319,8 @@ function ProjectGroup({
                         render={
                             <button
                                 className="shrink-0 opacity-0 hover:text-foreground group-hover:opacity-100"
-                                aria-label="Edit project"
+                                aria-label={t.editProject}
+                                title={t.editProject}
                             >
                                 <Pencil className="size-3.5" />
                             </button>
@@ -527,7 +594,6 @@ export default function Layout() {
     const { sessions, projects, hasApi, createSession, deleteSession, createProject, refresh } = useSessions();
     const { t } = useI18n();
     const navigate = useNavigate();
-    const location = useLocation();
     const { sessionId } = useParams();
     const [search, setSearch] = useState("");
     const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
@@ -538,6 +604,25 @@ export default function Layout() {
     const [showOnboarding, setShowOnboarding] = useState(false);
     const [keybindings, setKeybindings] = useState<Record<KeybindingAction, string>>(DEFAULT_KEYBINDINGS);
     const [sidebarOpen, setSidebarOpen] = useState(false);
+    // Desktop-only icon rail mode — purely a frontend presentation
+    // preference (unlike density/reduceMotion, which are backend-persisted
+    // AppSettings), so it's kept in localStorage rather than round-tripping
+    // through window.api.settings. The toggle that flips this is hidden on
+    // mobile (md:flex hidden), so mobile always sees the full drawer.
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+        try {
+            return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
+        } catch {
+            return false;
+        }
+    });
+    useEffect(() => {
+        try {
+            localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed ? "1" : "0");
+        } catch {
+            /* localStorage unavailable (e.g. private mode) — collapse state just won't persist */
+        }
+    }, [sidebarCollapsed]);
     // Closes the mobile sidebar on navigating to a session — adjusted during
     // render (not an effect) per React's "resetting state when a prop
     // changes" pattern, since the reset needs to happen before the closed
@@ -671,182 +756,181 @@ export default function Layout() {
         if (id === sessionId) navigate("/");
     }
 
+    const collapsed = sidebarCollapsed;
+
     return (
+        <TooltipProvider>
         <div className="flex h-svh overflow-hidden bg-background">
             {sidebarOpen && <button className="fixed inset-0 z-30 bg-black/35 backdrop-blur-sm md:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close navigation" />}
             <aside className={cn(
-                "app-sidebar fixed inset-y-0 left-0 z-40 flex w-[17.5rem] shrink-0 flex-col border-r border-border/60 shadow-2xl transition-transform duration-200 md:static md:translate-x-0 md:shadow-none",
-                sidebarOpen ? "translate-x-0" : "-translate-x-full"
+                "app-sidebar fixed inset-y-0 left-0 z-40 flex w-[17.5rem] shrink-0 flex-col border-r border-border/60 shadow-2xl transition-[transform,width] duration-200 md:static md:translate-x-0 md:shadow-none",
+                sidebarOpen ? "translate-x-0" : "-translate-x-full",
+                collapsed && "md:w-[4.5rem]"
             )}>
-                <div className="flex items-center justify-between px-4 pb-4 pt-5">
-                    <div className="flex items-center gap-2.5">
-                        <span className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
-                        <div><span className="block text-[15px] font-semibold tracking-[-0.02em]">{t.appName}</span><span className="section-eyebrow mt-0.5 block">AI workspace</span></div>
-                    </div>
-                    <ThemeToggle />
-                </div>
-
-                <div className="flex flex-col gap-1 px-3 pb-3">
-                    <Button
-                        onClick={() => handleNewChat()}
-                        size="sm"
-                        variant="default"
-                        className="h-10 w-full justify-start gap-2 rounded-xl px-3"
-                        disabled={!hasApi}
-                    >
-                        <Plus className="size-4" />
-                        {t.newChat}
-                    </Button>
-                    <Button
-                        onClick={() => setCreatingProject(true)}
-                        size="sm"
-                        variant="ghost"
-                        className="nav-action w-full justify-start gap-2"
-                        disabled={!hasApi}
-                    >
-                        <FolderPlus className="size-4" />
-                        {t.newProject}
-                    </Button>
-                    {creatingProject && (
-                        <div className="flex items-center gap-1.5">
-                            <Input
-                                autoFocus
-                                value={newProjectName}
-                                onChange={(e) => setNewProjectName(e.target.value)}
-                                onKeyDown={(e) => e.key === "Enter" && handleCreateProject()}
-                                placeholder={t.newProject + "..."}
-                                aria-label={t.newProject}
-                                className="h-7 text-xs"
-                            />
-                            <Button size="sm" variant="outline" onClick={handleCreateProject}>
-                                {t.save}
-                            </Button>
-                        </div>
-                    )}
-                    <p className="section-eyebrow px-2 pb-1 pt-3">Workspace</p>
-                    <Button
-                        onClick={() => navigate("/compare")}
-                        size="sm"
-                        variant="ghost"
-                        className={cn("nav-action w-full justify-start gap-2", location.pathname === "/compare" && "nav-action-active")}
-                        aria-current={location.pathname === "/compare" ? "page" : undefined}
-                        disabled={!hasApi}
-                    >
-                        <Scale className="size-4" />
-                        {t.compareModels}
-                    </Button>
-                    <Button
-                        onClick={() => navigate("/usage")}
-                        size="sm"
-                        variant="ghost"
-                        className={cn("nav-action w-full justify-start gap-2", location.pathname === "/usage" && "nav-action-active")}
-                        aria-current={location.pathname === "/usage" ? "page" : undefined}
-                        disabled={!hasApi}
-                    >
-                        <BarChart3 className="size-4" />
-                        {t.usageDashboard}
-                    </Button>
-                    <Button
-                        onClick={() => navigate("/downloads")}
-                        size="sm"
-                        variant="ghost"
-                        className={cn("nav-action w-full justify-start gap-2", location.pathname === "/downloads" && "nav-action-active")}
-                        aria-current={location.pathname === "/downloads" ? "page" : undefined}
-                        disabled={!hasApi}
-                    >
-                        <Download className="size-4" />
-                        Download Center
-                    </Button>
-                    <Button onClick={() => navigate("/runtimes")} size="sm" variant="ghost" className={cn("nav-action w-full justify-start gap-2", location.pathname === "/runtimes" && "nav-action-active")} aria-current={location.pathname === "/runtimes" ? "page" : undefined} disabled={!hasApi}>
-                        <Server className="size-4" />Runtime Manager
-                    </Button>
-                </div>
-
-                <div className="relative px-3 pb-3 pt-2">
-                    <p className="section-eyebrow mb-2 px-2">Conversations</p>
-                    <Search className="pointer-events-none absolute bottom-[1.35rem] left-5 size-3.5 translate-y-1/2 text-muted-foreground" />
-                    <Input
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        placeholder={t.searchChats}
-                        aria-label={t.searchChats}
-                        className="h-9 rounded-xl border-border/70 bg-background/55 pl-8 text-xs shadow-sm focus-visible:bg-card"
-                    />
-                </div>
-
-                {allTags.length > 0 && (
-                    <div className="flex flex-wrap gap-1 px-3 pb-2">
-                        {allTags.map((tg) => (
-                            <button
-                                key={tg}
-                                onClick={() => toggleTagFilter(tg)}
-                                className={cn(
-                                    "rounded-full px-2 py-0.5 text-[10px] transition-colors",
-                                    activeTags.has(tg)
-                                        ? "bg-primary text-primary-foreground"
-                                        : "bg-muted text-muted-foreground hover:bg-muted/70"
-                                )}
-                            >
-                                #{tg}
-                            </button>
-                        ))}
-                    </div>
-                )}
-
-                <ScrollArea className="flex-1 px-2.5">
-                    <div className="flex flex-col gap-0.5 pb-2">
-                        {projects.map((project) => (
-                            <ProjectGroup
-                                key={project.id}
-                                project={project}
-                                sessions={sessionsByProject.get(project.id) ?? []}
-                                activeSessionId={sessionId}
-                                onOpenSession={(id) => navigate(`/chat/${id}`)}
-                                onDeleteSession={handleDelete}
-                                onNewChat={handleNewChat}
-                                onUpdateSessionTags={updateSessionTags}
-                            />
-                        ))}
-
-                        {ungroupedSessions.length === 0 && projects.length === 0 && (
-                            <p className="px-2 py-3 text-center text-xs text-muted-foreground">
-                                {search ? t.noMatchingChats : t.noChatsYet}
-                            </p>
+                <div className={cn("flex items-center pb-4 pt-5", collapsed ? "flex-col gap-2 px-2" : "justify-between px-4")}>
+                    <div className={cn("flex items-center gap-2.5", collapsed && "flex-col gap-1.5")}>
+                        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
+                        {!collapsed && (
+                            <div><span className="block text-[15px] font-semibold tracking-[-0.02em]">{t.appName}</span><span className="section-eyebrow mt-0.5 block">AI workspace</span></div>
                         )}
-                        {ungroupedSessions.map((s) => (
-                            <SessionRow
-                                key={s.id}
-                                session={s}
-                                active={s.id === sessionId}
-                                onOpen={() => navigate(`/chat/${s.id}`)}
-                                onDelete={(e) => handleDelete(e, s.id)}
-                                onUpdateTags={(tags) => updateSessionTags(s.id, tags)}
-                            />
-                        ))}
                     </div>
-                </ScrollArea>
+                    <div className={cn("flex items-center gap-1", collapsed && "flex-col")}>
+                        {!collapsed && <ThemeToggle />}
+                        <Tooltip>
+                            <TooltipTrigger
+                                render={
+                                    <button
+                                        onClick={() => setSidebarCollapsed((c) => !c)}
+                                        className="hidden size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground md:flex"
+                                        aria-label={collapsed ? t.expandSidebar : t.collapseSidebar}
+                                    >
+                                        {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+                                    </button>
+                                }
+                            />
+                            <TooltipContent side="right">{collapsed ? t.expandSidebar : t.collapseSidebar}</TooltipContent>
+                        </Tooltip>
+                    </div>
+                </div>
 
-                <div className="flex border-t border-border/60 bg-background/25 p-2.5">
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className={cn("nav-action flex-1 justify-start gap-2", location.pathname === "/settings" && "nav-action-active")}
-                        onClick={() => navigate("/settings")}
-                        aria-current={location.pathname === "/settings" ? "page" : undefined}
-                    >
-                        <SettingsIcon className="size-4" />
-                        {t.settings}
-                    </Button>
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="shrink-0"
-                        onClick={() => setShortcutsOpen(true)}
-                        aria-label={t.keyboardShortcuts}
-                        title={t.keyboardShortcuts}
-                    >
-                        <Keyboard className="size-4" />
-                    </Button>
+                <div className={cn("flex flex-col gap-1 pb-3", collapsed ? "px-2" : "px-3")}>
+                    {collapsed ? (
+                        <Tooltip>
+                            <TooltipTrigger
+                                render={
+                                    <Button onClick={() => handleNewChat()} size="sm" variant="default" className="h-10 w-full justify-center rounded-xl px-0" disabled={!hasApi} aria-label={t.newChat}>
+                                        <Plus className="size-4" />
+                                    </Button>
+                                }
+                            />
+                            <TooltipContent side="right">{t.newChat}</TooltipContent>
+                        </Tooltip>
+                    ) : (
+                        <>
+                            <Button onClick={() => handleNewChat()} size="sm" variant="default" className="h-10 w-full justify-start gap-2 rounded-xl px-3" disabled={!hasApi}>
+                                <Plus className="size-4" />
+                                {t.newChat}
+                            </Button>
+                            <Button onClick={() => setCreatingProject(true)} size="sm" variant="ghost" className="nav-action w-full justify-start gap-2" disabled={!hasApi}>
+                                <FolderPlus className="size-4" />
+                                {t.newProject}
+                            </Button>
+                            {creatingProject && (
+                                <div className="flex items-center gap-1.5">
+                                    <Input
+                                        autoFocus
+                                        value={newProjectName}
+                                        onChange={(e) => setNewProjectName(e.target.value)}
+                                        onKeyDown={(e) => e.key === "Enter" && handleCreateProject()}
+                                        placeholder={t.newProject + "..."}
+                                        aria-label={t.newProject}
+                                        className="h-7 text-xs"
+                                    />
+                                    <Button size="sm" variant="outline" onClick={handleCreateProject}>
+                                        {t.save}
+                                    </Button>
+                                </div>
+                            )}
+                        </>
+                    )}
+                    {!collapsed && <SectionHeader title={t.navWorkspaceGroup} className="mb-0 px-2 pb-1 pt-3" />}
+                    <SidebarNavLink to="/compare" icon={<Scale className="size-4" />} label={t.compareModels} collapsed={collapsed} disabled={!hasApi} />
+                    <SidebarNavLink to="/usage" icon={<BarChart3 className="size-4" />} label={t.usageDashboard} collapsed={collapsed} disabled={!hasApi} />
+                    <SidebarNavLink to="/downloads" icon={<Download className="size-4" />} label={t.downloadCenter} collapsed={collapsed} disabled={!hasApi} />
+                    <SidebarNavLink to="/runtimes" icon={<Server className="size-4" />} label={t.runtimeManager} collapsed={collapsed} disabled={!hasApi} />
+                </div>
+
+                {!collapsed && (
+                    <>
+                        <div className="relative px-3 pb-3 pt-2">
+                            <SectionHeader title={t.navConversationsGroup} className="mb-2 px-2" />
+                            <Search className="pointer-events-none absolute bottom-[1.35rem] left-5 size-3.5 translate-y-1/2 text-muted-foreground" />
+                            <Input
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                                placeholder={t.searchChats}
+                                aria-label={t.searchChats}
+                                className="h-9 rounded-xl border-border/70 bg-background/55 pl-8 text-xs shadow-sm focus-visible:bg-card"
+                            />
+                        </div>
+
+                        {allTags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 px-3 pb-2">
+                                {allTags.map((tg) => (
+                                    <button
+                                        key={tg}
+                                        onClick={() => toggleTagFilter(tg)}
+                                        className={cn(
+                                            "rounded-full px-2 py-0.5 text-[10px] transition-colors",
+                                            activeTags.has(tg)
+                                                ? "bg-primary text-primary-foreground"
+                                                : "bg-muted text-muted-foreground hover:bg-muted/70"
+                                        )}
+                                    >
+                                        #{tg}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+
+                        <ScrollArea className="flex-1 px-2.5">
+                            <div className="flex flex-col gap-0.5 pb-2">
+                                {projects.map((project) => (
+                                    <ProjectGroup
+                                        key={project.id}
+                                        project={project}
+                                        sessions={sessionsByProject.get(project.id) ?? []}
+                                        activeSessionId={sessionId}
+                                        onOpenSession={(id) => navigate(`/chat/${id}`)}
+                                        onDeleteSession={handleDelete}
+                                        onNewChat={handleNewChat}
+                                        onUpdateSessionTags={updateSessionTags}
+                                    />
+                                ))}
+
+                                {ungroupedSessions.length === 0 && projects.length === 0 && (
+                                    <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+                                        {search ? t.noMatchingChats : t.noChatsYet}
+                                    </p>
+                                )}
+                                {ungroupedSessions.map((s) => (
+                                    <SessionRow
+                                        key={s.id}
+                                        session={s}
+                                        active={s.id === sessionId}
+                                        onOpen={() => navigate(`/chat/${s.id}`)}
+                                        onDelete={(e) => handleDelete(e, s.id)}
+                                        onUpdateTags={(tags) => updateSessionTags(s.id, tags)}
+                                    />
+                                ))}
+                            </div>
+                        </ScrollArea>
+                    </>
+                )}
+                {collapsed && <div className="flex-1" />}
+
+                <div className={cn("flex border-t border-border/60 bg-background/25 p-2.5", collapsed && "flex-col gap-1")}>
+                    <SidebarNavLink to="/settings" icon={<SettingsIcon className="size-4" />} label={t.settings} collapsed={collapsed} />
+                    {collapsed ? (
+                        <Tooltip>
+                            <TooltipTrigger
+                                render={
+                                    <button
+                                        onClick={() => setShortcutsOpen(true)}
+                                        className="flex size-9 shrink-0 items-center justify-center self-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                                        aria-label={t.keyboardShortcuts}
+                                    >
+                                        <Keyboard className="size-4" />
+                                    </button>
+                                }
+                            />
+                            <TooltipContent side="right">{t.keyboardShortcuts}</TooltipContent>
+                        </Tooltip>
+                    ) : (
+                        <Button variant="ghost" size="icon" className="shrink-0" onClick={() => setShortcutsOpen(true)} aria-label={t.keyboardShortcuts}>
+                            <Keyboard className="size-4" />
+                        </Button>
+                    )}
                 </div>
             </aside>
 
@@ -871,5 +955,6 @@ export default function Layout() {
             <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} keybindings={keybindings} />
             <OnboardingWizard open={showOnboarding} onDone={() => setShowOnboarding(false)} />
         </div>
+        </TooltipProvider>
     );
 }

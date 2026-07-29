@@ -4,6 +4,19 @@ import { readJsonWithSchema, writeJson } from "./json-store";
 import { appSettingsSchema } from "./schemas";
 import type { McpServerConfig } from "./mcp-client";
 import type { TimeOfUseTariff } from "./energy-types";
+import type { GpuSelection, GpuSelectionMode } from "./gpu-selection";
+
+export interface RuntimeGpuConfig {
+    selection?: GpuSelection;
+    // Explicit user-supplied split, or undefined = auto-generate from
+    // detected per-device VRAM (see generateAutoTensorSplit in
+    // gpu-selection.ts) at startup time.
+    tensorSplit?: number[];
+    splitMode?: "layer" | "tensor";
+    mainGpuId?: string;
+    tensorParallelSize?: number;
+    memoryReserveGB?: number;
+}
 
 export interface PromptVersion {
     prompt: string;
@@ -48,6 +61,7 @@ export interface AppSettings {
     contextLength: number;
     // undefined = auto (let Ollama decide how many layers to offload to GPU).
     gpuLayers?: number;
+    gpuLayerMode?: "auto" | "cpu" | "max" | "manual";
     seed?: number;
     topK?: number;
     repeatPenalty?: number;
@@ -60,6 +74,12 @@ export interface AppSettings {
     reduceMotion?: boolean;
     agentMaxSteps?: number;
     llamaCppMaxCachedModels?: number;
+    llamaCppMaxThreads?: number;
+    llamaCppVramReserveGB?: number;
+    llamaCppRamReserveGB?: number;
+    llamaCppNumaPolicy?: "auto" | "distribute" | "isolate" | "numactl" | "mirror";
+    llamaCppBatchSize?: number;
+    llamaCppFlashAttention?: "auto" | "on" | "off";
     // Text-to-speech: which browser/OS voice to use (voiceURI from
     // speechSynthesis.getVoices(), chosen client-side) and whether assistant
     // responses should be read aloud automatically as they finish.
@@ -84,6 +104,9 @@ export interface AppSettings {
     // in system-specs.ts. Any other value pins every recommendation/download
     // to that one backend regardless of format/hardware fit.
     preferredRuntime?: "automatic" | "ollama" | "llamacpp" | "vllm" | "mlx";
+    // What the hardware-recommender's "best" pick should optimize for — see
+    // RecommendationGoal/pickBest in system-specs.ts. Defaults to "balanced".
+    recommendationGoal?: "quality" | "speed" | "memory" | "energy" | "agent" | "balanced";
     // User-added OpenAI-compatible endpoints (Groq, Mistral, DeepSeek, xAI,
     // OpenRouter, or anything else that speaks the same API) — each one's
     // API key is stored separately via secretsStore, keyed by its id.
@@ -146,6 +169,15 @@ export interface AppSettings {
     downloadGlobalConcurrency?: number;
     downloadBandwidthMbps?: number;
     gridIntensityGCo2PerKwh?: number;
+    // Default selection mode offered for a runtime that has no explicit
+    // per-runtime GPU config yet. Individual runtimes in `runtimeGpuConfigs`
+    // override this per-backend.
+    defaultGpuSelectionMode?: GpuSelectionMode;
+    // Keyed by runtime backend id. A saved config whose `selection.deviceIds`
+    // no longer resolve to present hardware is never silently rewritten here —
+    // see resolveGpuSelection in gpu-selection.ts, which reports staleness at
+    // read time instead so the UI can offer an explicit repair action.
+    runtimeGpuConfigs?: Partial<Record<"ollama" | "llamacpp" | "mlx" | "rocm" | "vllm", RuntimeGpuConfig>>;
 }
 
 const DEFAULTS: AppSettings = {
@@ -165,6 +197,8 @@ const DEFAULTS: AppSettings = {
     reduceMotion: false,
     agentMaxSteps: 25,
     llamaCppMaxCachedModels: 2,
+    gpuLayerMode: "auto",
+    llamaCppFlashAttention: "auto",
     networkToolsEnabled: true,
     sandboxMaxMemoryMB: 2048,
     verificationEnabled: false,
@@ -178,6 +212,7 @@ const DEFAULTS: AppSettings = {
     energySampleIntervalSeconds: 2,
     downloadGlobalConcurrency: 2,
     downloadBandwidthMbps: 0,
+    defaultGpuSelectionMode: "auto",
 };
 
 function filePath(): string {

@@ -28,6 +28,7 @@ export const AUTO_APPROVABLE_TOOLS = new Set([
     "git_status",
     "git_diff",
     "git_log",
+    "git_blame",
     "read_notes",
     "get_background_output",
     "list_background_commands",

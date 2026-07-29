@@ -4,6 +4,7 @@ import { app } from "electron";
 import {
     environmentDestination,
     environmentPython,
+    buildPythonEnvironmentOperationSteps,
     ManagedPythonWorker,
     PYTHON_RUNTIME_MANIFESTS,
     type PythonRuntimeFamily,
@@ -24,6 +25,20 @@ import {
 // `bin/python` path that never exists there.
 const FAMILIES = Object.keys(PYTHON_RUNTIME_MANIFESTS) as PythonRuntimeFamily[];
 const PLATFORMS: NodeJS.Platform[] = ["win32", "linux", "darwin"];
+
+describe("Python environment operation plans", () => {
+    it("uses executable argument arrays for native installs", () => {
+        const steps = buildPythonEnvironmentOperationSteps("hardware-recommender", "install");
+        expect(steps.length).toBe(3);
+        expect(steps.every((step) => Array.isArray(step.args))).toBe(true);
+        expect(steps.at(-1)?.args).toEqual(expect.arrayContaining(["onnxruntime==1.28.0", "numpy==2.2.6"]));
+    });
+
+    it("builds repair as a pinned force-reinstall", () => {
+        const [step] = buildPythonEnvironmentOperationSteps("mlx", "repair");
+        expect(step.args).toEqual(expect.arrayContaining(["--force-reinstall", "mlx-lm==0.31.3"]));
+    });
+});
 
 // Whether a given (family, platform) combination is expected to resolve
 // through the WSL side (Windows-only path syntax, forward slashes, no
@@ -88,7 +103,7 @@ describe("environmentPython", () => {
 
 // A tiny stand-in for runtime_worker.py/recommender_worker.py's JSON-line
 // protocol, run via `node -e` instead of a real Python worker — CI can't
-// assume a working Python+torch venv is present just to exercise request
+// assume a working Python venv with the right packages is present just to exercise request
 // plumbing (timeouts, malformed output, crashes, shutdown), and
 // ManagedPythonWorker's `command`/`args` overrides exist specifically so
 // this substitution is possible without touching production code paths.

@@ -112,7 +112,14 @@ export function readTerminalOutput(id: string, tailChars = 4000): string {
 export function closeTerminal(id: string): void {
     const session = terminals.get(id);
     if (!session) return;
-    if (session.alive && session.pty.pid) killProcessTree(session.pty.pid);
+    if (session.alive) {
+        // Let node-pty release its pseudoconsole/PTY handles as well as
+        // terminating the shell tree. Killing only the external pid can leave
+        // the workspace cwd locked briefly on Windows.
+        try { session.pty.kill(); } catch { /* already exited */ }
+        if (session.pty.pid) killProcessTree(session.pty.pid);
+        session.alive = false;
+    }
     terminals.delete(id);
 }
 

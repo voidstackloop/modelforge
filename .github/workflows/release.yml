@@ -131,72 +131,78 @@ jobs:
             exit 1
           fi
 
-      - name: Publish release with all platform assets
+      # Create the release shell with no assets attached yet. Asset upload is
+      # handled entirely by the next step, one file at a time — see that
+      # step's comment for why: bundling every asset (including the ~450MB
+      # Windows .exe) into one `gh release create/upload dist/*` call uploads
+      # them all concurrently, and a transient network hiccup on the largest
+      # asset's stream can be swallowed by gh while every smaller asset
+      # uploaded alongside it succeeds — this is exactly what happened on the
+      # v1.1.1 release (twice, even with a single delete+retry cycle).
+      - name: Create the release (no assets yet)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/* \
+          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1 \
+          || gh release create "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
-            --draft=false \
-          || gh release upload "${{ github.ref_name }}" dist/* \
-            --repo "${{ github.repository }}" \
-            --clobber
+            --draft=false
 
-      # `gh release create dist/*` uploads every asset concurrently and can
-      # exit 0 even when one of them silently failed to attach (observed on
-      # v1.1.1: the Windows .exe — by far the largest asset at ~450MB — never
-      # made it onto the release while gh reported success, and every asset
-      # smaller than it uploaded fine). The "Validate..." step above only
-      # confirms the files exist locally in dist/ *before* this upload;
-      # this checks what the release *actually* ended up with afterward, and
-      # retries anything gh's own upload silently dropped.
-      #
-      # Comparing by NAME alone isn't enough (learned the hard way on the
-      # v1.1.1 rebuild): a failed/partial upload can still register a ghost
-      # asset entry under the right name with the wrong size (or 0), which a
-      # name-only check treats as "already there" and never retries. Byte
-      # size is compared against the local file instead — cheap, and the one
-      # signal that actually distinguishes a real upload from a placeholder.
-      - name: Verify every local asset actually landed on the release, retry any that didn't
+      # Uploads (and independently verifies) each asset ONE AT A TIME instead
+      # of concurrently — the actual fix for the silent-drop failure, not
+      # just a retry loop around the same concurrent bulk upload. Each file
+      # gets up to 4 attempts with backoff (10s/30s/60s) before the release
+      # is declared incomplete. Byte size (not just presence/exit code) is
+      # what's checked after every attempt: a failed/partial upload can still
+      # register a ghost asset entry under the right name with the wrong
+      # size (or 0), which a name-only or exit-code-only check would treat as
+      # "already there" and never retry.
+      - name: Upload each release asset individually, with retry + size verification
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          published_json=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq '.assets')
-          missing=0
-          for f in dist/*; do
+          remote_size_of() {
+            gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq \
+              '.assets[] | select(.name == "'"$1"'") | .size' 2>/dev/null || true
+          }
+          overall_missing=0
+          # Largest assets first — they're the ones actually at risk, so if
+          # the runner/network is having a bad day this surfaces (and starts
+          # retrying) as early as possible rather than after every small file
+          # has already gone through.
+          while IFS= read -r -d '' f; do
             name=$(basename "$f")
             local_size=$(stat -c%s "$f")
-            remote_size=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .size' <<< "$published_json")
+            uploaded=0
+            for attempt in 1 2 3 4; do
+              remote_size=$(remote_size_of "$name")
+              if [ -n "$remote_size" ] && [ "$remote_size" = "$local_size" ]; then
+                echo "Asset '$name' already present with the correct size ($local_size bytes)."
+                uploaded=1
+                break
+              fi
+              if [ "$attempt" -gt 1 ]; then
+                backoff=$((5 * attempt * (attempt - 1)))
+                echo "::warning::Asset '$name' missing or wrong size (local: ${local_size}, remote: ${remote_size:-none}) — attempt $attempt/4 after ${backoff}s."
+                sleep "$backoff"
+                # Only clean up a ghost/partial entry once we know one exists —
+                # never delete-then-fail-to-replace on the very first attempt.
+                if [ -n "$remote_size" ]; then
+                  gh release delete-asset "${{ github.ref_name }}" "$name" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+                fi
+              fi
+              gh release upload "${{ github.ref_name }}" "$f" --repo "${{ github.repository }}" --clobber || true
+            done
+            remote_size=$(remote_size_of "$name")
             if [ -z "$remote_size" ] || [ "$remote_size" != "$local_size" ]; then
-              echo "::warning::Asset '$name' is missing or wrong size on the release (local: ${local_size} bytes, remote: ${remote_size:-none}) — deleting any partial copy and re-uploading."
-              gh release delete-asset "${{ github.ref_name }}" "$name" --repo "${{ github.repository }}" --yes 2>/dev/null || true
-              if ! gh release upload "${{ github.ref_name }}" "$f" --repo "${{ github.repository }}" --clobber; then
-                echo "::error::Retry upload failed for '$name'."
-                missing=1
-                continue
-              fi
-              # Re-check size after the retry rather than trusting gh's exit
-              # code alone — that's the exact assumption that let the
-              # original silent failure through. gh's own --jq flag takes a
-              # single filter-string argument, not jq's --arg/--jq combo (an
-              # earlier version of this line mixed the two, which made gh
-              # treat the leftover tokens — including the two halves of an
-              # asset name containing a space, "Modelforge Setup 1.1.1.exe"
-              # — as extra positional args to `release view`, which only
-              # accepts one: the tag). Re-fetching the full JSON and reusing
-              # the same plain-jq --arg pattern as above avoids that entirely.
-              published_json=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq '.assets')
-              new_size=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .size' <<< "$published_json")
-              if [ "$new_size" != "$local_size" ]; then
-                echo "::error::Asset '$name' still wrong size after retry (local: ${local_size}, remote: ${new_size:-none})."
-                missing=1
-              fi
+              echo "::error::Asset '$name' still missing or wrong size after 4 attempts (local: ${local_size}, remote: ${remote_size:-none})."
+              overall_missing=1
             fi
-          done
-          if [ "$missing" -ne 0 ]; then
-            echo "::error::One or more release assets could not be uploaded even after a retry — this release is incomplete."
+          done < <(find dist -maxdepth 1 -type f -printf '%s\t%p\0' | sort -z -nr | cut -z -f2-)
+          if [ "$overall_missing" -ne 0 ]; then
+            echo "::error::One or more release assets could not be uploaded even after retrying — this release is incomplete."
             exit 1
           fi

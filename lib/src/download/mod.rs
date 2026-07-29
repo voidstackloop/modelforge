@@ -243,7 +243,16 @@ pub async fn run(
     let state = state_path(&dest_path);
 
     let client = build_client()?;
-    let probe = probe(&client, &url, token.as_deref(), &filename).await?;
+    let probe = tokio::select! {
+        biased;
+        _ = ctl.cancel.cancelled() => {
+            std::fs::remove_file(&part).ok();
+            std::fs::remove_file(&state).ok();
+            return Err(DownloadError::Cancelled { filename: filename.clone() });
+        },
+        _ = ctl.pause.cancelled() => return Err(DownloadError::Paused { filename: filename.clone() }),
+        result = probe(&client, &url, token.as_deref(), &filename) => result?,
+    };
 
     let use_chunked =
         probe.supports_ranges && probe.total_bytes.is_some_and(|t| t >= MIN_CHUNKED_SIZE);

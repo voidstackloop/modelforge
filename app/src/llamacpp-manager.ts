@@ -11,10 +11,41 @@ import * as path from "node:path";
 // can't statically see (or rewrite) an import expression inside a string.
 // Type-only imports are erased at compile time and don't hit this problem,
 // so those stay static.
-import type { ChatHistoryItem, Llama, LlamaModel } from "node-llama-cpp";
-import type { ChatMessage, ChatChunk, ChatOptions, ToolDefinition } from "./providers/types";
+import type { ChatHistoryItem, Llama, LlamaContextOptions, LlamaModel, LlamaModelOptions, LlamaNuma } from "node-llama-cpp";
+import type { ChatMessage, ChatChunk, ChatOptions, GpuLayerMode, ToolDefinition } from "./providers/types";
+import { withInferenceResourceLock } from "./inference-resource-scheduler";
 
 export type GpuBackend = "auto" | "vulkan" | "cuda" | "metal" | "cpu";
+export type LlamaCppNumaPolicy = "auto" | Exclude<LlamaNuma, false>;
+
+export interface LlamaCppRuntimeConfig {
+    maxThreads?: number;
+    vramReserveBytes?: number;
+    ramReserveBytes?: number;
+    numa?: LlamaCppNumaPolicy;
+}
+
+export interface LlamaCppLoadedModelInfo {
+    path: string;
+    gpuLayers: number;
+    totalLayers: number;
+    flashAttentionSupported: boolean;
+    activeGenerations: number;
+}
+
+export interface LlamaCppRuntimeInfo {
+    requestedBackend: GpuBackend;
+    activeBackend: string | null;
+    supportsGpuOffloading: boolean | null;
+    cpuMathCores: number | null;
+    maxThreads: number | null;
+    vramPaddingBytes: number | null;
+    ramPaddingBytes: number | null;
+    gpuDeviceNames: string[];
+    vramState: { total: number; used: number; free: number; unifiedSize: number } | null;
+    swapState: { maxSize: number; allocated: number; used: number } | null;
+    loadedModels: LlamaCppLoadedModelInfo[];
+}
 
 type NodeLlamaCppModule = typeof import("node-llama-cpp");
 const dynamicImport = new Function("specifier", "return import(specifier)") as (
@@ -31,6 +62,13 @@ let llamaInstance: Llama | null = null;
 let llamaInstancePromise: Promise<Llama> | null = null;
 let activeBackend: GpuBackend = "auto";
 let backendRevision = 0;
+let runtimeConfig: LlamaCppRuntimeConfig = {};
+// Set synchronously before a backend/runtime-config transition waits on the
+// global inference lock. New generations check this gate both before and
+// after model loading, closing the cached-model race where native state could
+// otherwise be disposed between `loadModel()` returning and context creation.
+let runtimeReconfigurationsPending = 0;
+let backendProbeCache: { values: string[]; expiresAt: number } | null = null;
 // Loaded model weights are the expensive, slow-to-load part (can be several
 // GB) — kept warm across chat turns. The lightweight per-turn context/session
 // below is deliberately NOT cached across turns; see chat() for why.
@@ -92,25 +130,41 @@ export function setModelCacheLimit(limit: number): void {
     void evictIdleModels();
 }
 
-function modelCacheKey(modelPath: string, gpuLayers?: number): string {
-    return `${modelPath}\0${gpuLayers ?? "auto"}`;
+export function normalizeLlamaCppRuntimeConfig(input: LlamaCppRuntimeConfig = {}): LlamaCppRuntimeConfig {
+    const integer = (value: number | undefined, maximum: number): number | undefined => {
+        if (value === undefined) return undefined;
+        if (!Number.isFinite(value)) throw new Error("llama.cpp runtime settings must be finite numbers.");
+        return Math.max(1, Math.min(maximum, Math.floor(value)));
+    };
+    const bytes = (value: number | undefined): number | undefined => {
+        if (value === undefined) return undefined;
+        if (!Number.isFinite(value) || value < 0) throw new Error("llama.cpp memory reserves must be finite non-negative byte counts.");
+        return Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value));
+    };
+    const numa = input.numa ?? "auto";
+    if (!["auto", "distribute", "isolate", "numactl", "mirror"].includes(numa)) throw new Error("Unsupported llama.cpp NUMA policy.");
+    return { maxThreads: integer(input.maxThreads, 512), vramReserveBytes: bytes(input.vramReserveBytes), ramReserveBytes: bytes(input.ramReserveBytes), numa };
 }
 
-export async function setGpuBackend(backend: GpuBackend): Promise<void> {
-    if (!["auto", "vulkan", "cuda", "metal", "cpu"].includes(backend)) {
-        throw new Error(`Unsupported llama.cpp GPU backend: ${String(backend)}`);
-    }
-    if (backend === activeBackend) return;
-    if ([...activeModelUsers.values()].some((users) => users > 0)) {
-        throw new Error("The GPU backend cannot be changed while a llama.cpp response is being generated.");
-    }
+function resolveGpuLayers(mode: GpuLayerMode | undefined, manualLayers: number | undefined): LlamaModelOptions["gpuLayers"] {
+    const resolvedMode = mode ?? (manualLayers === undefined ? "auto" : manualLayers === 0 ? "cpu" : "manual");
+    if (resolvedMode === "cpu") return 0;
+    // node-llama-cpp's "auto" is already maximum memory-safe placement and
+    // preserves the Llama instance's VRAM padding. It is therefore also the
+    // correct implementation of the user-facing "Maximum safe offload".
+    if (resolvedMode === "auto" || resolvedMode === "max") return "auto";
+    if (!Number.isInteger(manualLayers) || manualLayers! < 0) throw new Error("Manual GPU layer mode requires a non-negative integer layer count.");
+    return manualLayers;
+}
+
+function modelCacheKey(modelPath: string, gpuLayers: LlamaModelOptions["gpuLayers"]): string {
+    return `${modelPath}\0${JSON.stringify(gpuLayers)}`;
+}
+
+async function releaseNativeState(): Promise<void> {
     const oldModels = [...modelCache.values()];
     const oldLlama = llamaInstance;
-    activeBackend = backend;
     backendRevision++;
-    // A running Llama instance is bound to whichever backend it was created
-    // with — switching backends means starting over, and previously loaded
-    // model weights are tied to the old instance too.
     llamaInstance = null;
     llamaInstancePromise = null;
     modelCache.clear();
@@ -118,11 +172,114 @@ export async function setGpuBackend(backend: GpuBackend): Promise<void> {
     modelLastUsed.clear();
     activeModelUsers.clear();
     clearIdleEvictionTimer();
+    await Promise.allSettled([
+        ...oldModels.map((model) => model.dispose()),
+        ...(oldLlama ? [oldLlama.dispose()] : []),
+    ]);
+}
 
-    // Native model buffers can outlive their JS references. Explicitly
-    // dispose them so a backend switch returns VRAM before reallocating it.
-    await Promise.allSettled(oldModels.map((model) => model.dispose()));
-    if (oldLlama) await oldLlama.dispose();
+function hasActiveGenerations(): boolean {
+    return [...activeModelUsers.values()].some((users) => users > 0);
+}
+
+function assertGenerationCanStart(): void {
+    if (runtimeReconfigurationsPending > 0) {
+        throw new Error("llama.cpp is changing its backend or runtime configuration. Retry when the transition finishes.");
+    }
+}
+
+async function withRuntimeReconfiguration<T>(operation: string, activeError: string, task: () => Promise<T>): Promise<T> {
+    if (hasActiveGenerations()) throw new Error(activeError);
+    runtimeReconfigurationsPending++;
+    try {
+        return await withInferenceResourceLock(operation, async () => {
+            // A generation may have passed its first gate just before this
+            // transition was announced. Recheck after all earlier model-load
+            // operations have drained and refuse rather than disposing live
+            // contexts or model weights.
+            if (hasActiveGenerations()) throw new Error(activeError);
+            return task();
+        });
+    } finally {
+        runtimeReconfigurationsPending = Math.max(0, runtimeReconfigurationsPending - 1);
+    }
+}
+
+async function probeGpuBackend(backend: GpuBackend): Promise<void> {
+    const { getLlama } = await loadNodeLlamaCpp();
+    await getLlama({
+        gpu: backend === "cpu" ? false : backend,
+        build: "never",
+        skipDownload: true,
+        dryRun: true,
+    });
+}
+
+export async function setGpuBackend(backend: GpuBackend): Promise<void> {
+    if (!["auto", "vulkan", "cuda", "metal", "cpu"].includes(backend)) {
+        throw new Error(`Unsupported llama.cpp GPU backend: ${String(backend)}`);
+    }
+    if (backend === activeBackend && runtimeReconfigurationsPending === 0) return;
+    const activeError = "The GPU backend cannot be changed while a llama.cpp response is being generated.";
+    await withRuntimeReconfiguration(`llamacpp:backend:${backend}`, activeError, async () => {
+        if (backend === activeBackend) return;
+        const previousBackend = activeBackend;
+
+        // Validate the exact prebuilt backend before releasing the currently
+        // working instance. Then initialize a real Llama instance before the
+        // IPC call succeeds, so the renderer never persists a backend that
+        // only passed a dry-run probe but failed actual initialization.
+        await probeGpuBackend(backend);
+        await releaseNativeState();
+        activeBackend = backend;
+        try {
+            await getLlamaInstance();
+        } catch (switchError) {
+            await releaseNativeState();
+            activeBackend = previousBackend;
+            try {
+                await getLlamaInstance();
+            } catch (rollbackError) {
+                throw new Error(
+                    `Failed to initialize llama.cpp backend "${backend}", and restoring "${previousBackend}" also failed: ${(rollbackError as Error).message}`,
+                    { cause: switchError },
+                );
+            }
+            throw new Error(
+                `Failed to initialize llama.cpp backend "${backend}"; restored "${previousBackend}". ${(switchError as Error).message}`,
+                { cause: switchError },
+            );
+        }
+    });
+}
+
+export async function setLlamaCppRuntimeConfig(input: LlamaCppRuntimeConfig): Promise<void> {
+    const next = normalizeLlamaCppRuntimeConfig(input);
+    if (JSON.stringify(next) === JSON.stringify(runtimeConfig)) return;
+    const activeError = "llama.cpp CPU, memory-reserve, and NUMA settings cannot change during generation.";
+    await withRuntimeReconfiguration("llamacpp:runtime-config", activeError, async () => {
+        const previousConfig = runtimeConfig;
+        await releaseNativeState();
+        runtimeConfig = next;
+        try {
+            await getLlamaInstance();
+        } catch (switchError) {
+            await releaseNativeState();
+            runtimeConfig = previousConfig;
+            try {
+                await getLlamaInstance();
+            } catch (rollbackError) {
+                throw new Error(
+                    `Failed to apply llama.cpp runtime configuration, and restoring the previous configuration also failed: ${(rollbackError as Error).message}`,
+                    { cause: switchError },
+                );
+            }
+            throw new Error(
+                `Failed to apply llama.cpp runtime configuration; restored the previous configuration. ${(switchError as Error).message}`,
+                { cause: switchError },
+            );
+        }
+    });
 }
 
 async function getLlamaInstance(): Promise<Llama> {
@@ -133,7 +290,13 @@ async function getLlamaInstance(): Promise<Llama> {
     const backend = activeBackend;
     const creation = (async () => {
         const { getLlama } = await loadNodeLlamaCpp();
-        const instance = await getLlama({ gpu: backend === "cpu" ? false : backend });
+        const instance = await getLlama({
+            gpu: backend === "cpu" ? false : backend,
+            maxThreads: runtimeConfig.maxThreads,
+            vramPadding: runtimeConfig.vramReserveBytes,
+            ramPadding: runtimeConfig.ramReserveBytes,
+            numa: runtimeConfig.numa === "auto" || runtimeConfig.numa === undefined ? false : runtimeConfig.numa,
+        });
         // A backend change may happen while native initialization is still
         // running. Never publish an instance created for the stale backend.
         if (revision !== backendRevision) {
@@ -152,16 +315,23 @@ async function getLlamaInstance(): Promise<Llama> {
 }
 
 export async function getAvailableGpuBackends(): Promise<string[]> {
+    if (backendProbeCache && backendProbeCache.expiresAt > Date.now()) return backendProbeCache.values;
     try {
         const { getLlamaGpuTypes } = await loadNodeLlamaCpp();
         const types = await getLlamaGpuTypes("supported");
-        return types.filter((t): t is Exclude<typeof t, false> => t !== false);
+        const candidates = types.filter((t): t is Exclude<typeof t, false> => t !== false);
+        const results = await Promise.all(candidates.map(async (backend) => {
+            try { await probeGpuBackend(backend); return backend; } catch { return null; }
+        }));
+        const values = results.filter((backend): backend is Exclude<typeof backend, null> => backend !== null);
+        backendProbeCache = { values, expiresAt: Date.now() + 60_000 };
+        return values;
     } catch {
         return [];
     }
 }
 
-async function loadModel(modelPath: string, gpuLayers?: number): Promise<LlamaModel> {
+async function loadModel(modelPath: string, gpuLayers: LlamaModelOptions["gpuLayers"]): Promise<LlamaModel> {
     const key = modelCacheKey(modelPath, gpuLayers);
     const cached = modelCache.get(key);
     if (cached) {
@@ -175,9 +345,9 @@ async function loadModel(modelPath: string, gpuLayers?: number): Promise<LlamaMo
     // Coalesce simultaneous first requests. Loading the same weights twice
     // can briefly double RAM/VRAM use and OOM an otherwise suitable GPU.
     const revision = backendRevision;
-    const load = (async () => {
+    const load = withInferenceResourceLock(`llamacpp:model-load:${modelPath}`, async () => {
         const llama = await getLlamaInstance();
-        const model = await llama.loadModel({ modelPath, gpuLayers: gpuLayers ?? "auto" });
+        const model = await llama.loadModel({ modelPath, gpuLayers });
         if (revision !== backendRevision) {
             await model.dispose();
             throw new Error("The GPU backend changed while the model was loading. Please retry the request.");
@@ -187,7 +357,7 @@ async function loadModel(modelPath: string, gpuLayers?: number): Promise<LlamaMo
         await evictIdleModels(key);
         scheduleIdleEviction();
         return model;
-    })();
+    });
     modelLoads.set(key, load);
     try {
         return await load;
@@ -211,18 +381,7 @@ async function evictIdleModels(protectedKey?: string): Promise<void> {
 }
 
 export async function dispose(): Promise<void> {
-    backendRevision++;
-    clearIdleEvictionTimer();
-    const models = [...modelCache.values()];
-    const llama = llamaInstance;
-    modelCache.clear();
-    modelLoads.clear();
-    modelLastUsed.clear();
-    activeModelUsers.clear();
-    llamaInstance = null;
-    llamaInstancePromise = null;
-    await Promise.allSettled(models.map((model) => model.dispose()));
-    if (llama) await llama.dispose();
+    await releaseNativeState();
 }
 
 export interface LocalGgufModel {
@@ -323,6 +482,43 @@ export function listLoadedModels(): string[] {
     return [...new Set([...modelCache.keys()].map((key) => key.split("\0", 1)[0]))];
 }
 
+export async function getRuntimeInfo(): Promise<LlamaCppRuntimeInfo> {
+    const llama = llamaInstance;
+    const loadedModels = [...modelCache.entries()].map(([key, model]) => ({
+        path: key.split("\0", 1)[0],
+        gpuLayers: model.gpuLayers,
+        totalLayers: model.fileInsights.totalLayers,
+        flashAttentionSupported: model.flashAttentionSupported,
+        activeGenerations: activeModelUsers.get(key) ?? 0,
+    }));
+    if (!llama) {
+        return {
+            requestedBackend: activeBackend, activeBackend: null, supportsGpuOffloading: null,
+            cpuMathCores: null, maxThreads: runtimeConfig.maxThreads ?? null,
+            vramPaddingBytes: runtimeConfig.vramReserveBytes ?? null, ramPaddingBytes: runtimeConfig.ramReserveBytes ?? null,
+            gpuDeviceNames: [], vramState: null, swapState: null, loadedModels,
+        };
+    }
+    const [gpuDeviceNames, vramState, swapState] = await Promise.all([
+        llama.getGpuDeviceNames().catch(() => []),
+        llama.getVramState().catch(() => null),
+        llama.getSwapState().catch(() => null),
+    ]);
+    return {
+        requestedBackend: activeBackend,
+        activeBackend: String(llama.gpu),
+        supportsGpuOffloading: llama.supportsGpuOffloading,
+        cpuMathCores: llama.cpuMathCores,
+        maxThreads: llama.maxThreads,
+        vramPaddingBytes: llama.vramPaddingSize,
+        ramPaddingBytes: llama.ramPaddingSize,
+        gpuDeviceNames,
+        vramState,
+        swapState,
+        loadedModels,
+    };
+}
+
 export async function deleteModel(modelsDir: string, name: string): Promise<void> {
     const root = path.resolve(modelsDir);
     // `name` may now be a relative path with subfolders (see LocalGgufModel),
@@ -407,6 +603,8 @@ export async function chat(
         );
     }
 
+    assertGenerationCanStart();
+
     let lastUserIndex = -1;
     for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].role === "user") {
@@ -416,8 +614,19 @@ export async function chat(
     }
     if (lastUserIndex === -1) throw new Error("No user message to respond to.");
 
-    const cacheKey = modelCacheKey(modelPath, options?.gpuLayers);
-    const model = await loadModel(modelPath, options?.gpuLayers);
+    const resolvedGpuLayers = resolveGpuLayers(options?.gpuLayerMode, options?.gpuLayers);
+    const cacheKey = modelCacheKey(modelPath, resolvedGpuLayers);
+    const model = await loadModel(modelPath, resolvedGpuLayers);
+    // A transition can be announced while this call is awaiting a queued or
+    // cached model load. Never create a context from a model that the pending
+    // transition is about to dispose.
+    assertGenerationCanStart();
+    if (typeof resolvedGpuLayers === "number" && resolvedGpuLayers > model.fileInsights.totalLayers) {
+        modelCache.delete(cacheKey);
+        modelLastUsed.delete(cacheKey);
+        await model.dispose();
+        throw new Error(`Manual GPU layer count ${resolvedGpuLayers} exceeds this model's ${model.fileInsights.totalLayers} layers.`);
+    }
     activeModelUsers.set(cacheKey, (activeModelUsers.get(cacheKey) ?? 0) + 1);
     modelLastUsed.set(cacheKey, Date.now());
     // A fresh context per call re-evaluates the whole conversation history
@@ -430,7 +639,18 @@ export async function chat(
     let context: Awaited<ReturnType<LlamaModel["createContext"]>> | null = null;
     try {
         const { LlamaChatSession } = await loadNodeLlamaCpp();
-        context = await model.createContext({ contextSize: options?.contextLength });
+        const flashAttention: LlamaContextOptions["flashAttention"] = options?.flashAttention === "on"
+            ? true
+            : options?.flashAttention === "off" ? false : "auto";
+        const contextOptions: LlamaContextOptions = {
+            contextSize: options?.contextLength ?? "auto",
+            batchSize: options?.batchSize,
+            threads: options?.cpuThreads,
+            flashAttention,
+            failedCreationRemedy: options?.contextLength === undefined ? { retries: 6, autoContextSizeShrink: 0.16 } : false,
+            performanceTracking: options?.performanceTracking === true,
+        };
+        context = await model.createContext(contextOptions);
         const sequence = context.getSequence();
         const priorMessages = messages.slice(0, lastUserIndex);
         const session = new LlamaChatSession({ contextSequence: sequence });

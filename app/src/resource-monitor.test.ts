@@ -1,6 +1,13 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
+import pidusage from "pidusage";
+import { killProcessTree } from "./process-tree";
 import { monitorProcess } from "./resource-monitor";
+
+vi.mock("pidusage", () => ({ default: vi.fn() }));
+vi.mock("./process-tree", () => ({ killProcessTree: vi.fn() }));
+const pidusageMock = vi.mocked(pidusage);
+const killProcessTreeMock = vi.mocked(killProcessTree);
 
 function isAlive(pid: number): boolean {
     try {
@@ -28,6 +35,11 @@ describe("monitorProcess", () => {
     let child: ChildProcess | undefined;
     let stop: (() => void) | undefined;
 
+    beforeEach(() => {
+        pidusageMock.mockReset();
+        killProcessTreeMock.mockReset();
+    });
+
     afterEach(() => {
         stop?.();
         if (child?.pid && isAlive(child.pid)) child.kill();
@@ -39,6 +51,7 @@ describe("monitorProcess", () => {
             child = spawn("node", ["-e", "setTimeout(() => {}, 10000)"], { stdio: "ignore" });
             const pid = child.pid!;
             const reasons: string[] = [];
+            pidusageMock.mockResolvedValue({ memory: 2 * 1024 * 1024, cpu: 0 } as never);
 
             // Any real node process uses well over 1MB RSS, so this fires on the
             // very first poll.
@@ -51,20 +64,19 @@ describe("monitorProcess", () => {
             // first poll hit the outer timeout before waitFor's own, more
             // descriptive error could ever fire. Both are widened here,
             // consistently, so the intended error surfaces instead.
-            await waitFor(() => reasons.length > 0, 15_000);
+            await waitFor(() => reasons.length > 0);
 
             expect(reasons).toHaveLength(1);
             expect(reasons[0]).toMatch(/exceeded the 1MB memory limit/);
-            expect(isAlive(pid)).toBe(false);
+            expect(killProcessTreeMock).toHaveBeenCalledWith(pid);
         },
-        20_000
+        10_000
     );
 
     it("does nothing when no limits are configured", async () => {
         child = spawn("node", ["-e", "setTimeout(() => {}, 10000)"], { stdio: "ignore" });
         const pid = child.pid!;
         const reasons: string[] = [];
-
         stop = monitorProcess(pid, {}, (reason) => reasons.push(reason), 50);
         await new Promise((r) => setTimeout(r, 200));
 
@@ -76,6 +88,7 @@ describe("monitorProcess", () => {
         child = spawn("node", ["-e", "process.exit(0)"], { stdio: "ignore" });
         const pid = child.pid!;
         const reasons: string[] = [];
+        pidusageMock.mockRejectedValue(new Error("process exited"));
 
         stop = monitorProcess(pid, { maxMemoryMB: 100_000 }, (reason) => reasons.push(reason), 50);
         await new Promise((r) => setTimeout(r, 300));
@@ -88,8 +101,12 @@ describe("monitorProcess", () => {
         const pid = child.pid!;
         const reasons: string[] = [];
 
+        let resolveSample!: (value: never) => void;
+        pidusageMock.mockImplementation(() => new Promise((resolve) => { resolveSample = resolve; }) as never);
         stop = monitorProcess(pid, { maxMemoryMB: 1 }, (reason) => reasons.push(reason), 50);
+        await waitFor(() => pidusageMock.mock.calls.length > 0);
         stop();
+        resolveSample({ memory: 2 * 1024 * 1024, cpu: 0 } as never);
         await new Promise((r) => setTimeout(r, 300));
 
         expect(reasons).toHaveLength(0);

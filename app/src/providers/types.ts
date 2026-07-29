@@ -54,6 +54,8 @@ export interface ChatChunk {
 }
 
 export type ProviderId = "ollama" | "openai" | "anthropic" | "llamacpp" | "gemini" | "custom" | "mlx" | "rocm" | "vllm";
+export type GpuLayerMode = "auto" | "cpu" | "max" | "manual";
+export type FlashAttentionMode = "auto" | "on" | "off";
 
 export interface ChatOptions {
     temperature?: number;
@@ -69,6 +71,12 @@ export interface ChatOptions {
     // number = offload that many layers (useful for tuning multi-GPU setups
     // or freeing VRAM for something else running alongside Ollama).
     gpuLayers?: number;
+    // Built-in node-llama-cpp controls. Other providers ignore these fields.
+    gpuLayerMode?: GpuLayerMode;
+    cpuThreads?: number;
+    batchSize?: number;
+    flashAttention?: FlashAttentionMode;
+    performanceTracking?: boolean;
     // Ollama + OpenAI only (Anthropic has no reproducibility param). Same
     // seed + same prompt should produce the same output, useful for testing.
     seed?: number;

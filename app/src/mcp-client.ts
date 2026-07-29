@@ -148,8 +148,16 @@ async function httpRequest(
                 ...(config.headers ?? {}),
             },
             body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: params ?? {} }),
+            // Unlike the stdio transport (which times out a stuck request via
+            // sendStdioRequest's own setTimeout), fetch() has no timeout by
+            // default — a slow/unresponsive HTTP MCP server would otherwise
+            // hang this call, and the whole agent turn waiting on it, forever.
+            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
     } catch (err) {
+        if (err instanceof Error && err.name === "TimeoutError") {
+            throw new Error(`MCP request "${method}" timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`);
+        }
         throw new Error(`Could not reach MCP server: ${(err as Error).message}`);
     }
     if (!res.ok) throw new Error(`MCP server responded with HTTP ${res.status} ${res.statusText}`);
@@ -242,6 +250,36 @@ function formatToolResult(result: unknown): string {
     return r.isError ? `Error: ${text}` : text;
 }
 
+// Only a structural check (required fields present, JSON-Schema-declared
+// primitive types roughly match) — not full JSON Schema validation (no
+// $ref/oneOf/pattern/etc). Zod can't do this ahead of time because each
+// server declares its own inputSchema at connect time (see
+// mcpToolArgsSchema's comment in schemas.ts); this catches the common case
+// of a missing required field or an obviously wrong type before spending a
+// round trip (and a turn of the agent loop) on a request the server would
+// just reject anyway.
+export function validateAgainstInputSchema(inputSchema: Record<string, unknown> | undefined, args: Record<string, unknown>): string[] {
+    if (!inputSchema) return [];
+    const problems: string[] = [];
+    const required = Array.isArray(inputSchema.required) ? (inputSchema.required as unknown[]) : [];
+    for (const key of required) {
+        if (typeof key === "string" && !(key in args)) problems.push(`missing required argument "${key}"`);
+    }
+    const properties = inputSchema.properties && typeof inputSchema.properties === "object" ? (inputSchema.properties as Record<string, unknown>) : {};
+    for (const [key, value] of Object.entries(args)) {
+        const propSchema = properties[key];
+        if (!propSchema || typeof propSchema !== "object") continue;
+        const expectedType = (propSchema as Record<string, unknown>).type;
+        if (typeof expectedType !== "string") continue;
+        const actualType = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+        const normalizedExpected = expectedType === "integer" ? "number" : expectedType;
+        if (normalizedExpected !== actualType && !(normalizedExpected === "object" && actualType === "object")) {
+            problems.push(`"${key}" should be ${expectedType}, got ${actualType}`);
+        }
+    }
+    return problems;
+}
+
 export async function callMcpTool(qualified: string, args: Record<string, unknown>): Promise<string> {
     const rest = qualified.slice("mcp__".length);
     const separator = rest.indexOf("__");
@@ -250,6 +288,12 @@ export async function callMcpTool(qualified: string, args: Record<string, unknow
     const toolName = rest.slice(separator + 2);
     const conn = connections.get(serverId);
     if (!conn) throw new Error(`MCP server "${serverId}" is not connected.`);
+
+    const toolInfo = conn.tools.find((t) => t.name === toolName);
+    const problems = validateAgainstInputSchema(toolInfo?.inputSchema, args);
+    if (problems.length > 0) {
+        throw new Error(`Invalid arguments for "${toolName}": ${problems.join("; ")}`);
+    }
 
     if (conn.config.transport === "stdio") {
         const result = await sendStdioRequest(conn, "tools/call", { name: toolName, arguments: args });

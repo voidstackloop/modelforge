@@ -30,6 +30,8 @@ describe("download-jobs-store", () => {
         expect(job.id).toBeTruthy();
         expect(job.state).toBe("queued");
         expect(job.retryCount).toBe(0);
+        expect(job.maxAttempts).toBe(4);
+        expect(job.retryHistory).toEqual([]);
         expect(job.createdAt).toBeTruthy();
         expect(job.updatedAt).toBe(job.createdAt);
         expect(listJobs().map((j) => j.id)).toContain(job.id);
@@ -66,7 +68,7 @@ describe("download-jobs-store", () => {
         const updatedShards = [shard({ receivedBytes: 500 })];
         const updated = updateJob(created.id, { state: "downloading", shards: updatedShards, retryCount: 1 });
         expect(updated?.state).toBe("downloading");
-        expect(updated?.shards).toEqual(updatedShards);
+        expect(updated?.shards).toEqual([expect.objectContaining(updatedShards[0])]);
         expect(updated?.retryCount).toBe(1);
         expect(updated?.updatedAt).not.toBe(created.updatedAt);
     });

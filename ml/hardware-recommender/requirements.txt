@@ -4,3 +4,9 @@ pandas==2.3.1
 pyarrow==21.0.0
 pytest==8.4.1
 torch==2.13.0
+# Training-time only (export_onnx.py) — the packaged app never installs
+# these; it runs the exported .onnx file through onnxruntime instead (see
+# app/python/recommender_worker.py and python-runtime-manager.ts's
+# "hardware-recommender" manifest).
+onnx==1.22.0
+onnxruntime==1.28.0

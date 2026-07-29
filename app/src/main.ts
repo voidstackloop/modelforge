@@ -12,6 +12,9 @@ import * as llamacpp from "./llamacpp-manager";
 import * as scheduler from "./scheduler";
 import * as localServers from "./local-server-manager";
 import * as powerMonitor from "./power-monitor";
+import { getSpecs } from "./system-specs";
+import { assertVendorHomogeneity, resolveGpuSelection, selectAutomaticGpuCohort } from "./gpu-selection";
+import { setGpuMonitoringPaused } from "./gpu-telemetry";
 import { setupMenu } from "./menu";
 import { setupAutoUpdater, checkForUpdatesManually } from "./updater";
 import type { ProviderId } from "./providers/types";
@@ -30,6 +33,7 @@ import { registerMediaIpc } from "./ipc/media-handlers";
 import { registerAgentIpc } from "./ipc/agent-handlers";
 import { registerTerminalIpc } from "./ipc/terminal-handlers";
 import { registerMcpIpc } from "./ipc/mcp-handlers";
+import { registerGpuIpc } from "./ipc/gpu-handlers";
 
 // Without these, an unexpected error anywhere in the main process (a bad file
 // parse, a network hiccup, a third-party library throwing) would crash the
@@ -80,6 +84,14 @@ function createWindow(): void {
         mainWindow?.maximize();
         mainWindow?.show();
     });
+
+    // GPU telemetry polling (nvidia-smi/rocm-smi) is only useful while
+    // something can actually see it — pause it while the window is hidden or
+    // minimized rather than spawning those tools in the background forever.
+    mainWindow.on("hide", () => setGpuMonitoringPaused(true));
+    mainWindow.on("minimize", () => setGpuMonitoringPaused(true));
+    mainWindow.on("show", () => setGpuMonitoringPaused(false));
+    mainWindow.on("restore", () => setGpuMonitoringPaused(false));
 
     mainWindow.on("close", (event) => {
         if (getIsBusy() && !getForceClose()) {
@@ -164,6 +176,7 @@ function registerIpcHandlers(): void {
     registerAgentIpc();
     registerTerminalIpc();
     registerMcpIpc();
+    registerGpuIpc();
 }
 
 // Best-effort: connect every enabled MCP server on launch so its tools are
@@ -187,9 +200,37 @@ app.whenReady().then(async () => {
     createWindow();
     ollama.setHost(settingsStore.getSettings().ollamaHost);
     ollama.setModelsDir(settingsStore.getSettings().modelsDir);
+    // Best-effort: a stale/missing saved selection just falls back to no
+    // filtering (Ollama sees every device, its existing default behavior)
+    // rather than blocking app startup — the Runtime Manager surfaces
+    // staleness explicitly when the user actually opens it.
+    try {
+        const ollamaGpuConfig = settingsStore.getSettings().runtimeGpuConfigs?.ollama;
+        if (ollamaGpuConfig?.selection) {
+            const specs = await getSpecs();
+            const resolution = resolveGpuSelection(ollamaGpuConfig.selection, specs.gpus);
+            if (!resolution.stale) {
+                const automatic = ollamaGpuConfig.selection.mode === "auto" || ollamaGpuConfig.selection.mode === "all";
+                const selected = automatic
+                    ? selectAutomaticGpuCohort(resolution.gpus, ["nvidia", "amd", "intel", "apple", "unknown"])
+                    : resolution.gpus;
+                assertVendorHomogeneity(selected, "Ollama");
+                ollama.setGpuSelection(selected);
+            }
+        }
+    } catch (err) {
+        logger.error(`Failed to resolve Ollama GPU selection on startup: ${(err as Error).message}`);
+    }
     await ollama.start();
-    llamacpp.setModelCacheLimit(settingsStore.getSettings().llamaCppMaxCachedModels ?? 2);
-    await llamacpp.setGpuBackend(settingsStore.getSettings().llamaCppGpuBackend ?? "auto");
+    const llamaSettings = settingsStore.getSettings();
+    llamacpp.setModelCacheLimit(llamaSettings.llamaCppMaxCachedModels ?? 2);
+    await llamacpp.setLlamaCppRuntimeConfig({
+        maxThreads: llamaSettings.llamaCppMaxThreads,
+        vramReserveBytes: llamaSettings.llamaCppVramReserveGB === undefined ? undefined : llamaSettings.llamaCppVramReserveGB * 1024 ** 3,
+        ramReserveBytes: llamaSettings.llamaCppRamReserveGB === undefined ? undefined : llamaSettings.llamaCppRamReserveGB * 1024 ** 3,
+        numa: llamaSettings.llamaCppNumaPolicy ?? "auto",
+    });
+    await llamacpp.setGpuBackend(llamaSettings.llamaCppGpuBackend ?? "auto");
     setupAutoUpdater(() => getMainWindow());
     downloadQueue.init(() => getMainWindow());
     downloadQueue.configure({
@@ -216,6 +257,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+    downloadQueue.flush();
     ollama.stop();
     localServers.stopAll();
     agentTools.killAllBackgroundCommands();

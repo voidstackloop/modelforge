@@ -1,6 +1,6 @@
 {
   "name": "app",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "",
   "main": "dist/main.js",
   "scripts": {
@@ -99,7 +99,7 @@
     "cross-env": "^10.1.0",
     "electron": "^43.1.1",
     "electron-builder": "^26.15.3",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "vitest": "^3.2.4",
     "wait-on": "^9.0.10"
   },
@@ -113,5 +113,8 @@
     "pidusage": "^4.0.1",
     "tesseract.js": "^5.1.1",
     "zod": "^4.4.3"
+  },
+  "overrides": {
+    "tar": "7.5.22"
   }
 }

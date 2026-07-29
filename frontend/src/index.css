@@ -24,6 +24,12 @@
   --border: oklch(0.885 0.01 260);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+  --success: oklch(0.52 0.14 150);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.65 0.16 75);
+  --warning-foreground: oklch(0.145 0.02 75);
+  --info: oklch(0.5 0.15 245);
+  --info-foreground: oklch(0.985 0 0);
 }
 
 .dark {
@@ -45,6 +51,12 @@
   --border: oklch(1 0 0 / 12%);
   --input: oklch(1 0 0 / 13%);
   --ring: oklch(0.556 0 0);
+  --success: oklch(0.72 0.16 150);
+  --success-foreground: oklch(0.145 0 0);
+  --warning: oklch(0.78 0.15 80);
+  --warning-foreground: oklch(0.145 0.02 75);
+  --info: oklch(0.72 0.14 245);
+  --info-foreground: oklch(0.145 0 0);
 }
 
 /* Accent color themes — layered on top of the light/dark mode above. Only
@@ -107,6 +119,292 @@
   --ring: oklch(0.65 0.19 10);
 }
 
+/* Community color themes. These are local, token-based adaptations of popular
+   open-source palettes rather than bundled third-party theme code. Each palette
+   has both light and dark variants so it continues to respect the selected
+   color mode and the operating-system preference. */
+:root.theme-monokai {
+  --background: #f8f8f2;
+  --foreground: #272822;
+  --card: #ffffff;
+  --card-foreground: #272822;
+  --popover: #ffffff;
+  --popover-foreground: #272822;
+  --primary: #a80d4d;
+  --primary-foreground: #ffffff;
+  --secondary: #e9e9e1;
+  --secondary-foreground: #272822;
+  --muted: #efefe8;
+  --muted-foreground: #5d5e56;
+  --accent: #e5e5dc;
+  --accent-foreground: #272822;
+  --destructive: #b72f3e;
+  --border: #d4d4ca;
+  --input: #deded5;
+  --ring: #7b4aa0;
+  --success: #4d7600;
+  --warning: #806100;
+  --info: #176b7d;
+}
+.dark.theme-monokai {
+  --background: #272822;
+  --foreground: #f8f8f2;
+  --card: #2f302a;
+  --card-foreground: #f8f8f2;
+  --popover: #34352e;
+  --popover-foreground: #f8f8f2;
+  --primary: #f92672;
+  --primary-foreground: #272822;
+  --secondary: #3e3d32;
+  --secondary-foreground: #f8f8f2;
+  --muted: #383931;
+  --muted-foreground: #b8b8ad;
+  --accent: #49483e;
+  --accent-foreground: #f8f8f2;
+  --destructive: #ff657a;
+  --border: #49483e;
+  --input: #555449;
+  --ring: #a6e22e;
+  --success: #a6e22e;
+  --warning: #e6db74;
+  --info: #66d9ef;
+}
+
+:root.theme-dracula {
+  --background: #f8f8fb;
+  --foreground: #282a36;
+  --card: #ffffff;
+  --card-foreground: #282a36;
+  --popover: #ffffff;
+  --popover-foreground: #282a36;
+  --primary: #7043a5;
+  --primary-foreground: #ffffff;
+  --secondary: #ececf3;
+  --secondary-foreground: #282a36;
+  --muted: #f0f0f6;
+  --muted-foreground: #5e6070;
+  --accent: #e8e2f2;
+  --accent-foreground: #282a36;
+  --destructive: #c22f45;
+  --border: #d9d9e4;
+  --input: #e1e1eb;
+  --ring: #7043a5;
+  --success: #397a38;
+  --warning: #8a6500;
+  --info: #27699e;
+}
+.dark.theme-dracula {
+  --background: #282a36;
+  --foreground: #f8f8f2;
+  --card: #30323f;
+  --card-foreground: #f8f8f2;
+  --popover: #343746;
+  --popover-foreground: #f8f8f2;
+  --primary: #bd93f9;
+  --primary-foreground: #282a36;
+  --secondary: #44475a;
+  --secondary-foreground: #f8f8f2;
+  --muted: #383a49;
+  --muted-foreground: #b9bac6;
+  --accent: #44475a;
+  --accent-foreground: #f8f8f2;
+  --destructive: #ff5555;
+  --border: #4d5065;
+  --input: #56596e;
+  --ring: #bd93f9;
+  --success: #50fa7b;
+  --warning: #f1fa8c;
+  --info: #8be9fd;
+}
+
+:root.theme-nord {
+  --background: #eceff4;
+  --foreground: #2e3440;
+  --card: #f8f9fb;
+  --card-foreground: #2e3440;
+  --popover: #ffffff;
+  --popover-foreground: #2e3440;
+  --primary: #4c6f91;
+  --primary-foreground: #ffffff;
+  --secondary: #e5e9f0;
+  --secondary-foreground: #2e3440;
+  --muted: #e5e9f0;
+  --muted-foreground: #596273;
+  --accent: #d8dee9;
+  --accent-foreground: #2e3440;
+  --destructive: #b64552;
+  --border: #c8cfda;
+  --input: #d8dee9;
+  --ring: #5e81ac;
+  --success: #46735b;
+  --warning: #8b6914;
+  --info: #39738c;
+}
+.dark.theme-nord {
+  --background: #2e3440;
+  --foreground: #eceff4;
+  --card: #353c4a;
+  --card-foreground: #eceff4;
+  --popover: #3b4252;
+  --popover-foreground: #eceff4;
+  --primary: #88c0d0;
+  --primary-foreground: #2e3440;
+  --secondary: #434c5e;
+  --secondary-foreground: #eceff4;
+  --muted: #3b4252;
+  --muted-foreground: #b8c0cc;
+  --accent: #434c5e;
+  --accent-foreground: #eceff4;
+  --destructive: #bf616a;
+  --border: #4c566a;
+  --input: #4c566a;
+  --ring: #88c0d0;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  --info: #81a1c1;
+}
+
+:root.theme-solarized {
+  --background: #fdf6e3;
+  --foreground: #4b5b5e;
+  --card: #fffaf0;
+  --card-foreground: #4b5b5e;
+  --popover: #fffdf8;
+  --popover-foreground: #4b5b5e;
+  --primary: #087e86;
+  --primary-foreground: #ffffff;
+  --secondary: #eee8d5;
+  --secondary-foreground: #4b5b5e;
+  --muted: #f3eddb;
+  --muted-foreground: #657b83;
+  --accent: #e6dfc9;
+  --accent-foreground: #4b5b5e;
+  --destructive: #c33b32;
+  --border: #d8d0b9;
+  --input: #e4ddca;
+  --ring: #087e86;
+  --success: #657b00;
+  --warning: #9b6800;
+  --info: #176b8f;
+}
+.dark.theme-solarized {
+  --background: #002b36;
+  --foreground: #eee8d5;
+  --card: #073642;
+  --card-foreground: #eee8d5;
+  --popover: #0b3d49;
+  --popover-foreground: #eee8d5;
+  --primary: #2aa198;
+  --primary-foreground: #002b36;
+  --secondary: #164652;
+  --secondary-foreground: #eee8d5;
+  --muted: #0d3b46;
+  --muted-foreground: #a8b5b2;
+  --accent: #164652;
+  --accent-foreground: #eee8d5;
+  --destructive: #dc5b53;
+  --border: #28515b;
+  --input: #315b65;
+  --ring: #2aa198;
+  --success: #859900;
+  --warning: #d6a000;
+  --info: #268bd2;
+}
+
+:root.theme-gruvbox {
+  --background: #fbf1c7;
+  --foreground: #3c3836;
+  --card: #fff8d5;
+  --card-foreground: #3c3836;
+  --popover: #fffbea;
+  --popover-foreground: #3c3836;
+  --primary: #af3a03;
+  --primary-foreground: #ffffff;
+  --secondary: #ebdbb2;
+  --secondary-foreground: #3c3836;
+  --muted: #f2e5bc;
+  --muted-foreground: #665c54;
+  --accent: #e5d5ad;
+  --accent-foreground: #3c3836;
+  --destructive: #b92323;
+  --border: #d5c4a1;
+  --input: #ded0ad;
+  --ring: #af3a03;
+  --success: #5f6f17;
+  --warning: #8f5f00;
+  --info: #306b74;
+}
+.dark.theme-gruvbox {
+  --background: #282828;
+  --foreground: #ebdbb2;
+  --card: #32302f;
+  --card-foreground: #ebdbb2;
+  --popover: #3c3836;
+  --popover-foreground: #ebdbb2;
+  --primary: #fe8019;
+  --primary-foreground: #282828;
+  --secondary: #504945;
+  --secondary-foreground: #fbf1c7;
+  --muted: #3c3836;
+  --muted-foreground: #bdae93;
+  --accent: #504945;
+  --accent-foreground: #fbf1c7;
+  --destructive: #fb4934;
+  --border: #665c54;
+  --input: #665c54;
+  --ring: #fe8019;
+  --success: #b8bb26;
+  --warning: #fabd2f;
+  --info: #83a598;
+}
+
+:root.theme-catppuccin {
+  --background: #eff1f5;
+  --foreground: #4c4f69;
+  --card: #ffffff;
+  --card-foreground: #4c4f69;
+  --popover: #ffffff;
+  --popover-foreground: #4c4f69;
+  --primary: #8839ef;
+  --primary-foreground: #ffffff;
+  --secondary: #e6e9ef;
+  --secondary-foreground: #4c4f69;
+  --muted: #e9ebf1;
+  --muted-foreground: #6c6f85;
+  --accent: #dce0e8;
+  --accent-foreground: #4c4f69;
+  --destructive: #c62f45;
+  --border: #ccd0da;
+  --input: #dce0e8;
+  --ring: #8839ef;
+  --success: #3f7c3b;
+  --warning: #956200;
+  --info: #206da5;
+}
+.dark.theme-catppuccin {
+  --background: #1e1e2e;
+  --foreground: #cdd6f4;
+  --card: #252538;
+  --card-foreground: #cdd6f4;
+  --popover: #2b2b40;
+  --popover-foreground: #cdd6f4;
+  --primary: #cba6f7;
+  --primary-foreground: #1e1e2e;
+  --secondary: #313244;
+  --secondary-foreground: #cdd6f4;
+  --muted: #2a2a3d;
+  --muted-foreground: #a6adc8;
+  --accent: #313244;
+  --accent-foreground: #cdd6f4;
+  --destructive: #f38ba8;
+  --border: #45475a;
+  --input: #45475a;
+  --ring: #cba6f7;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --info: #89b4fa;
+}
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -130,6 +428,12 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
 }
 
 @layer base {
@@ -143,6 +447,13 @@
   }
   ::selection { background: color-mix(in oklch, var(--primary) 25%, transparent); }
   button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
+  /* Explicit, consistent keyboard-focus ring on top of the global outline-ring/50
+     utility — components that override outline (e.g. custom hover/active states)
+     still get a visible focus indicator here rather than silently losing it. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
 }
 
 @layer utilities {
@@ -229,6 +540,18 @@
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
+}
+/* Fallback for the OS-level preference — .reduce-motion above is the explicit
+   in-app setting; this covers anyone who never opened that toggle. */
+@media (prefers-reduced-motion: reduce) {
+  *:not(.motion-safe-override, .motion-safe-override *),
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .prose-chat p {

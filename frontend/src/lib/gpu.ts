@@ -28,3 +28,31 @@ export function gpuBackendNote(vendors: string[]): GpuBackendNote {
     if (vendors.length === 0) return "noGpuDetected";
     return null;
 }
+
+export interface ParsedGpuSelectionError {
+    category: string;
+    recoveryAction: string;
+    message: string;
+}
+
+// Mirrors app/src/gpu-selection.ts's GpuSelectionError.toIpcMessage()/
+// GPU_SELECTION_ERROR_TAG exactly — Electron's ipcRenderer.invoke rejection
+// only ever carries a plain `.message` string across the process boundary,
+// so a GPU-selection error's structured category/recoveryAction are encoded
+// into that string on the main-process side and decoded back out here,
+// rather than being silently dropped (the default IPC error behavior).
+const GPU_SELECTION_ERROR_TAG = " GPU_SELECTION_ERROR ";
+
+export function parseGpuSelectionErrorMessage(message: string): ParsedGpuSelectionError | null {
+    const tagIndex = message.indexOf(GPU_SELECTION_ERROR_TAG);
+    if (tagIndex < 0) return null;
+    try {
+        const parsed = JSON.parse(message.slice(tagIndex + GPU_SELECTION_ERROR_TAG.length));
+        if (parsed && typeof parsed.category === "string" && typeof parsed.recoveryAction === "string" && typeof parsed.message === "string") {
+            return parsed as ParsedGpuSelectionError;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}

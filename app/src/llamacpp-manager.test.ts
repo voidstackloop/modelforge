@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { groupShardedModels, listModels, deleteModel } from "./llamacpp-manager";
+import { deleteModel, groupShardedModels, listModels, normalizeLlamaCppRuntimeConfig } from "./llamacpp-manager";
 
 describe("groupShardedModels", () => {
     it("leaves a normal single-file model untouched", () => {
@@ -128,5 +128,26 @@ describe("deleteModel", () => {
 
     it("rejects a traversal attempt disguised inside a subfolder path", async () => {
         await expect(deleteModel(dir, "pub/../../evil.gguf")).rejects.toThrow(/Invalid model file name/);
+    });
+});
+
+describe("llama.cpp runtime configuration", () => {
+    it("keeps memory reserves enabled and bounds thread counts", () => {
+        expect(normalizeLlamaCppRuntimeConfig({
+            maxThreads: 10_000,
+            vramReserveBytes: 2 * 1024 ** 3,
+            ramReserveBytes: 4 * 1024 ** 3,
+            numa: "auto",
+        })).toEqual({
+            maxThreads: 512,
+            vramReserveBytes: 2 * 1024 ** 3,
+            ramReserveBytes: 4 * 1024 ** 3,
+            numa: "auto",
+        });
+    });
+
+    it("rejects unsafe or malformed reserve and NUMA values", () => {
+        expect(() => normalizeLlamaCppRuntimeConfig({ vramReserveBytes: -1 })).toThrow(/non-negative/);
+        expect(() => normalizeLlamaCppRuntimeConfig({ numa: "invalid" as never })).toThrow(/NUMA/);
     });
 });

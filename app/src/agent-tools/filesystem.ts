@@ -7,10 +7,29 @@ const MAX_SEARCH_RESULTS = 50;
 const MAX_LIST_ENTRIES = 500;
 const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", "release", "__pycache__"]);
 
+// Same heuristic git/most editors use: a NUL byte anywhere in a leading
+// sample means "not text". Without this, fs.readFileSync(path, "utf-8") on a
+// binary file (image, .pyc, compiled artifact, etc.) doesn't throw — it just
+// silently returns mangled/replacement-character text, which read_file would
+// hand to the model as if it were real file content, and write_file/
+// replace_in_file would happily write back as further corruption.
+const BINARY_SNIFF_BYTES = 8_000;
+function looksBinary(target: string): boolean {
+    const fd = fs.openSync(target, "r");
+    try {
+        const buffer = Buffer.alloc(BINARY_SNIFF_BYTES);
+        const bytesRead = fs.readSync(fd, buffer, 0, BINARY_SNIFF_BYTES, 0);
+        return buffer.subarray(0, bytesRead).includes(0);
+    } finally {
+        fs.closeSync(fd);
+    }
+}
+
 export function readFile(workspaceRoot: string, relativePath: string, startLine?: number, endLine?: number): string {
     const target = resolveSafePath(workspaceRoot, relativePath);
     const stat = fs.statSync(target);
     if (stat.isDirectory()) throw new Error(`"${relativePath}" is a directory, not a file.`);
+    if (looksBinary(target)) throw new Error(`"${relativePath}" looks like a binary file — read_file only supports text.`);
     const content = fs.readFileSync(target, "utf-8");
     if (startLine !== undefined || endLine !== undefined) {
         const start = Math.max(1, Math.floor(startLine ?? 1));
@@ -108,7 +127,15 @@ export function rollbackLastWrite(workspaceRoot: string): RollbackResult | null 
 export function listDir(workspaceRoot: string, relativePath: string): string[] {
     const target = resolveSafePath(workspaceRoot, relativePath || ".");
     const entries = fs.readdirSync(target, { withFileTypes: true });
-    return entries.slice(0, MAX_LIST_ENTRIES).map((e) => (e.isDirectory() ? `${e.name}/` : e.name));
+    const names = entries.slice(0, MAX_LIST_ENTRIES).map((e) => (e.isDirectory() ? `${e.name}/` : e.name));
+    // Appended as a synthetic extra entry (rather than changing the return
+    // type to `{entries, truncated}`) so the model actually sees that the
+    // listing was cut off instead of concluding the directory only has
+    // MAX_LIST_ENTRIES items.
+    if (entries.length > MAX_LIST_ENTRIES) {
+        names.push(`… truncated: ${entries.length - MAX_LIST_ENTRIES} more entries not shown, narrow the path`);
+    }
+    return names;
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -242,6 +269,14 @@ export function searchFiles(workspaceRoot: string, query: string, relativePath =
     }
 
     walk(startDir);
+    // Heuristic (not exact): if the cap was reached there may be more
+    // matches that were never counted, so this is worded as "may be more"
+    // rather than an exact remaining count — without it, the model has no
+    // signal that "no matches after line X" could just mean "stopped
+    // looking", not "there aren't any".
+    if (results.length >= MAX_SEARCH_RESULTS) {
+        results.push({ file: "", line: 0, text: `… stopped at ${MAX_SEARCH_RESULTS} matches — there may be more; narrow the query or path` });
+    }
     return results;
 }
 
@@ -297,6 +332,9 @@ export function findSymbolReferences(workspaceRoot: string, symbol: string, rela
     }
 
     walk(startDir);
+    if (results.length >= MAX_SEARCH_RESULTS) {
+        results.push({ file: "", line: 0, text: `… stopped at ${MAX_SEARCH_RESULTS} matches — there may be more; narrow the symbol or path` });
+    }
     return results;
 }
 

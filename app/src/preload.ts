@@ -7,13 +7,15 @@ import type { RollbackResult, ProjectScripts } from "./agent-tools";
 import type { SandboxCapabilities } from "./command-sandbox";
 import type { TerminalInfo } from "./terminal-manager";
 import type { PromptPreset } from "./settings-store";
-import type { LocalGgufModel, GpuBackend } from "./llamacpp-manager";
+import type { LocalGgufModel, GpuBackend, LlamaCppRuntimeInfo } from "./llamacpp-manager";
 import type { ScheduledTask } from "./scheduled-tasks-store";
-import type { LocalRuntimeStatus } from "./local-server-manager";
-import type { PythonEnvironmentStatus } from "./python-runtime-manager";
+import type { LocalRuntimeStatus, RuntimeStartupConfig, StopRuntimeResult } from "./local-server-manager";
+import type { PythonEnvironmentProgress, PythonEnvironmentStatus, PythonEnvironmentOperation, PythonRuntimeFamily } from "./python-runtime-manager";
 import type { ChatSession } from "./sessions-store";
 import type { Project } from "./projects-store";
 import type { DownloadJob } from "./download-jobs-store";
+import type { GpuSelection } from "./gpu-selection";
+import type { GpuTelemetrySample } from "./gpu-telemetry";
 
 export interface ToolExecuteResult {
     result?: unknown;
@@ -54,7 +56,7 @@ export interface HfSearchResult {
 }
 
 export interface HfListFilesResult {
-    files?: { path: string; sizeBytes: number | null }[];
+    files?: { path: string; sizeBytes: number | null; sha256?: string }[];
     error?: string;
 }
 
@@ -102,20 +104,30 @@ export const api = {
         listModels: (): Promise<LocalGgufModel[]> => ipcRenderer.invoke("llamacpp:listModels"),
         deleteModel: (name: string): Promise<void> => ipcRenderer.invoke("llamacpp:deleteModel", name),
         getAvailableGpuBackends: (): Promise<string[]> => ipcRenderer.invoke("llamacpp:getAvailableGpuBackends"),
+        getRuntimeInfo: (): Promise<LlamaCppRuntimeInfo> => ipcRenderer.invoke("llamacpp:getRuntimeInfo"),
         setGpuBackend: (backend: GpuBackend): Promise<void> => ipcRenderer.invoke("llamacpp:setGpuBackend", backend),
         pickModelsDir: (): Promise<string | null> => ipcRenderer.invoke("llamacpp:pickModelsDir"),
     },
 
     localBackends: {
         getStatuses: (): Promise<LocalRuntimeStatus[]> => ipcRenderer.invoke("localBackends:getStatuses"),
-        start: (backend: "mlx" | "rocm" | "vllm", model: string): Promise<string> => ipcRenderer.invoke("localBackends:start", { backend, model }),
-        stop: (backend: "mlx" | "rocm" | "vllm") => ipcRenderer.invoke("localBackends:stop", backend),
-        restart: (backend: "mlx" | "rocm" | "vllm", model: string): Promise<string> => ipcRenderer.invoke("localBackends:restart", { backend, model }),
-        unload: (backend: "mlx" | "rocm" | "vllm") => ipcRenderer.invoke("localBackends:unload", backend),
+        start: (backend: "mlx" | "rocm" | "vllm", model: string, startupConfig?: RuntimeStartupConfig): Promise<string> => ipcRenderer.invoke("localBackends:start", { backend, model, startupConfig }),
+        stop: (backend: "mlx" | "rocm" | "vllm", force = false): Promise<StopRuntimeResult> => ipcRenderer.invoke("localBackends:stop", { backend, force }),
+        restart: (backend: "mlx" | "rocm" | "vllm", model: string, startupConfig?: RuntimeStartupConfig): Promise<string> => ipcRenderer.invoke("localBackends:restart", { backend, model, startupConfig }),
+        clearLogs: (backend: "mlx" | "rocm" | "vllm") => ipcRenderer.invoke("localBackends:clearLogs", backend),
+        exportLogs: (backend: "mlx" | "rocm" | "vllm") => ipcRenderer.invoke("localBackends:exportLogs", backend),
     },
 
     pythonRuntimes: {
         getStatuses: (): Promise<PythonEnvironmentStatus[]> => ipcRenderer.invoke("pythonRuntimes:getStatuses"),
+        execute: (family: PythonRuntimeFamily, operation: PythonEnvironmentOperation, onProgress: (progress: PythonEnvironmentProgress) => void) => {
+            const requestId = randomId(); const channel = `pythonRuntimes:progress:${requestId}`;
+            const listener = (_event: unknown, progress: PythonEnvironmentProgress) => onProgress(progress);
+            ipcRenderer.on(channel, listener);
+            const promise: Promise<PythonEnvironmentStatus> = ipcRenderer.invoke("pythonRuntimes:execute", { requestId, family, operation }).finally(() => ipcRenderer.removeListener(channel, listener));
+            return { requestId, promise };
+        },
+        cancel: (requestId: string): Promise<void> => ipcRenderer.invoke("pythonRuntimes:cancel", requestId),
     },
 
     chat: {
@@ -144,6 +156,15 @@ export const api = {
         getSpecs: () => ipcRenderer.invoke("system:getSpecs"),
         getRecommendations: () => ipcRenderer.invoke("system:getRecommendations"),
         getActivity: () => ipcRenderer.invoke("system:getActivity"),
+    },
+
+    gpu: {
+        // Inventory/topology itself lives on system.getSpecs() (SystemSpecs.gpus
+        // / gpuTopology) — these cover the manual-refresh, live-telemetry, and
+        // selection-preview operations layered on top of it.
+        refreshTopology: (): Promise<import("./system-specs").SystemSpecs> => ipcRenderer.invoke("gpu:refreshTopology"),
+        getTelemetry: (): Promise<GpuTelemetrySample[]> => ipcRenderer.invoke("gpu:getTelemetry"),
+        resolveSelection: (selection: GpuSelection): Promise<{ gpus: import("./system-specs").GpuInfo[]; stale: boolean; missingIds: string[] }> => ipcRenderer.invoke("gpu:resolveSelection", selection),
     },
 
     settings: {
@@ -238,13 +259,22 @@ export const api = {
 
     downloads: {
         list: () => ipcRenderer.invoke("downloads:list"),
-        create: (input: { modelId: string; filename: string; expectedBytes: number; backend?: "automatic" | DownloadJob["backend"] }) => ipcRenderer.invoke("downloads:create", input),
+        create: (input: { modelId: string; filename: string; expectedBytes: number; backend?: "automatic" | DownloadJob["backend"]; sha256?: string }) => ipcRenderer.invoke("downloads:create", input),
         pause: (id: string) => ipcRenderer.invoke("downloads:pause", id),
         resume: (id: string) => ipcRenderer.invoke("downloads:resume", id),
         retry: (id: string) => ipcRenderer.invoke("downloads:retry", id),
+        retryNow: (id: string) => ipcRenderer.invoke("downloads:retryNow", id),
+        cancelRetry: (id: string) => ipcRenderer.invoke("downloads:cancelRetry", id),
         cancel: (id: string) => ipcRenderer.invoke("downloads:cancel", id),
-        delete: (id: string) => ipcRenderer.invoke("downloads:delete", id),
+        pauseAll: () => ipcRenderer.invoke("downloads:pauseAll"),
+        resumeAll: () => ipcRenderer.invoke("downloads:resumeAll"),
+        describeDeletion: (id: string) => ipcRenderer.invoke("downloads:describeDeletion", id),
+        removeRecord: (id: string) => ipcRenderer.invoke("downloads:removeRecord", id),
+        removePartialData: (id: string) => ipcRenderer.invoke("downloads:removePartialData", id),
+        removeCompletedModel: (id: string) => ipcRenderer.invoke("downloads:removeCompletedModel", id),
+        openFolder: (id: string) => ipcRenderer.invoke("downloads:openFolder", id),
         forecast: (id: string) => ipcRenderer.invoke("downloads:forecast", id),
+        forecastAll: () => ipcRenderer.invoke("downloads:forecastAll"),
         recoveryStatus: () => ipcRenderer.invoke("downloads:recoveryStatus"),
         getControls: () => ipcRenderer.invoke("downloads:getControls"),
         setControls: (controls: { concurrency: number; bandwidthMbps: number }) => ipcRenderer.invoke("downloads:setControls", controls),

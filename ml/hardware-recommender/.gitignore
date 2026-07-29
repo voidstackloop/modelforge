@@ -2,4 +2,12 @@
 __pycache__/
 *.pyc
 artifacts/*.pt
+artifacts/*.pt.sha256
+artifacts/*.onnx
+artifacts/*.onnx.sha256
+artifacts/*.meta.json
 data/processed/*.parquet
+# Raw download cache for ingest_llm_perf_leaderboard.py — regenerate with that
+# script rather than committing someone else's ~50MB raw CSV export; only the
+# small adapted output (data/raw/published/hf-optimum-benchmark/) is tracked.
+data/raw/llm_perf_leaderboard/

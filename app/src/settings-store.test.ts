@@ -19,4 +19,24 @@ describe("settings-store", () => {
         // untouched fields keep their previous/default values
         expect(settings.ollamaHost).toBe("http://127.0.0.1:11434");
     });
+
+    it("defaults GPU selection mode to automatic", () => {
+        expect(getSettings().defaultGpuSelectionMode).toBe("auto");
+    });
+
+    it("persists a per-runtime GPU selection and split config across saves", () => {
+        saveSettings({
+            runtimeGpuConfigs: {
+                vllm: { selection: { mode: "group", deviceIds: ["nvidia:uuid-1", "nvidia:uuid-2"] }, tensorParallelSize: 2 },
+                rocm: { selection: { mode: "single", deviceIds: ["amd:unique-1"] }, tensorSplit: [1] },
+            },
+        });
+        const settings = getSettings();
+        expect(settings.runtimeGpuConfigs?.vllm?.selection?.deviceIds).toEqual(["nvidia:uuid-1", "nvidia:uuid-2"]);
+        expect(settings.runtimeGpuConfigs?.vllm?.tensorParallelSize).toBe(2);
+        expect(settings.runtimeGpuConfigs?.rocm?.tensorSplit).toEqual([1]);
+        // A save that doesn't touch runtimeGpuConfigs must not drop it.
+        saveSettings({ theme: "light" });
+        expect(getSettings().runtimeGpuConfigs?.vllm?.selection?.mode).toBe("group");
+    });
 });

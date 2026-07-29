@@ -67,10 +67,45 @@ export interface PullProgress {
   completed?: number;
 }
 
+export interface GpuCapabilities {
+  cuda: boolean;
+  rocm: boolean;
+  metal: boolean;
+  vulkan: boolean;
+  directml: boolean;
+}
+
 export interface GpuInfo {
   name: string;
   vramGB: number | null;
   vendor: string;
+  id?: string;
+  index?: number;
+  busId?: string | null;
+  driverVersion?: string | null;
+  architecture?: string | null;
+  usedVramGB?: number | null;
+  freeVramGB?: number | null;
+  isIntegrated?: boolean;
+  computeAvailable?: boolean;
+  displayOnly?: boolean;
+  migInfo?: string | null;
+  capabilities?: GpuCapabilities;
+  compatibilityIssue?: string | null;
+  lastProbedAt?: number;
+}
+
+export interface GpuTopology {
+  interconnect: "nvlink" | "xgmi" | "pcie" | "unified" | "none" | "unknown";
+  homogeneous: boolean;
+  deviceCount: number;
+  aggregateVramGB: number | null;
+  smallestGpuVramGB: number | null;
+  largestGpuVramGB: number | null;
+  usableVramGB: number | null;
+  peerToPeerCapable: boolean;
+  tensorParallelRecommended: boolean;
+  layerSplitOnly: boolean;
 }
 
 export interface SystemSpecs {
@@ -84,8 +119,9 @@ export interface SystemSpecs {
   gpus: GpuInfo[];
   totalVramGB: number | null;
   largestGpuVramGB: number | null;
-  gpuInterconnect: "nvlink" | "pcie" | "unified" | "none" | "unknown";
+  gpuInterconnect: "nvlink" | "xgmi" | "pcie" | "unified" | "none" | "unknown";
   tensorParallelSupported: boolean;
+  gpuTopology: GpuTopology;
   cpuMemoryBandwidthGBps: number;
   cpuMemoryBandwidthMeasured: boolean;
 }
@@ -284,7 +320,7 @@ export interface LocalRuntimeStatus {
   compatible: boolean;
   installed: boolean;
   running: boolean;
-  state: "starting" | "running" | "unhealthy" | "stopped";
+  state: "starting" | "running" | "stopping" | "restarting" | "unhealthy" | "failed" | "stopped";
   model?: string;
   detail: string;
   device?: string;
@@ -298,15 +334,85 @@ export interface LocalRuntimeStatus {
   startupError?: string;
   installCommand: string;
   environmentIssues: string[];
+  activeRequests: number;
+  idleTimeoutMinutes: number;
+  lastHealthCheckAt: string | null;
+  operation: "starting" | "stopping" | "restarting" | null;
+  currentConfig?: RuntimeStartupConfig;
+  errorCategory?: string;
+  recoveryAction?: string;
+  commandCapabilities?: RuntimeCommandCapabilities;
+}
+
+export type GpuSelectionMode = "auto" | "single" | "group" | "all" | "cpu";
+
+export interface GpuSelection {
+  mode: GpuSelectionMode;
+  // Stable GpuInfo.id values, in display/selection order.
+  deviceIds: string[];
+}
+
+export interface RuntimeStartupConfig {
+  contextLength?: number | null; idleTimeoutMinutes?: number; device?: "auto" | "cpu" | "gpu";
+  gpuLayerMode?: "auto" | "cpu" | "max" | "manual"; gpuLayers?: number; cpuThreads?: number; cpuBatchThreads?: number;
+  flashAttention?: "auto" | boolean; batchSize?: number; vramReserveGB?: number;
+  gpuMemoryUtilization?: number; tensorParallelSize?: number; pipelineParallelSize?: number; cpuOffloadGB?: number; swapSpaceGB?: number;
+  gpuSelection?: GpuSelection;
+  tensorSplit?: number[];
+  splitMode?: "layer" | "tensor";
+  mainGpuId?: string;
+}
+
+export interface ResolvedGpuSelection {
+  gpus: GpuInfo[];
+  stale: boolean;
+  missingIds: string[];
+}
+
+export interface GpuTelemetrySample {
+  id: string;
+  index: number;
+  vendor: string;
+  utilizationPercent: number | null;
+  usedVramGB: number | null;
+  freeVramGB: number | null;
+  temperatureC: number | null;
+  powerWatts: number | null;
+  powerLimitWatts: number | null;
+  source: "nvidia-smi" | "rocm-smi";
+  confidence: "high" | "medium" | "low";
+  lastUpdatedAt: number;
+}
+
+export interface RuntimeGpuConfig {
+  selection?: GpuSelection;
+  tensorSplit?: number[];
+  splitMode?: "layer" | "tensor";
+  mainGpuId?: string;
+  tensorParallelSize?: number;
+  memoryReserveGB?: number;
+}
+
+export interface StopRuntimeResult { stopped: boolean; activeRequests: number; forced: boolean }
+
+export interface RuntimeCommandCapabilities { checked: boolean; flags: string[]; backendDeviceNames: string[]; warnings: string[] }
+
+export interface LlamaCppRuntimeInfo {
+  requestedBackend: LlamaCppGpuBackend; activeBackend: string | null; supportsGpuOffloading: boolean | null;
+  cpuMathCores: number | null; maxThreads: number | null; vramPaddingBytes: number | null; ramPaddingBytes: number | null;
+  gpuDeviceNames: string[]; vramState: { total: number; used: number; free: number; unifiedSize: number } | null;
+  swapState: { maxSize: number; allocated: number; used: number } | null;
+  loadedModels: { path: string; gpuLayers: number; totalLayers: number; flashAttentionSupported: boolean; activeGenerations: number }[];
 }
 
 export interface PythonEnvironmentStatus {
-  family: "mlx" | "vllm-cuda" | "vllm-rocm";
+  family: "mlx" | "vllm-cuda" | "vllm-rocm" | "hardware-recommender";
   state: "missing" | "healthy" | "drifted" | "incompatible";
   destination: string; pythonPath: string; pythonVersion: string | null; installedPackages: Record<string, string>; issues: string[];
   manifest: { family: string; version: number; python: string; packages: Record<string, string>; diskRequirementBytes: number; expectedDownloadBytes: number; protocolVersion: number; compatibility: string; documentationUrl: string };
   installCommand: string; repairCommand: string; removeCommand: string;
 }
+export interface PythonEnvironmentProgress { step: number; totalSteps: number; message: string; stream: "manager" | "stdout" | "stderr" }
 
 export interface RollbackResult {
   path: string;
@@ -365,6 +471,7 @@ export interface HfModelSummary {
 export interface HfGgufFile {
   path: string;
   sizeBytes: number | null;
+  sha256?: string;
 }
 
 export interface HfDownloadProgress {
@@ -374,17 +481,19 @@ export interface HfDownloadProgress {
 
 export type DownloadJobState = "queued" | "resolving" | "downloading" | "paused" | "verifying" | "installing" | "ready" | "failed" | "cancelled";
 export interface DownloadShard {
-  filename: string; path: string; expectedBytes: number; receivedBytes: number; sha256?: string; state: DownloadJobState;
+  filename: string; path: string; expectedBytes: number; receivedBytes: number; sha256?: string; etag?: string; state: DownloadJobState;
+  verificationState?: "pending" | "verifying" | "verified" | "unavailable" | "failed";
 }
 export interface DownloadJob {
   id: string; kind: "huggingface" | "ollama"; modelName: string; publisher: string; quantization?: string;
   backend: "llamacpp" | "mlx" | "vllm" | "ollama" | "transformers"; destinationDir: string; modelId: string;
-  shards: DownloadShard[]; state: DownloadJobState; retryCount: number; createdAt: string; updatedAt: string;
+  shards: DownloadShard[]; state: DownloadJobState; retryCount: number; maxAttempts: number; nextRetryAt?: string;
+  retryHistory: { attempt: number; at: string; errorKind: string; message: string }[]; createdAt: string; updatedAt: string;
   error?: { message: string; kind: string; retryable: boolean };
   jobReceivedBytes?: number; totalBytes?: number; bytesPerSecond?: number; etaSeconds?: number; recoveredAtStartup?: boolean;
 }
 export interface DownloadControls { concurrency: number; bandwidthMbps: number }
-export interface DiskForecast { requiredBytes: number; availableBytes: number | null; enough: boolean | null }
+export interface DiskForecast { requiredBytes: number; availableBytes: number | null; enough: boolean | null; reserveBytes: number; destination: string }
 
 export interface LinkedAccount {
   provider: "github" | "huggingface";
@@ -404,6 +513,7 @@ export interface AppSettings {
   presencePenalty: number;
   contextLength: number;
   gpuLayers?: number;
+  gpuLayerMode?: "auto" | "cpu" | "max" | "manual";
   seed?: number;
   topK?: number;
   repeatPenalty?: number;
@@ -425,8 +535,16 @@ export interface AppSettings {
   energyUsageRetentionDays?: number;
   energySampleIntervalSeconds?: number;
   gridIntensityGCo2PerKwh?: number;
+  defaultGpuSelectionMode?: GpuSelectionMode;
+  runtimeGpuConfigs?: Partial<Record<"ollama" | "llamacpp" | "mlx" | "rocm" | "vllm", RuntimeGpuConfig>>;
   agentMaxSteps?: number;
   llamaCppMaxCachedModels?: number;
+  llamaCppMaxThreads?: number;
+  llamaCppVramReserveGB?: number;
+  llamaCppRamReserveGB?: number;
+  llamaCppNumaPolicy?: "auto" | "distribute" | "isolate" | "numactl" | "mirror";
+  llamaCppBatchSize?: number;
+  llamaCppFlashAttention?: "auto" | "on" | "off";
   ttsVoiceURI?: string;
   ttsAutoRead?: boolean;
   mcpServers?: McpServerConfig[];
@@ -434,6 +552,7 @@ export interface AppSettings {
   llamaCppModelsDir?: string;
   llamaCppGpuBackend?: "auto" | "vulkan" | "cuda" | "metal" | "cpu";
   preferredRuntime?: "automatic" | "ollama" | "llamacpp" | "vllm" | "mlx";
+  recommendationGoal?: "quality" | "speed" | "memory" | "energy" | "agent" | "balanced";
   ragEmbeddingModel?: string;
   customProviders?: CustomProviderConfig[];
   onboardingComplete?: boolean;
@@ -459,6 +578,11 @@ export interface ChatOptions {
   presencePenalty?: number;
   contextLength?: number;
   gpuLayers?: number;
+  gpuLayerMode?: "auto" | "cpu" | "max" | "manual";
+  cpuThreads?: number;
+  batchSize?: number;
+  flashAttention?: "auto" | "on" | "off";
+  performanceTracking?: boolean;
   seed?: number;
   topK?: number;
   repeatPenalty?: number;
@@ -605,18 +729,22 @@ export interface ElectronApi {
     listModels: () => Promise<LocalGgufModel[]>;
     deleteModel: (name: string) => Promise<void>;
     getAvailableGpuBackends: () => Promise<string[]>;
+    getRuntimeInfo: () => Promise<LlamaCppRuntimeInfo>;
     setGpuBackend: (backend: LlamaCppGpuBackend) => Promise<void>;
     pickModelsDir: () => Promise<string | null>;
   };
   localBackends: {
     getStatuses: () => Promise<LocalRuntimeStatus[]>;
-    start: (backend: "mlx" | "rocm" | "vllm", model: string) => Promise<string>;
-    stop: (backend: "mlx" | "rocm" | "vllm") => Promise<void>;
-    restart: (backend: "mlx" | "rocm" | "vllm", model: string) => Promise<string>;
-    unload: (backend: "mlx" | "rocm" | "vllm") => Promise<void>;
+    start: (backend: "mlx" | "rocm" | "vllm", model: string, startupConfig?: RuntimeStartupConfig) => Promise<string>;
+    stop: (backend: "mlx" | "rocm" | "vllm", force?: boolean) => Promise<StopRuntimeResult>;
+    restart: (backend: "mlx" | "rocm" | "vllm", model: string, startupConfig?: RuntimeStartupConfig) => Promise<string>;
+    clearLogs: (backend: "mlx" | "rocm" | "vllm") => Promise<void>;
+    exportLogs: (backend: "mlx" | "rocm" | "vllm") => Promise<{ saved: boolean }>;
   };
   pythonRuntimes: {
     getStatuses: () => Promise<PythonEnvironmentStatus[]>;
+    execute: (family: PythonEnvironmentStatus["family"], operation: "install" | "repair", onProgress: (progress: PythonEnvironmentProgress) => void) => { requestId: string; promise: Promise<PythonEnvironmentStatus> };
+    cancel: (requestId: string) => Promise<void>;
   };
   chat: {
     send: (
@@ -633,6 +761,11 @@ export interface ElectronApi {
     getSpecs: () => Promise<SystemSpecs>;
     getRecommendations: () => Promise<ModelRecommendations>;
     getActivity: () => Promise<AppActivity>;
+  };
+  gpu: {
+    refreshTopology: () => Promise<SystemSpecs>;
+    getTelemetry: () => Promise<GpuTelemetrySample[]>;
+    resolveSelection: (selection: GpuSelection) => Promise<ResolvedGpuSelection>;
   };
   settings: {
     get: () => Promise<AppSettings>;
@@ -722,10 +855,14 @@ export interface ElectronApi {
   };
   downloads: {
     list: () => Promise<DownloadJob[]>;
-    create: (input: { modelId: string; filename: string; expectedBytes: number; backend?: "automatic" | DownloadJob["backend"] }) => Promise<DownloadJob>;
-    pause: (id: string) => Promise<void>; resume: (id: string) => Promise<void>; retry: (id: string) => Promise<void>;
-    cancel: (id: string) => Promise<void>; delete: (id: string) => Promise<void>;
+    create: (input: { modelId: string; filename: string; expectedBytes: number; backend?: "automatic" | DownloadJob["backend"]; sha256?: string }) => Promise<DownloadJob>;
+    pause: (id: string) => Promise<void>; resume: (id: string) => Promise<void>; retry: (id: string) => Promise<void>; retryNow: (id: string) => Promise<void>;
+    cancelRetry: (id: string) => Promise<void>; cancel: (id: string) => Promise<void>; pauseAll: () => Promise<void>; resumeAll: () => Promise<void>;
+    describeDeletion: (id: string) => Promise<{ partialFiles: string[]; completedFiles: string[] }>;
+    removeRecord: (id: string) => Promise<void>; removePartialData: (id: string) => Promise<void>; removeCompletedModel: (id: string) => Promise<void>;
+    openFolder: (id: string) => Promise<void>;
     forecast: (id: string) => Promise<DiskForecast>;
+    forecastAll: () => Promise<DiskForecast[]>;
     recoveryStatus: () => Promise<{ recoveredJobs: number; recoveredAt: string | null }>;
     getControls: () => Promise<DownloadControls>; setControls: (controls: DownloadControls) => Promise<DownloadControls>;
     onUpdate: (callback: (jobs: DownloadJob[]) => void) => () => void;

@@ -96,6 +96,18 @@ export function buildContextPrompt(targetTokens: number): string {
     return `Context capacity test. Return only OK.\n${"test ".repeat(Math.max(1, targetTokens - 12))}`;
 }
 
+// A benchmark requests placement semantics, not a magic layer count. For
+// node-llama-cpp, "max" maps to its memory-safe automatic offload; for Ollama,
+// leaving num_gpu undefined lets Ollama choose its supported maximum. CPU mode
+// remains explicit for both. This deliberately avoids the old `999` sentinel,
+// which could exceed a model's real layer count and is not a portable runtime
+// contract.
+export function benchmarkPlacementOptions(mode: InferenceMeasurement["mode"]): Pick<ChatOptions, "gpuLayerMode" | "gpuLayers"> {
+    if (mode === "cpu") return { gpuLayerMode: "cpu", gpuLayers: 0 };
+    if (mode === "gpu") return { gpuLayerMode: "max" };
+    return {};
+}
+
 async function sampleGpuMemory(): Promise<GpuSample> {
     try {
         const { stdout } = await execFileAsync(
@@ -185,13 +197,13 @@ async function measureInference(
     let reportedPromptTokens: number | undefined;
     let reportedCompletionTokens: number | undefined;
     const sampler = await startResourceSampler();
-    const gpuLayers = mode === "cpu" ? 0 : mode === "gpu" ? 999 : undefined;
+    const placement = benchmarkPlacementOptions(mode);
     try {
         await execute(
             request.provider,
             request.model,
             [{ role: "user", content: prompt }],
-            { temperature: 0, maxTokens: outputTokens, seed: 42, gpuLayers },
+            { temperature: 0, maxTokens: outputTokens, seed: 42, ...placement },
             (chunk) => {
                 const piece = chunk.message?.content ?? "";
                 if (piece && firstTokenAt === null) firstTokenAt = performance.now();

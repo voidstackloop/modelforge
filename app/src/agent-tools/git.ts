@@ -18,6 +18,12 @@ export function gitLog(workspaceRoot: string, count = 10): Promise<string> {
     return gitCommand(workspaceRoot, `log -n ${Math.max(1, Math.min(count, 100))} --oneline`);
 }
 
+export async function gitBlame(workspaceRoot: string, relativePath: string, startLine?: number, endLine?: number): Promise<string> {
+    if (!relativePath.trim()) throw new Error("path must not be empty.");
+    const range = startLine !== undefined && endLine !== undefined ? ` -L ${Math.max(1, startLine)},${Math.max(startLine, endLine)}` : "";
+    return gitCommand(workspaceRoot, `blame${range} -- ${shellQuote(relativePath)}`);
+}
+
 export async function gitCommit(workspaceRoot: string, message: string): Promise<string> {
     await gitCommand(workspaceRoot, "add -A");
     // JSON.stringify escapes `"` and `\` but not `$` or backticks, and the
