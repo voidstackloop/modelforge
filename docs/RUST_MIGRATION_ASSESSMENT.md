@@ -194,15 +194,9 @@ and this assessment both get updated as each slice lands.
 
 ---
 
-## What was actually changed in this pass (Phase 0, minimal slice)
+## What was actually changed
 
-Per the brief's own closing instruction — "implement only Phase 0 and the
-smallest vertical slice of Phase 1 unless the evidence shows another first
-slice is safer" — the evidence above (no profiled bottleneck on any P0
-non-persistence item, and persistence's own Phase 1 being a multi-day,
-high-risk, schema-migrating undertaking that cannot be safely finished and
-verified in one pass) points to *not* starting Phase 1 at all yet. What
-shipped alongside this document:
+### Phase 0
 
 1. **`docs/ARCHITECTURE.md` reconciled** — its native-addon section
    described download-only; corrected to include the datastore/audit
@@ -214,21 +208,68 @@ shipped alongside this document:
    into a single "unavailable, fall back" boolean. `getNativeCapabilityReport()`
    now inspects the thrown error and reports which of those it actually
    was, purely for diagnostics/logging — every existing fallback behavior
-   is unchanged.
+   is unchanged. New shared module: `app/src/native-capability.ts`.
+3. **CI's `rust` job now builds and load-verifies the addon on Windows and
+   macOS, not just Linux** — previously flagged here as a real, unverified
+   gap. `.github/workflows/ci.yml`'s `rust` job gained a 3-OS matrix; fmt
+   and clippy still run once (Rust source is OS-independent), but `cargo
+   build`, `cargo test`, a real `napi build`, and a `require()` + exports
+   check now run on every platform. Verified locally on Linux (the one
+   platform this sandbox can run); Windows/macOS are verified for real by
+   GitHub's own runners on the next push, which is the actual point — this
+   sandbox was never going to be able to confirm those two itself.
+
+### Phase 1 — smallest vertical slice
+
+An inert SQLite scaffold for audit events: `lib/src/store/audit.rs`
+(`rusqlite`, bundled SQLite, WAL mode, a `schema_version` table, an
+`audit_events` table, and `open`/`migrate-from-JSON`/`count`/`verify`
+functions), exposed via N-API, with a TypeScript bridge
+(`app/src/native-sqlite-store.ts`). **Deliberately not wired into
+`audit-log-store.ts`'s live read/write path** — nothing in the running app
+calls this yet; it exists to prove the pattern (schema versioning,
+idempotent migration-from-JSON safe to rerun, transactional batch inserts,
+`PRAGMA integrity_check`-based corruption detection) works end-to-end
+through the real built addon before committing to an actual cutover, per
+the brief's own rollback requirement (ship behind a flag, default off).
+
+9 new Rust tests (idempotent open, schema-version-recorded-once, WAL-mode
+active, migration correctness/idempotency/partial-rerun/no-duplicate-rows,
+a rejected malformed batch leaving zero rows behind — one bad event fails
+the whole transaction rather than partially migrating), 5 new TypeScript
+tests (full round trip through the actual built `.node` addon, rejected
+malformed batch, and the addon-unavailable throw path), all verified via
+the real built binary (`npm run build:debug` + a `require()` smoke test),
+not just `cargo test`.
+
+**A real build-infrastructure finding surfaced by adding this:** `cargo
+test` started failing to link at all (not just for the new module — for
+the *entire* crate, including previously-passing tests) once `rusqlite`
+was added, with undefined references to `napi_reference_unref` /
+`napi_delete_reference` / `napi_call_threadsafe_function`. These are napi's
+own C-ABI symbols, normally supplied by the Node process that loads a
+`.node` addon at runtime — a standalone `cargo test` binary has no Node
+process to supply them, and this crate's `napi` dependency had
+`default-features = false` without napi's own `dyn-symbols` feature (which
+resolves those symbols dynamically instead of requiring them at static
+link time, and is part of napi's *default* feature set — this crate had
+just never turned it on, and the existing code path apparently never
+triggered the linker into demanding those symbols before). Fix: added
+`dyn-symbols` to the `napi` dependency's feature list in `lib/Cargo.toml`.
+Re-verified after the fix that the real built addon still loads correctly
+under Node (it does — see the smoke test above); this is a supported,
+recommended napi-rs configuration, not a workaround.
 
 **Explicitly not done, with reasons, per "stop and document the blocker"
 rather than half-finish:**
 
-- Multi-platform CI build/load jobs — this sandbox has no Windows/macOS
-  runner access; the CI YAML change itself would be easy, but "add a job"
-  without being able to verify it actually builds and loads the addon
-  there is exactly the kind of unverified change this brief says not to
-  ship.
-- Any Phase 1+ code (SQLite store, crypto vault, RAG index, filesystem
-  capability layer, process supervisor, system-inspection rewrite,
-  ingestion, safety-scanning engine, recommender inference) — none of it
-  was started. Each is a substantial, independently-scoped project per the
-  brief's own phase breakdown; starting one without the characterization
-  tests, benchmarks, and migration/rollback machinery the brief itself
-  requires first would produce exactly the "half-migrated" state the brief
-  says to avoid.
+- Actually cutting `audit-log-store.ts` over to the SQLite store, or
+  migrating any other store (patient cases, sessions, evidence, model
+  registry). The scaffold above is the foundation that cutover would use,
+  not the cutover itself — flipping the live read/write path needs the
+  three-way native/fallback/new-store comparison and feature-flag rollout
+  described in §6, which is real, separately-scoped work.
+- Crypto vault, RAG index, filesystem capability layer, process supervisor,
+  system-inspection rewrite, ingestion, safety-scanning engine, recommender
+  inference — none started. Each is a substantial, independently-scoped
+  project per the brief's own phase breakdown.

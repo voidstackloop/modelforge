@@ -7,7 +7,14 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "3", default-features = false, features = ["napi4", "async", "tokio_rt", "error_anyhow"] }
+# "dyn-symbols" resolves the napi_* C ABI symbols dynamically instead of
+# requiring them statically linked — without it, `cargo test` fails to link
+# a standalone test binary at all (there's no Node process to supply those
+# symbols outside of loading this crate as a real .node addon). It's part of
+# napi's own default feature set; only explicit here because this crate
+# otherwise opts out of defaults. Re-verified after adding it that the built
+# addon still loads correctly under real Node (napi build + `require()`).
+napi = { version = "3", default-features = false, features = ["napi4", "async", "tokio_rt", "error_anyhow", "dyn-symbols"] }
 napi-derive = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
@@ -24,6 +31,11 @@ governor = "0.10"
 tokio-util = "0.7"
 arc-swap = "1"
 dashmap = "6"
+# "bundled" statically links SQLite instead of requiring it be present on
+# the build/runtime machine — required for a portable Electron addon, since
+# we can't assume any particular system SQLite version (or its presence at
+# all) on a user's machine.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [build-dependencies]
 napi-build = "2"

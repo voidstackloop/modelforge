@@ -2,6 +2,7 @@ mod datastore;
 mod download;
 mod error;
 mod manager;
+mod store;
 
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
