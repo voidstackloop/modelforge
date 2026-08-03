@@ -219,12 +219,18 @@ pub fn verify_audit_store(db_path: String) -> napi::Result<StoreIntegrityReport>
 pub fn get_last_audit_event_hash(db_path: String) -> napi::Result<Option<String>> {
     let conn =
         open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    // Two independently-nullable layers here: `.optional()` handles "no
+    // rows at all" (empty store), and the inner `Option<String>` handles
+    // "a row exists but its event_hash column is SQL NULL" (a legacy-shaped
+    // event with no hash) — collapsed by `.flatten()` since both cases mean
+    // the same thing to the caller: nothing to chain onto.
     conn.query_row(
         "SELECT event_hash FROM audit_events ORDER BY rowid DESC LIMIT 1",
         [],
-        |row| row.get(0),
+        |row| row.get::<_, Option<String>>(0),
     )
     .optional()
+    .map(|row| row.flatten())
     .map_err(|err| napi::Error::from_reason(err.to_string()))
 }
 
@@ -273,6 +279,46 @@ pub fn list_audit_events_json(db_path: String) -> napi::Result<String> {
         .collect::<rusqlite::Result<_>>()
         .map_err(|err| napi::Error::from_reason(err.to_string()))?;
     serde_json::to_string(&events).map_err(|err| napi::Error::from_reason(err.to_string()))
+}
+
+/// Deletes the oldest rows (by insertion order) beyond `keep_count`,
+/// returning how many were removed. Unlike the JSON backend's equivalent
+/// trim — which has to rewrite the *entire* file because JSON offers no
+/// finer-grained mutation — this is a single indexed-adjacent `DELETE`
+/// SQLite can do in one pass regardless of table size, so there's no
+/// O(n²)-style cost to calling this on every write; the caller still batches
+/// it (JSON's soft-cap pattern) purely to avoid a DELETE on every single
+/// insert, not because a single trim call itself is expensive here.
+#[napi]
+pub fn trim_audit_events_to_cap(db_path: String, keep_count: u32) -> napi::Result<u32> {
+    let conn =
+        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    conn.execute(
+        "DELETE FROM audit_events WHERE rowid IN (
+            SELECT rowid FROM audit_events ORDER BY rowid ASC
+            LIMIT MAX(0, (SELECT COUNT(*) FROM audit_events) - ?1)
+        )",
+        params![keep_count],
+    )
+    .map(|deleted| deleted as u32)
+    .map_err(|err| napi::Error::from_reason(err.to_string()))
+}
+
+/// Deletes every event whose `timestamp` is lexically before `cutoff_iso`
+/// (ISO-8601 UTC timestamps sort correctly as plain strings), returning how
+/// many were removed. A single indexed `DELETE` — see
+/// `trim_audit_events_to_cap` above for why that's cheap here regardless of
+/// table size, unlike the JSON backend's full-file-rewrite equivalent.
+#[napi]
+pub fn purge_audit_events_older_than(db_path: String, cutoff_iso: String) -> napi::Result<u32> {
+    let conn =
+        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    conn.execute(
+        "DELETE FROM audit_events WHERE timestamp < ?1",
+        params![cutoff_iso],
+    )
+    .map(|deleted| deleted as u32)
+    .map_err(|err| napi::Error::from_reason(err.to_string()))
 }
 
 fn insert_optional_string(
@@ -456,6 +502,19 @@ mod tests {
     }
 
     #[test]
+    fn last_event_hash_is_none_when_the_last_row_has_no_hash_column_value() {
+        // A legacy-shaped last event (no eventHash) must report `None`
+        // (nothing to chain onto), not error — event_hash is SQL NULL here,
+        // a distinct case from "no rows at all" (already covered above) and
+        // one a naive `row.get::<_, String>(0)` would panic/error on.
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        let json = r#"[{"id":"legacy","timestamp":"2026-01-01T00:00:00.000Z","actionCategory":"case-viewed"}]"#;
+        migrate_audit_log_from_json(path.clone(), json.to_string()).unwrap();
+        assert_eq!(get_last_audit_event_hash(path).unwrap(), None);
+    }
+
+    #[test]
     fn list_audit_events_json_round_trips_through_migration() {
         let dir = tempdir().unwrap();
         let path = db_path(&dir);
@@ -505,5 +564,81 @@ mod tests {
                 "expected {absent_field} to be omitted, not present as null"
             );
         }
+    }
+
+    #[test]
+    fn trim_to_cap_keeps_only_the_newest_rows() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        let json: Vec<serde_json::Value> = (0..10)
+            .map(|i| serde_json::json!({"id": format!("e{i}"), "timestamp": format!("2026-01-01T00:00:{i:02}.000Z"), "actionCategory": "case-viewed"}))
+            .collect();
+        migrate_audit_log_from_json(path.clone(), serde_json::to_string(&json).unwrap()).unwrap();
+
+        let deleted = trim_audit_events_to_cap(path.clone(), 4).unwrap();
+        assert_eq!(deleted, 6);
+        assert_eq!(audit_event_count(path.clone()).unwrap(), 4);
+
+        let listed: serde_json::Value =
+            serde_json::from_str(&list_audit_events_json(path).unwrap()).unwrap();
+        let ids: Vec<&str> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["e6", "e7", "e8", "e9"]); // newest 4, oldest-dropped
+    }
+
+    #[test]
+    fn trim_to_cap_is_a_no_op_when_already_under_the_cap() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        let json = r#"[{"id":"a","timestamp":"2026-01-01T00:00:00.000Z","actionCategory":"case-created"}]"#;
+        migrate_audit_log_from_json(path.clone(), json.to_string()).unwrap();
+
+        let deleted = trim_audit_events_to_cap(path.clone(), 100).unwrap();
+        assert_eq!(deleted, 0);
+        assert_eq!(audit_event_count(path).unwrap(), 1);
+    }
+
+    #[test]
+    fn purge_older_than_removes_only_expired_rows() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        let json = r#"[
+            {"id":"old","timestamp":"2020-01-01T00:00:00.000Z","actionCategory":"case-viewed"},
+            {"id":"new","timestamp":"2030-01-01T00:00:00.000Z","actionCategory":"case-viewed"}
+        ]"#;
+        migrate_audit_log_from_json(path.clone(), json.to_string()).unwrap();
+
+        let deleted =
+            purge_audit_events_older_than(path.clone(), "2025-01-01T00:00:00.000Z".to_string())
+                .unwrap();
+        assert_eq!(deleted, 1);
+
+        let listed: serde_json::Value =
+            serde_json::from_str(&list_audit_events_json(path).unwrap()).unwrap();
+        let ids: Vec<&str> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["new"]);
+    }
+
+    #[test]
+    fn purge_older_than_is_a_no_op_when_nothing_has_expired() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        let json = r#"[{"id":"a","timestamp":"2030-01-01T00:00:00.000Z","actionCategory":"case-created"}]"#;
+        migrate_audit_log_from_json(path.clone(), json.to_string()).unwrap();
+
+        let deleted =
+            purge_audit_events_older_than(path.clone(), "2020-01-01T00:00:00.000Z".to_string())
+                .unwrap();
+        assert_eq!(deleted, 0);
+        assert_eq!(audit_event_count(path).unwrap(), 1);
     }
 }

@@ -21,6 +21,8 @@ interface NativeAddon {
     verifyAuditStore(dbPath: string): StoreIntegrityReport;
     getLastAuditEventHash(dbPath: string): string | null;
     listAuditEventsJson(dbPath: string): string;
+    trimAuditEventsToCap(dbPath: string, keepCount: number): number;
+    purgeAuditEventsOlderThan(dbPath: string, cutoffIso: string): number;
 }
 
 export interface MigrationReport {
@@ -105,4 +107,21 @@ export function getLastAuditEventHash(dbPath: string): string | null {
  * for the JSON backend. */
 export function listAuditEventsJson(dbPath: string): string {
     return getNativeAddon().listAuditEventsJson(dbPath);
+}
+
+/** Deletes the oldest rows beyond `keepCount`, returning how many were
+ * removed. A single indexed-adjacent DELETE regardless of table size —
+ * unlike the JSON backend's soft-cap trim, this doesn't need to be batched
+ * to stay cheap, though audit-log-store.ts still batches its *calls* to
+ * avoid running a DELETE on every single insert. */
+export function trimAuditEventsToCap(dbPath: string, keepCount: number): number {
+    return getNativeAddon().trimAuditEventsToCap(dbPath, keepCount);
+}
+
+/** Deletes every event older than `cutoffIso` (ISO-8601 UTC), returning how
+ * many were removed. Cheap enough (indexed DELETE) to call on every write
+ * when age-based retention is configured, matching the JSON backend's
+ * purge-on-every-write behavior without reintroducing an O(n) cost. */
+export function purgeAuditEventsOlderThan(dbPath: string, cutoffIso: string): number {
+    return getNativeAddon().purgeAuditEventsOlderThan(dbPath, cutoffIso);
 }

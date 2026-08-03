@@ -282,18 +282,37 @@ results on both backends, clearAll clears both) plus a fallback test
 JSON — this one runs in every environment, addon or not). All verified
 through the real built addon, both with and without it present.
 
-**Known gap, explicitly not solved in this slice:** the SQLite backend has
-no retention purging or row cap yet — `MAX_EVENTS`/`TRIM_BATCH` are
-JSON-backend-only. This is a real, intentional scope cut, not an oversight:
-SQLite inserts don't have the JSON file's O(n²) growth problem regardless
-of table size, so unbounded row growth here is a disk-usage concern to
-address before this leaves "experimental," not the kind of performance
-cliff that motivated the JSON-side fix. No Settings UI toggle exists for
-`auditLogBackend` yet either — it's reachable today only by writing
-`settings.json` directly or programmatically, which is appropriate for an
-explicitly experimental first slice but would need a real UI (with the
-capability-report-driven "addon not available, staying on JSON" messaging
-this design already supports) before recommending it to anyone.
+**Both gaps flagged above have since been closed**, in two follow-up passes:
+
+- **Settings UI**: Audit & Privacy now has an "Audit log storage backend"
+  card — current-backend badge, a disabled state with the specific reason
+  when SQLite isn't available (via a new `audit:sqliteCapability` IPC
+  handler), and a switch button. New e2e spec drives the real app: create a
+  case on JSON, switch to SQLite, confirm the event migrated, switch back,
+  confirm it's still there.
+- **Retention/cap enforcement**: two more Rust functions,
+  `trim_audit_events_to_cap` and `purge_audit_events_older_than`, both
+  single indexed `DELETE`s — cheap regardless of table size, unlike the
+  JSON backend's full-file-rewrite equivalent, which is *why* the JSON
+  backend needed a soft cap with batching in the first place and this one
+  doesn't strictly need to (it still batches trim calls via the same
+  `TRIM_BATCH` constant, purely to avoid a `DELETE` on every single insert
+  — not because a single trim is expensive here). Age-based purge now runs
+  on every write when retention is configured, matching the JSON backend's
+  exact semantics without reintroducing an O(n) cost.
+
+**A real bug this surfaced, worth recording:** `get_last_audit_event_hash`
+crashed (`Invalid column type Null`) whenever the store's most recent row
+had a NULL `event_hash` — i.e. a legacy-shaped last event. None of the
+original Rust unit tests exercised that specific case (both events in the
+insertion-order test had hashes); a new TypeScript-level retention
+integration test seeded exactly that shape and caught it immediately. Fixed
+by reading the column as `Option<String>` and flattening the two
+independently-nullable layers (`.optional()` for "no rows at all" vs. the
+column itself being NULL) instead of assuming a non-null `String`. A
+dedicated Rust test (`last_event_hash_is_none_when_the_last_row_has_no_hash_column_value`)
+now covers this directly. Re-verified through the real built addon, in both
+the fallback and native states.
 
 **Explicitly not done, with reasons, per "stop and document the blocker"
 rather than half-finish:**
@@ -303,8 +322,6 @@ rather than half-finish:**
   for one store; repeating it for the others is real, separately-scoped
   work per store, not a mechanical copy-paste (their schemas and access
   patterns differ).
-- Retention/cap enforcement on the SQLite backend (see above).
-- A Settings UI toggle for `auditLogBackend` (see above).
 - Crypto vault, RAG index, filesystem capability layer, process supervisor,
   system-inspection rewrite, ingestion, safety-scanning engine, recommender
   inference — none started. Each is a substantial, independently-scoped

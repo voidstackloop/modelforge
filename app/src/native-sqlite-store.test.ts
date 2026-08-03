@@ -9,13 +9,16 @@ import {
     migrateAuditLogFromJson,
     auditEventCount,
     verifyAuditStore,
+    listAuditEventsJson,
+    trimAuditEventsToCap,
+    purgeAuditEventsOlderThan,
 } from "./native-sqlite-store";
 
 // Same addon-presence-varies-by-environment situation as
-// native-datastore.test.ts — see that file's comment. This module is inert
-// (see its own header comment): nothing in the running app calls it, so
-// these tests exist purely to prove the scaffold itself is correct ahead of
-// any future cutover, not to protect a live code path.
+// native-datastore.test.ts — see that file's comment. audit-log-store.ts
+// reaches this module only when a user has explicitly opted into the
+// experimental SQLite backend (Settings → Audit & Privacy); these tests
+// exercise the bridge directly, independent of that opt-in gate.
 const addonPresent = fs.existsSync(path.join(__dirname, "..", "native"));
 
 function tempDbPath(): string {
@@ -73,5 +76,50 @@ describe(`native-sqlite-store (addon ${addonPresent ? "present" : "unavailable"}
 
     (!addonPresent ? it : it.skip)("throws (rather than silently proceeding) when the addon isn't available", () => {
         expect(() => openAuditStore(tempDbPath())).toThrow();
+    });
+
+    (addonPresent ? it : it.skip)("trimAuditEventsToCap keeps only the newest rows", () => {
+        const dbPath = tempDbPath();
+        try {
+            const events = Array.from({ length: 5 }, (_, i) => ({
+                id: `e${i}`,
+                timestamp: `2026-01-01T00:00:0${i}.000Z`,
+                actionCategory: "case-viewed",
+            }));
+            migrateAuditLogFromJson(dbPath, JSON.stringify(events));
+
+            const deleted = trimAuditEventsToCap(dbPath, 2);
+            expect(deleted).toBe(3);
+            expect(auditEventCount(dbPath)).toBe(2);
+
+            const remaining = JSON.parse(listAuditEventsJson(dbPath)) as { id: string }[];
+            expect(remaining.map((e) => e.id)).toEqual(["e3", "e4"]);
+        } finally {
+            fs.rmSync(dbPath, { force: true });
+            fs.rmSync(`${dbPath}-wal`, { force: true });
+            fs.rmSync(`${dbPath}-shm`, { force: true });
+        }
+    });
+
+    (addonPresent ? it : it.skip)("purgeAuditEventsOlderThan removes only expired rows", () => {
+        const dbPath = tempDbPath();
+        try {
+            const events = [
+                { id: "old", timestamp: "2020-01-01T00:00:00.000Z", actionCategory: "case-viewed" },
+                { id: "new", timestamp: "2030-01-01T00:00:00.000Z", actionCategory: "case-viewed" },
+            ];
+            migrateAuditLogFromJson(dbPath, JSON.stringify(events));
+
+            const deleted = purgeAuditEventsOlderThan(dbPath, "2025-01-01T00:00:00.000Z");
+            expect(deleted).toBe(1);
+            expect(auditEventCount(dbPath)).toBe(1);
+
+            const remaining = JSON.parse(listAuditEventsJson(dbPath)) as { id: string }[];
+            expect(remaining.map((e) => e.id)).toEqual(["new"]);
+        } finally {
+            fs.rmSync(dbPath, { force: true });
+            fs.rmSync(`${dbPath}-wal`, { force: true });
+            fs.rmSync(`${dbPath}-shm`, { force: true });
+        }
     });
 });

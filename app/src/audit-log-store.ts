@@ -12,6 +12,9 @@ import {
     migrateAuditLogFromJson,
     getLastAuditEventHash,
     listAuditEventsJson,
+    trimAuditEventsToCap,
+    purgeAuditEventsOlderThan,
+    auditEventCount as sqliteAuditEventCount,
 } from "./native-sqlite-store";
 import type { z } from "zod";
 
@@ -79,13 +82,16 @@ function writeAll(events: AuditEvent[]): void {
 // --- Optional SQLite backend (Settings → Audit & Privacy, experimental) ---
 //
 // Opt-in only; unset/"json" (the default) never touches any of this. See
-// docs/RUST_MIGRATION_ASSESSMENT.md for why this exists and what it
-// deliberately doesn't do yet: retention purging and the MAX_EVENTS soft
-// cap below are JSON-backend-only in this first slice — the SQLite backend
-// currently grows without a cap. That's a real, known gap (disk usage over
-// a long-lived install), not an oversight; SQLite inserts don't have the
-// JSON file's O(n²) growth problem regardless of table size, so it's a
-// lower-urgency follow-up than the bug that motivated the JSON-side fix.
+// docs/RUST_MIGRATION_ASSESSMENT.md. Retention purging and the MAX_EVENTS
+// cap are enforced here too (via trimAuditEventsToCap/
+// purgeAuditEventsOlderThan), reusing the same MAX_EVENTS/TRIM_BATCH
+// constants as the JSON backend — but unlike JSON, both are single indexed
+// SQLite DELETEs regardless of table size, so purging can run on every
+// write (matching the JSON backend's exact purge-on-write semantics) without
+// the O(n) cost that made the JSON backend's own cap soft in the first
+// place. The trim is still batched (TRIM_BATCH slack) purely to avoid an
+// extra DELETE on every single insert, not because a single trim is
+// expensive here.
 
 function sqliteDbPath(): string {
     return path.join(app.getPath("userData"), "audit-log.sqlite3");
@@ -151,6 +157,19 @@ function recordEventSqlite(dbPath: string, actionCategory: AuditActionCategory, 
     // single new event, rather than a separate INSERT code path in Rust —
     // this event's id is always fresh (randomUUID()), so it always inserts.
     migrateAuditLogFromJson(dbPath, JSON.stringify([event]));
+
+    const retentionDays = getSettings().auditLogRetentionDays;
+    if (retentionDays && retentionDays > 0) {
+        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+        purgeAuditEventsOlderThan(dbPath, cutoff);
+    }
+    // Soft cap, same shape as the JSON backend's (MAX_EVENTS + TRIM_BATCH
+    // slack) — only actually issues a DELETE once every TRIM_BATCH writes
+    // past the cap, not on every single one.
+    if (sqliteAuditEventCount(dbPath) > MAX_EVENTS + TRIM_BATCH) {
+        trimAuditEventsToCap(dbPath, MAX_EVENTS);
+    }
+
     return event;
 }
 

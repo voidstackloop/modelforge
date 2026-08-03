@@ -362,6 +362,26 @@ describe("audit-log-store", () => {
             settingsStore.saveSettings({ auditLogBackend: undefined });
             expect(auditLogStore.listEvents()).toHaveLength(0);
         });
+
+        it("purges expired events on write too, same as the JSON backend", async () => {
+            const { openAuditStore, migrateAuditLogFromJson } = await import("./native-sqlite-store");
+            const sqliteDbPath = path.join(app.getPath("userData"), "audit-log.sqlite3");
+
+            settingsStore.saveSettings({ auditLogBackend: "sqlite", auditLogRetentionDays: 30 });
+            openAuditStore(sqliteDbPath);
+            const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(); // 40 days ago
+            migrateAuditLogFromJson(sqliteDbPath, JSON.stringify([{ id: "old-1", timestamp: old, actionCategory: "case-viewed" }]));
+
+            // Any write triggers the purge, per the same semantics as the
+            // JSON backend's "purges expired events on write too" test.
+            auditLogStore.recordEvent("case-created", { targetId: "new-write" });
+
+            const remaining = auditLogStore.listEvents();
+            expect(remaining.some((e) => e.id === "old-1")).toBe(false);
+            expect(remaining.some((e) => e.targetId === "new-write")).toBe(true);
+
+            settingsStore.saveSettings({ auditLogRetentionDays: undefined });
+        });
     });
 
     it("falls back to the JSON backend when sqlite is requested but the addon isn't available", () => {
