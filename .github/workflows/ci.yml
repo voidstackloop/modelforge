@@ -163,7 +163,7 @@ jobs:
       - name: Install rustfmt and clippy
         run: rustup component add rustfmt clippy
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
