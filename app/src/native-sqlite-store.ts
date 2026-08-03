@@ -1,27 +1,26 @@
 import * as path from "node:path";
 import { classifyLoadError, type NativeCapabilityReport } from "./native-capability";
 
-// Phase-1 scaffold (see docs/RUST_MIGRATION_ASSESSMENT.md) for a
-// SQLite-backed audit store — lib/src/store/audit.rs. Deliberately INERT:
-// nothing in the running app calls into this yet. audit-log-store.ts's live
-// read/write path is unchanged and still the JSON file. This module exists
-// so the Rust store, its migration path, and this bridge are all built and
-// tested ahead of an explicitly flagged future cutover, rather than
-// designing that cutover blind.
+// Phase-1 SQLite-backed audit store bridge (see
+// docs/RUST_MIGRATION_ASSESSMENT.md) — lib/src/store/audit.rs.
+// audit-log-store.ts only reaches this when a user has explicitly opted in
+// via Settings (`auditLogBackend: "sqlite"`); the JSON file remains the
+// default, unaffected path otherwise.
 //
-// Unlike native-datastore.ts, there is no fallback here — a SQLite store
-// with no SQLite backing has nothing meaningful to fall back to. That's
-// fine precisely because nothing calls this yet; a real cutover would need
-// to decide what "the addon isn't available" means for a store that would
-// by then be load-bearing (almost certainly: refuse to switch over, keep
-// using JSON, and surface that clearly — not silently lose the fast path
-// the way json-store.ts's fallback safely can).
+// Unlike native-datastore.ts, there is no silent fallback here — a SQLite
+// store with no SQLite backing has nothing meaningful to fall back to.
+// audit-log-store.ts is responsible for deciding what "opted into sqlite but
+// the addon isn't available" means (refuse to switch, keep using JSON, and
+// surface that clearly) rather than this module inventing a JSON-shaped
+// fallback of its own.
 
 interface NativeAddon {
     openAuditStore(dbPath: string): void;
     migrateAuditLogFromJson(dbPath: string, jsonArray: string): MigrationReport;
     auditEventCount(dbPath: string): number;
     verifyAuditStore(dbPath: string): StoreIntegrityReport;
+    getLastAuditEventHash(dbPath: string): string | null;
+    listAuditEventsJson(dbPath: string): string;
 }
 
 export interface MigrationReport {
@@ -64,6 +63,10 @@ export function getSqliteStoreCapabilityReport(): NativeCapabilityReport {
     return capabilityReport;
 }
 
+export function isNativeSqliteStoreAvailable(): boolean {
+    return getSqliteStoreCapabilityReport().available;
+}
+
 /** Opens (creating on first use) the audit SQLite store and applies its
  * schema. Idempotent. Throws if the native addon isn't available — callers
  * of this scaffold are expected to check getSqliteStoreCapabilityReport()
@@ -85,4 +88,21 @@ export function auditEventCount(dbPath: string): number {
 
 export function verifyAuditStore(dbPath: string): StoreIntegrityReport {
     return getNativeAddon().verifyAuditStore(dbPath);
+}
+
+/** The most recently inserted event's `eventHash`, or `null` for an empty
+ * store or one whose last event predates hash-chaining — what a new event
+ * being recorded against this backend should chain its own
+ * `previousEventHash` onto. */
+export function getLastAuditEventHash(dbPath: string): string | null {
+    return getNativeAddon().getLastAuditEventHash(dbPath);
+}
+
+/** Every event in the store as a JSON array string, in insertion order,
+ * using the exact same field names/shape as audit-log.json — callers can
+ * `JSON.parse` this and feed it straight through the same
+ * parsing/sorting/purge/verification logic audit-log-store.ts already has
+ * for the JSON backend. */
+export function listAuditEventsJson(dbPath: string): string {
+    return getNativeAddon().listAuditEventsJson(dbPath);
 }

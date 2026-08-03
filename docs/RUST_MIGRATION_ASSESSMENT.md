@@ -260,15 +260,51 @@ Re-verified after the fix that the real built addon still loads correctly
 under Node (it does — see the smoke test above); this is a supported,
 recommended napi-rs configuration, not a workaround.
 
+### Phase 1 — flagged cutover for audit events
+
+`audit-log-store.ts` now has a real (if experimental) SQLite path, opt-in
+via Settings (`auditLogBackend: "sqlite"`, schema field in `schemas.ts`,
+default unset = JSON, completely unaffected). Two new Rust functions
+support it: `get_last_audit_event_hash` (so a new event can chain onto the
+store's real tail without reading every row) and `list_audit_events_json`
+(same field shape as the JSON file, so `verifyChainIntegrity()` and
+`listEvents()` reuse their existing parsing/sorting/hash-verification logic
+completely unchanged regardless of which backend produced the data —
+`readAllActive()` is the one dispatch point). On first write after opting
+in, existing JSON events are migrated in (idempotent, JSON never deleted).
+`clearAll()` now clears both backends unconditionally, so switching back to
+JSON afterward can't resurrect old SQLite events or vice versa.
+
+4 new parity/integration tests (record+list+verify on SQLite directly,
+migration-on-first-write, same-operation-sequence-produces-equivalent-
+results on both backends, clearAll clears both) plus a fallback test
+(requesting `sqlite` without the addon silently and correctly keeps using
+JSON — this one runs in every environment, addon or not). All verified
+through the real built addon, both with and without it present.
+
+**Known gap, explicitly not solved in this slice:** the SQLite backend has
+no retention purging or row cap yet — `MAX_EVENTS`/`TRIM_BATCH` are
+JSON-backend-only. This is a real, intentional scope cut, not an oversight:
+SQLite inserts don't have the JSON file's O(n²) growth problem regardless
+of table size, so unbounded row growth here is a disk-usage concern to
+address before this leaves "experimental," not the kind of performance
+cliff that motivated the JSON-side fix. No Settings UI toggle exists for
+`auditLogBackend` yet either — it's reachable today only by writing
+`settings.json` directly or programmatically, which is appropriate for an
+explicitly experimental first slice but would need a real UI (with the
+capability-report-driven "addon not available, staying on JSON" messaging
+this design already supports) before recommending it to anyone.
+
 **Explicitly not done, with reasons, per "stop and document the blocker"
 rather than half-finish:**
 
-- Actually cutting `audit-log-store.ts` over to the SQLite store, or
-  migrating any other store (patient cases, sessions, evidence, model
-  registry). The scaffold above is the foundation that cutover would use,
-  not the cutover itself — flipping the live read/write path needs the
-  three-way native/fallback/new-store comparison and feature-flag rollout
-  described in §6, which is real, separately-scoped work.
+- Migrating any store *other* than audit events (patient cases, sessions,
+  evidence, model registry) — the pattern above is now proven end-to-end
+  for one store; repeating it for the others is real, separately-scoped
+  work per store, not a mechanical copy-paste (their schemas and access
+  patterns differ).
+- Retention/cap enforcement on the SQLite backend (see above).
+- A Settings UI toggle for `auditLogBackend` (see above).
 - Crypto vault, RAG index, filesystem capability layer, process supervisor,
   system-inspection rewrite, ingestion, safety-scanning engine, recommender
   inference — none started. Each is a substantial, independently-scoped

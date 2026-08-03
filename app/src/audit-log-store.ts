@@ -6,6 +6,13 @@ import { readJsonWithSchema, writeJson } from "./json-store";
 import { auditLogFileSchema } from "./schemas";
 import { getSettings } from "./settings-store";
 import { sha256HexNative, appendJsonArrayElementNative, isNativeDatastoreAvailable } from "./native-datastore";
+import {
+    isNativeSqliteStoreAvailable,
+    openAuditStore as openSqliteAuditStore,
+    migrateAuditLogFromJson,
+    getLastAuditEventHash,
+    listAuditEventsJson,
+} from "./native-sqlite-store";
 import type { z } from "zod";
 
 export type AuditActionCategory = z.infer<typeof auditLogFileSchema>[number]["actionCategory"];
@@ -67,6 +74,84 @@ function readAll(): AuditEvent[] {
 
 function writeAll(events: AuditEvent[]): void {
     writeJson(filePath(), events);
+}
+
+// --- Optional SQLite backend (Settings → Audit & Privacy, experimental) ---
+//
+// Opt-in only; unset/"json" (the default) never touches any of this. See
+// docs/RUST_MIGRATION_ASSESSMENT.md for why this exists and what it
+// deliberately doesn't do yet: retention purging and the MAX_EVENTS soft
+// cap below are JSON-backend-only in this first slice — the SQLite backend
+// currently grows without a cap. That's a real, known gap (disk usage over
+// a long-lived install), not an oversight; SQLite inserts don't have the
+// JSON file's O(n²) growth problem regardless of table size, so it's a
+// lower-urgency follow-up than the bug that motivated the JSON-side fix.
+
+function sqliteDbPath(): string {
+    return path.join(app.getPath("userData"), "audit-log.sqlite3");
+}
+
+function sqliteBackendActive(): boolean {
+    // Requested AND actually usable — if a user opts in on a build without
+    // the native addon, silently falling back to JSON (rather than raising
+    // an error on every audit-relevant action) is the safer failure mode
+    // for a store nothing else in the app can function without; the addon's
+    // capability report (getSqliteStoreCapabilityReport()) is what makes
+    // that mismatch discoverable rather than silent.
+    return getSettings().auditLogBackend === "sqlite" && isNativeSqliteStoreAvailable();
+}
+
+// Migration only needs to happen once per process — after that, every new
+// event is written directly to SQLite and the JSON file is frozen (not
+// deleted; it stays as a rollback path). Re-running the migration is always
+// safe (it only inserts ids not already present), so this flag is purely a
+// performance guard against redoing it on every single call, not a
+// correctness requirement.
+let sqliteMigrated = false;
+
+function ensureSqliteBackendReady(dbPath: string): void {
+    openSqliteAuditStore(dbPath);
+    if (sqliteMigrated) return;
+    const existingJson = readAll();
+    if (existingJson.length > 0) migrateAuditLogFromJson(dbPath, JSON.stringify(existingJson));
+    sqliteMigrated = true;
+}
+
+function readAllFromSqlite(dbPath: string): AuditEvent[] {
+    const parsed: unknown = JSON.parse(listAuditEventsJson(dbPath));
+    const result = (auditLogFileSchema as unknown as z.ZodType<AuditEvent[]>).safeParse(parsed);
+    return result.success ? result.data : [];
+}
+
+// The single choke point every reader (verifyChainIntegrity, listEvents,
+// the JSON fast-path's own migration-seed read) goes through — dispatches
+// to whichever backend is actually active so none of those callers need
+// their own backend-selection logic.
+function readAllActive(): AuditEvent[] {
+    if (sqliteBackendActive()) {
+        const dbPath = sqliteDbPath();
+        ensureSqliteBackendReady(dbPath);
+        return readAllFromSqlite(dbPath);
+    }
+    return readAll();
+}
+
+function recordEventSqlite(dbPath: string, actionCategory: AuditActionCategory, fields: RecordEventFields): AuditEvent {
+    ensureSqliteBackendReady(dbPath);
+    const previousEventHash = getLastAuditEventHash(dbPath);
+    const withoutHash: Omit<AuditEvent, "eventHash"> = {
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        actionCategory,
+        ...fields,
+        previousEventHash,
+    };
+    const event: AuditEvent = { ...withoutHash, eventHash: computeEventHash(withoutHash) };
+    // Reuses the migration function's insert-if-not-present logic for a
+    // single new event, rather than a separate INSERT code path in Rust —
+    // this event's id is always fresh (randomUUID()), so it always inserts.
+    migrateAuditLogFromJson(dbPath, JSON.stringify([event]));
+    return event;
 }
 
 // Age-based purge, on top of the fixed MAX_EVENTS count cap below — user-
@@ -200,6 +285,10 @@ function reseedCache(p: string): AuditCache {
 }
 
 export function recordEvent(actionCategory: AuditActionCategory, fields: RecordEventFields = {}): AuditEvent {
+    if (sqliteBackendActive()) {
+        return recordEventSqlite(sqliteDbPath(), actionCategory, fields);
+    }
+
     // Age-based retention purges on every write by design (see
     // "purges expired events on write too" in the test suite) — that
     // requires reading every event's timestamp, so there's no fast path
@@ -288,7 +377,7 @@ export interface ChainVerificationResult {
  * nothing left to check it against.
  */
 export function verifyChainIntegrity(): ChainVerificationResult {
-    const events = readAll();
+    const events = readAllActive();
     const startIndex = events.findIndex((e) => e.eventHash !== undefined);
     if (startIndex === -1) return { valid: true, checkedCount: 0 };
 
@@ -334,13 +423,26 @@ export function listEvents(): AuditEvent[] {
     // Purged here too (read-time), not just in recordEvent, so lowering the
     // retention setting takes effect immediately instead of waiting for the
     // next recorded event to trigger a rewrite.
-    return purgeExpired(readAll())
+    return purgeExpired(readAllActive())
         .map((event, index) => ({ event, index }))
         .sort((a, b) => b.event.timestamp.localeCompare(a.event.timestamp) || b.index - a.index)
         .map(({ event }) => event);
 }
 
 export function clearAll(): void {
+    // Clears both backends unconditionally rather than only the active
+    // one — "clear the audit log" is a user-facing action that should wipe
+    // everything regardless of which backend happens to be selected right
+    // now, so switching backends afterward doesn't resurrect old events.
     writeAll([]);
     cache = null;
+    for (const suffix of ["", "-wal", "-shm"]) {
+        try {
+            fs.rmSync(`${sqliteDbPath()}${suffix}`, { force: true });
+        } catch {
+            // Best effort — files not existing (the common case, no sqlite
+            // backend ever used) is already the desired end state.
+        }
+    }
+    sqliteMigrated = false;
 }

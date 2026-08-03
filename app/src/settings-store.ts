@@ -159,6 +159,7 @@ export interface AppSettings {
     caseAutoLockMinutes?: number;
     redactBeforeRemoteSend?: boolean;
     auditLogRetentionDays?: number;
+    auditLogBackend?: "json" | "sqlite";
     energyMonitoringEnabled?: boolean;
     electricityPricePerKwh?: number;
     energyCurrency?: string;

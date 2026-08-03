@@ -172,6 +172,11 @@ export const appSettingsSchema = z
         // Days to retain audit-log-store.ts events; 0 or unset means "no
         // age-based purge" (still bounded by the fixed MAX_EVENTS cap there).
         auditLogRetentionDays: z.number().optional(),
+        // Opt-in, experimental: route audit-log-store.ts through the Rust
+        // SQLite scaffold (lib/src/store/audit.rs) instead of the JSON file.
+        // Unset/"json" (the default) is completely unaffected by this
+        // setting existing — see docs/RUST_MIGRATION_ASSESSMENT.md.
+        auditLogBackend: z.enum(["json", "sqlite"]).optional(),
         energyMonitoringEnabled: z.boolean(),
         electricityPricePerKwh: z.number(),
         energyCurrency: z.string(),

@@ -1,9 +1,11 @@
-// Inert Phase-1 scaffold (see docs/RUST_MIGRATION_ASSESSMENT.md) — a
-// SQLite-backed audit-event store that exists, is tested, and can migrate
-// real data from the current JSON format, but is NOT wired into
-// audit-log-store.ts's live read/write path. Nothing in the running app
-// depends on this yet; it's a proven foundation for a future, explicitly
-// flagged cutover, not a parallel source of truth today.
+// Phase-1 SQLite-backed audit-event store (see
+// docs/RUST_MIGRATION_ASSESSMENT.md). Reachable from audit-log-store.ts only
+// when a clinician/admin explicitly opts in via Settings
+// (`auditLogBackend: "sqlite"`, default "json") — the JSON file remains the
+// default, untouched path for everyone else. `list_audit_events_json`
+// returns data in the exact shape the JSON file uses so the TypeScript side
+// can reuse its existing parsing/sorting/purge/hash-verification logic
+// unchanged regardless of which backend is active.
 //
 // Every function opens its own short-lived connection rather than holding
 // one across the N-API boundary — simpler to reason about (no Send/Sync
@@ -208,6 +210,81 @@ pub fn verify_audit_store(db_path: String) -> napi::Result<StoreIntegrityReport>
     })
 }
 
+/// The most recently inserted event's `event_hash` (by SQLite's own
+/// implicit rowid, which tracks insertion order), or `None` for an empty
+/// store or one whose last event predates hash-chaining. Lets a caller
+/// building a new event chain onto this store without needing to fetch and
+/// parse every row just to find the tail.
+#[napi]
+pub fn get_last_audit_event_hash(db_path: String) -> napi::Result<Option<String>> {
+    let conn =
+        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    conn.query_row(
+        "SELECT event_hash FROM audit_events ORDER BY rowid DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|err| napi::Error::from_reason(err.to_string()))
+}
+
+/// Every event in the store, serialized as a JSON array in insertion order
+/// — same field names (camelCase) and shape as the JSON file this store can
+/// be migrated from, so a TypeScript caller can reuse exactly the same
+/// parsing/sorting/purge/verification logic regardless of which backend
+/// produced the data.
+#[napi]
+pub fn list_audit_events_json(db_path: String) -> napi::Result<String> {
+    let conn =
+        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, timestamp, action_category, target_type, target_id, detail,
+                    mcp_server_id, mcp_server_name, mcp_tool_name, approval_outcome,
+                    duration_ms, previous_event_hash, event_hash
+             FROM audit_events ORDER BY rowid ASC",
+        )
+        .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("id".into(), row.get::<_, String>(0)?.into());
+            obj.insert("timestamp".into(), row.get::<_, String>(1)?.into());
+            obj.insert("actionCategory".into(), row.get::<_, String>(2)?.into());
+            insert_optional_string(&mut obj, "targetType", row.get(3)?);
+            insert_optional_string(&mut obj, "targetId", row.get(4)?);
+            insert_optional_string(&mut obj, "detail", row.get(5)?);
+            insert_optional_string(&mut obj, "mcpServerId", row.get(6)?);
+            insert_optional_string(&mut obj, "mcpServerName", row.get(7)?);
+            insert_optional_string(&mut obj, "mcpToolName", row.get(8)?);
+            insert_optional_string(&mut obj, "approvalOutcome", row.get(9)?);
+            let duration_ms: Option<i64> = row.get(10)?;
+            if let Some(ms) = duration_ms {
+                obj.insert("durationMs".into(), ms.into());
+            }
+            insert_optional_string(&mut obj, "previousEventHash", row.get(11)?);
+            insert_optional_string(&mut obj, "eventHash", row.get(12)?);
+            Ok(serde_json::Value::Object(obj))
+        })
+        .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+
+    let events: Vec<serde_json::Value> = rows
+        .collect::<rusqlite::Result<_>>()
+        .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    serde_json::to_string(&events).map_err(|err| napi::Error::from_reason(err.to_string()))
+}
+
+fn insert_optional_string(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<String>,
+) {
+    if let Some(v) = value {
+        obj.insert(key.to_string(), v.into());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +430,80 @@ mod tests {
             .unwrap();
         assert_eq!(prev, None);
         assert_eq!(hash, Some("deadbeef".to_string()));
+    }
+
+    #[test]
+    fn last_event_hash_is_none_for_an_empty_store() {
+        let dir = tempdir().unwrap();
+        assert_eq!(get_last_audit_event_hash(db_path(&dir)).unwrap(), None);
+    }
+
+    #[test]
+    fn last_event_hash_tracks_insertion_order_not_id_order() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        // Inserted out of lexical id order — rowid (insertion order) must
+        // still win, not a query that happened to sort by id.
+        let json = r#"[
+            {"id":"z","timestamp":"2026-01-01T00:00:00.000Z","actionCategory":"case-created","eventHash":"h-z"},
+            {"id":"a","timestamp":"2026-01-01T00:00:01.000Z","actionCategory":"case-updated","previousEventHash":"h-z","eventHash":"h-a"}
+        ]"#;
+        migrate_audit_log_from_json(path.clone(), json.to_string()).unwrap();
+        assert_eq!(
+            get_last_audit_event_hash(path).unwrap(),
+            Some("h-a".to_string())
+        );
+    }
+
+    #[test]
+    fn list_audit_events_json_round_trips_through_migration() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        let json = r#"[
+            {"id":"a","timestamp":"2026-01-01T00:00:00.000Z","actionCategory":"case-created","targetType":"patient-case","targetId":"case-1","eventHash":"h1"},
+            {"id":"b","timestamp":"2026-01-01T00:00:01.000Z","actionCategory":"mcp-tool-call","mcpServerId":"graphify","mcpToolName":"query","approvalOutcome":"approved","durationMs":42,"previousEventHash":"h1","eventHash":"h2"}
+        ]"#;
+        migrate_audit_log_from_json(path.clone(), json.to_string()).unwrap();
+
+        let listed: serde_json::Value =
+            serde_json::from_str(&list_audit_events_json(path).unwrap()).unwrap();
+        let events = listed.as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["id"], "a");
+        assert_eq!(events[0]["targetType"], "patient-case");
+        assert_eq!(events[1]["id"], "b");
+        assert_eq!(events[1]["mcpServerId"], "graphify");
+        assert_eq!(events[1]["durationMs"], 42);
+        assert_eq!(events[1]["previousEventHash"], "h1");
+        // Fields absent on the source event must stay absent (see the
+        // dedicated omission test below), matching audit-log-store.ts's own
+        // AuditEvent fields being optional (`?`), not nullable.
+        assert!(events[0].as_object().unwrap().get("mcpServerId").is_none());
+    }
+
+    #[test]
+    fn list_audit_events_json_omits_optional_fields_entirely_rather_than_nulling_them() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        let json = r#"[{"id":"a","timestamp":"2026-01-01T00:00:00.000Z","actionCategory":"case-created"}]"#;
+        migrate_audit_log_from_json(path.clone(), json.to_string()).unwrap();
+
+        let listed: serde_json::Value =
+            serde_json::from_str(&list_audit_events_json(path).unwrap()).unwrap();
+        let event = listed.as_array().unwrap()[0].as_object().unwrap();
+        for absent_field in [
+            "targetType",
+            "targetId",
+            "detail",
+            "mcpServerId",
+            "durationMs",
+            "previousEventHash",
+            "eventHash",
+        ] {
+            assert!(
+                !event.contains_key(absent_field),
+                "expected {absent_field} to be omitted, not present as null"
+            );
+        }
     }
 }

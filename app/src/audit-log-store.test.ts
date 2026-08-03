@@ -293,4 +293,89 @@ describe("audit-log-store", () => {
             30_000
         );
     });
+
+    // Opt-in only (Settings → Audit & Privacy, auditLogBackend: "sqlite") —
+    // see docs/RUST_MIGRATION_ASSESSMENT.md. Only meaningful with the native
+    // addon actually built; without it isNativeSqliteStoreAvailable() is
+    // false and audit-log-store.ts silently keeps using JSON regardless of
+    // this setting (covered by the "falls back to JSON" test below, which
+    // runs either way).
+    describe.runIf(nativeAddonPresent)("SQLite backend (opt-in, experimental)", () => {
+        afterEach(() => settingsStore.saveSettings({ auditLogBackend: undefined }));
+
+        it("records and lists events, with a valid hash chain, once opted in", () => {
+            settingsStore.saveSettings({ auditLogBackend: "sqlite" });
+            auditLogStore.recordEvent("case-created", { targetId: "a" });
+            auditLogStore.recordEvent("case-updated", { targetId: "a" });
+
+            const events = auditLogStore.listEvents();
+            expect(events.map((e) => e.actionCategory)).toEqual(["case-updated", "case-created"]); // newest first
+            expect(auditLogStore.verifyChainIntegrity()).toMatchObject({ valid: true, checkedCount: 2 });
+        });
+
+        it("migrates pre-existing JSON events in on first write after opting in", () => {
+            // Written while on the default JSON backend.
+            auditLogStore.recordEvent("case-created", { targetId: "pre-existing" });
+
+            settingsStore.saveSettings({ auditLogBackend: "sqlite" });
+            auditLogStore.recordEvent("case-updated", { targetId: "new" });
+
+            const events = auditLogStore.listEvents();
+            expect(events.map((e) => e.targetId).sort()).toEqual(["new", "pre-existing"]);
+            // The migrated event and the new one form one continuous chain —
+            // migration isn't just a data copy, it's a real chain handoff.
+            expect(auditLogStore.verifyChainIntegrity().valid).toBe(true);
+        });
+
+        it("parity: the same operation sequence produces structurally equivalent results on both backends", () => {
+            const run = () => {
+                auditLogStore.recordEvent("case-created", { targetId: "a" });
+                auditLogStore.recordEvent("mcp-tool-call", { mcpServerId: "graphify", mcpToolName: "query", approvalOutcome: "approved", durationMs: 10 });
+                auditLogStore.recordEvent("case-deleted", { targetId: "a" });
+                return {
+                    categories: auditLogStore.listEvents().map((e) => e.actionCategory),
+                    chainValid: auditLogStore.verifyChainIntegrity().valid,
+                    count: auditLogStore.listEvents().length,
+                };
+            };
+
+            const jsonResult = run();
+            auditLogStore.clearAll();
+
+            settingsStore.saveSettings({ auditLogBackend: "sqlite" });
+            const sqliteResult = run();
+
+            expect(sqliteResult.categories).toEqual(jsonResult.categories);
+            expect(sqliteResult.count).toBe(jsonResult.count);
+            expect(sqliteResult.chainValid).toBe(jsonResult.chainValid);
+            expect(sqliteResult.chainValid).toBe(true);
+        });
+
+        it("clearAll empties both backends, so switching back to JSON afterward starts clean", () => {
+            auditLogStore.recordEvent("case-created", { targetId: "json-event" });
+            settingsStore.saveSettings({ auditLogBackend: "sqlite" });
+            auditLogStore.recordEvent("case-updated", { targetId: "sqlite-event" });
+
+            auditLogStore.clearAll();
+            expect(auditLogStore.listEvents()).toHaveLength(0);
+
+            settingsStore.saveSettings({ auditLogBackend: undefined });
+            expect(auditLogStore.listEvents()).toHaveLength(0);
+        });
+    });
+
+    it("falls back to the JSON backend when sqlite is requested but the addon isn't available", () => {
+        settingsStore.saveSettings({ auditLogBackend: "sqlite" });
+        try {
+            const event = auditLogStore.recordEvent("case-created", { targetId: "a" });
+            expect(event.actionCategory).toBe("case-created");
+            if (!nativeAddonPresent) {
+                // Proves it actually went to the JSON file, not just that
+                // recordEvent() didn't throw.
+                expect(JSON.parse(fs.readFileSync(auditLogPath(), "utf-8"))).toHaveLength(1);
+            }
+        } finally {
+            settingsStore.saveSettings({ auditLogBackend: undefined });
+        }
+    });
 });
