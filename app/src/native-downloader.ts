@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { classifyLoadError, type NativeCapabilityReport } from "./native-capability";
 
 export interface NativeDownloadProgress {
     receivedBytes: number;
@@ -96,4 +97,21 @@ export function getDownloadManager(): NativeDownloadManager {
         downloadManager = new DownloadManager();
     }
     return downloadManager;
+}
+
+/**
+ * Diagnostic-only, non-throwing check of whether the native download engine
+ * is available and, if not, why — see native-capability.ts. Every real
+ * caller above (`downloadGgufFileNative`, `getDownloadManager`) still
+ * throws on failure as before; this exists so callers that want to log or
+ * report the reason (rather than just catch-and-fall-back) can, without
+ * duplicating the classification logic.
+ */
+export function getNativeDownloaderCapabilityReport(): NativeCapabilityReport {
+    try {
+        getNativeAddon();
+        return { available: true };
+    } catch (err) {
+        return { available: false, reason: classifyLoadError(err), detail: err instanceof Error ? err.message : String(err) };
+    }
 }

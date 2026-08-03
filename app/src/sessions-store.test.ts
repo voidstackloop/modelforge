@@ -1,5 +1,16 @@
-import { describe, it, expect } from "vitest";
+import * as path from "node:path";
+import * as fs from "node:fs";
+import { app } from "electron";
+import { describe, it, expect, afterEach } from "vitest";
 import * as sessionsStore from "./sessions-store";
+import * as caseEncryption from "./case-encryption";
+
+function plaintextSessionsPath(): string {
+    return path.join(app.getPath("userData"), "sessions.json");
+}
+function encryptedSessionsPath(): string {
+    return plaintextSessionsPath().replace(".json", ".enc.json");
+}
 
 // updatedAt has millisecond resolution; force distinct timestamps so
 // ordering assertions aren't flaky when operations land in the same tick.
@@ -57,5 +68,60 @@ describe("sessions-store", () => {
 
         const list = sessionsStore.listSessions();
         expect(list[0].id).toBe(second.id);
+    });
+
+    describe("encryption at rest (shares patient-cases-store's encryption gate)", () => {
+        afterEach(() => {
+            caseEncryption.clearConfig();
+            fs.rmSync(plaintextSessionsPath(), { force: true });
+            fs.rmSync(encryptedSessionsPath(), { force: true });
+        });
+
+        it("migrates existing plaintext sessions to an encrypted file when encryption is enabled", () => {
+            sessionsStore.clearAll();
+            sessionsStore.createSession(null); // ensure the plaintext file exists
+            expect(fs.existsSync(plaintextSessionsPath())).toBe(true);
+
+            const data = sessionsStore.getAllSessionsForMigration();
+            caseEncryption.setup("a strong passphrase");
+            sessionsStore.overwriteAllSessions(data);
+
+            expect(fs.existsSync(plaintextSessionsPath())).toBe(false);
+            expect(fs.existsSync(encryptedSessionsPath())).toBe(true);
+        });
+
+        it("reads and writes normally while unlocked", () => {
+            caseEncryption.setup("a strong passphrase");
+            const created = sessionsStore.createSession("llama3.2");
+            expect(sessionsStore.getSession(created.id)?.model).toBe("llama3.2");
+        });
+
+        it("throws CaseDataLockedError instead of returning an empty list when locked", () => {
+            caseEncryption.setup("a strong passphrase");
+            sessionsStore.createSession(null);
+            caseEncryption.lock();
+            expect(() => sessionsStore.listSessions()).toThrow(sessionsStore.CaseDataLockedError);
+            expect(() => sessionsStore.createSession(null)).toThrow(sessionsStore.CaseDataLockedError);
+        });
+
+        it("recovers access after unlocking with the correct passphrase", () => {
+            caseEncryption.setup("a strong passphrase");
+            const created = sessionsStore.createSession("llama3.2");
+            caseEncryption.lock();
+            expect(caseEncryption.unlock("a strong passphrase")).toBe(true);
+            expect(sessionsStore.getSession(created.id)?.model).toBe("llama3.2");
+        });
+
+        it("moving back to plaintext restores a readable file and removes the encrypted one", () => {
+            caseEncryption.setup("a strong passphrase");
+            sessionsStore.createSession(null);
+            const data = sessionsStore.getAllSessionsForMigration();
+            caseEncryption.clearConfig();
+            sessionsStore.overwriteAllSessions(data);
+
+            expect(sessionsStore.listSessions().length).toBeGreaterThan(0);
+            expect(fs.existsSync(plaintextSessionsPath())).toBe(true);
+            expect(fs.existsSync(encryptedSessionsPath())).toBe(false);
+        });
     });
 });

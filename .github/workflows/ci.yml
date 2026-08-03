@@ -136,11 +136,23 @@ jobs:
           retention-days: 7
 
   rust:
-    # lib/ (modelforge-native) is the napi-rs download engine used by
-    # download-queue.ts. GitHub's ubuntu-latest runners ship rustup with a
-    # default stable toolchain already installed, so this only needs to add
-    # the two components fmt/clippy actually use.
-    runs-on: ubuntu-latest
+    # lib/ (modelforge-native) is the napi-rs addon backing GGUF downloads
+    # and, more recently, the JSON datastore/audit-hashing primitives (see
+    # docs/ARCHITECTURE.md). fmt/clippy/cargo test only prove the Rust side
+    # is correct on whichever OS runs them — they say nothing about whether
+    # the resulting `.node` binary actually loads under Node on that OS,
+    # which is a materially different failure mode (wrong ABI, missing
+    # platform target, packaging mismatch). Previously this job only ran on
+    # ubuntu-latest, so nothing in CI ever built or loaded the addon on
+    # Windows or macOS despite installers shipping for both — see
+    # docs/RUST_MIGRATION_ASSESSMENT.md's platform-matrix section. The
+    # matrix below and the "napi build + require() smoke test" step close
+    # that gap.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: lib
@@ -161,10 +173,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # fmt/clippy only need to run once — Rust source and formatting are
+      # identical across OSes, so repeating this on all three runners would
+      # just burn CI minutes for the same answer three times.
       - name: Format check
+        if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
 
       - name: Clippy
+        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Build
@@ -172,6 +189,89 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: lib/package-lock.json
+
+      - name: Install napi CLI
+        run: npm ci
+
+      - name: napi build (produces the real platform-specific .node binary)
+        run: npm run build:debug
+
+      # The actual gap this job exists to close: proves Node on *this* OS
+      # can load the binary napi build just produced, not just that Cargo
+      # compiled it. A wrong target triple, an ABI mismatch, or a packaging
+      # error would fail cargo build's cross-compile silently-succeed case
+      # but fail right here.
+      - name: Load the built addon under Node and verify its exports
+        shell: bash
+        run: |
+          node -e "
+            const addon = require('../app/native');
+            const expected = ['downloadGgufFile', 'DownloadManager', 'readJsonFileNative', 'writeJsonFileAtomicNative', 'sha256HexNative', 'appendJsonArrayElementNative'];
+            const missing = expected.filter((name) => !(name in addon));
+            if (missing.length > 0) {
+              console.error('Native addon loaded but is missing expected exports:', missing);
+              process.exit(1);
+            }
+            console.log('Native addon loaded successfully on ${{ matrix.os }} with all expected exports.');
+          "
+
+  sbom:
+    # Generates a CycloneDX SBOM per npm workspace so every release has an
+    # auditable, machine-readable dependency manifest — required groundwork
+    # for the supply-chain/provenance controls flagged in
+    # docs/ENTERPRISE_READINESS_ASSESSMENT.md, and useful on its own for
+    # answering "are we affected by CVE-X" without re-deriving the dependency
+    # tree by hand. Runs independently of the test job so a flaky SBOM
+    # generation never blocks the build/test signal.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            app/package-lock.json
+            mastervault-mcp-server/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install app dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Install mastervault-mcp-server dependencies
+        working-directory: mastervault-mcp-server
+        run: npm ci
+
+      - name: Generate SBOM (frontend)
+        working-directory: frontend
+        run: npx --yes @cyclonedx/cyclonedx-npm --output-file ../sbom-frontend.cdx.json
+
+      - name: Generate SBOM (app)
+        working-directory: app
+        run: npx --yes @cyclonedx/cyclonedx-npm --output-file ../sbom-app.cdx.json
+
+      - name: Generate SBOM (mastervault-mcp-server)
+        working-directory: mastervault-mcp-server
+        run: npx --yes @cyclonedx/cyclonedx-npm --output-file ../sbom-mastervault-mcp-server.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom-*.cdx.json
+          retention-days: 90
 
   python-recommender:
     # ml/hardware-recommender/ is a standalone project (its own venv, own

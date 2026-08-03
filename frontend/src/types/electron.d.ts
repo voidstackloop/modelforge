@@ -207,12 +207,25 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  trustProfile?: { autoApprovedTools: string[] };
+  auth?: { type: "none" | "oauth2" };
+  blockedTools?: string[];
+  warningBanner?: string;
+}
+
+export interface McpServerToolSummary {
+  name: string;
+  description?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
 }
 
 export interface McpServerStatus {
   connected: boolean;
   toolCount: number;
+  protocolVersion?: string;
   error?: string;
+  tools: McpServerToolSummary[];
 }
 
 export interface OllamaRunningModel {
@@ -592,6 +605,9 @@ export interface AppSettings {
   verificationEnabled?: boolean;
   verificationCommands?: string[];
   verificationMaxRetries?: number;
+  caseAutoLockMinutes?: number;
+  redactBeforeRemoteSend?: boolean;
+  auditLogRetentionDays?: number;
 }
 
 export interface ChatOptions {
@@ -736,6 +752,130 @@ export interface RagCollectionSummary {
   updatedAt?: number;
   embedded: boolean;
   error?: string;
+}
+
+export interface CaseField<T> {
+  value: T;
+  includeInContext: boolean;
+}
+
+export interface LabResult {
+  id: string;
+  name: string;
+  value: string;
+  unit?: string;
+  referenceRange?: string;
+  observedAt?: string;
+}
+
+export interface ClinicalNoteReview {
+  reviewedBy: string;
+  reviewedAt: string;
+  outcome: "accepted" | "accepted-with-edits" | "rejected";
+  comment?: string;
+}
+
+export interface ClinicalNote {
+  id: string;
+  author: "clinician" | "model-inference";
+  text: string;
+  createdAt: string;
+  review?: ClinicalNoteReview;
+}
+
+export interface AttachmentRef {
+  id: string;
+  name: string;
+  mimeType?: string;
+  addedAt: string;
+}
+
+export interface CaseConsent {
+  id: string;
+  scope: "ai-assistance" | "remote-model-use" | "research";
+  grantedAt: string;
+  revokedAt?: string;
+  method: string;
+}
+
+export interface PatientCase {
+  id: string;
+  title: string;
+  demographics: CaseField<{ age?: string; sex?: string; notes?: string }>;
+  presentingComplaint: CaseField<string>;
+  symptomsTimeline: CaseField<string>;
+  vitalSigns: CaseField<string>;
+  conditions: CaseField<string[]>;
+  allergies: CaseField<string[]>;
+  medications: CaseField<string[]>;
+  labResults: CaseField<LabResult[]>;
+  imagingAndReports: CaseField<string>;
+  clinicalNotes: ClinicalNote[];
+  attachments: AttachmentRef[];
+  consentNote?: string;
+  consentRecords: CaseConsent[];
+  enteredBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AuditActionCategory =
+  | "case-created"
+  | "case-updated"
+  | "case-deleted"
+  | "case-viewed"
+  | "model-call-local"
+  | "model-call-remote"
+  | "mcp-tool-call"
+  | "export"
+  | "data-deleted"
+  | "settings-changed";
+
+export interface AuditEvent {
+  id: string;
+  timestamp: string;
+  actionCategory: AuditActionCategory;
+  targetType?: "patient-case" | "session" | "export" | "settings";
+  targetId?: string;
+  detail?: string;
+  mcpServerId?: string;
+  mcpServerName?: string;
+  mcpToolName?: string;
+  approvalOutcome?: "approved" | "auto-approved" | "denied";
+  durationMs?: number;
+  previousEventHash?: string | null;
+  eventHash?: string;
+}
+
+export interface ApprovedModel {
+  id: string;
+  provider: string;
+  modelId: string;
+  approvedUseCases: string[];
+  approvedBy?: string;
+  approvedAt: string;
+  retiredAt?: string;
+}
+
+export interface AuditChainVerificationResult {
+  valid: boolean;
+  checkedCount: number;
+  brokenAtIndex?: number;
+  reason?: string;
+}
+
+export type EvidenceSourceType = "peer-reviewed" | "guideline" | "reference-database" | "local-document" | "other";
+
+export interface EvidenceSource {
+  id: string;
+  url: string;
+  title: string;
+  organization?: string;
+  publishedOrUpdated?: string;
+  retrievedAt: string;
+  sourceType: EvidenceSourceType;
+  excerpt?: string;
+  addedAt: string;
 }
 
 export interface ElectronApi {
@@ -926,6 +1066,12 @@ export interface ElectronApi {
       name: string,
       args: Record<string, unknown>
     ) => Promise<{ result?: unknown; error?: string }>;
+    executeToolWithProgress: (
+      workspaceRoot: string,
+      name: string,
+      args: Record<string, unknown>,
+      onProgress: (progress: { progress: number; total?: number; message?: string }) => void
+    ) => { requestId: string; promise: Promise<{ result?: unknown; error?: string }> };
     rollbackLastWrite: (workspaceRoot: string) => Promise<RollbackResult | null>;
     detectScripts: (workspaceRoot: string) => Promise<ProjectScripts>;
     closeWorkspace: (workspaceRoot: string) => Promise<{ killedBackgroundTasks: number; killedTerminals: number }>;
@@ -943,6 +1089,72 @@ export interface ElectronApi {
     close: (id: string) => Promise<void>;
     list: (workspaceRoot?: string) => Promise<TerminalInfo[]>;
   };
+  patientCases: {
+    list: () => Promise<PatientCase[]>;
+    get: (id: string) => Promise<PatientCase | null>;
+    create: (title: string) => Promise<PatientCase>;
+    update: (id: string, partial: Record<string, unknown>) => Promise<PatientCase | null>;
+    delete: (id: string) => Promise<void>;
+    buildContext: (id: string) => Promise<{ text: string; includedFields: string[] } | null>;
+    checkConflicts: (
+      allergies: string[],
+      medications: string[]
+    ) => Promise<{ kind: "allergy" | "duplicate-class" | "known-interaction"; medication: string; conflictsWith: string; detail: string }[]>;
+    grantConsent: (caseId: string, scope: CaseConsent["scope"], method: string) => Promise<PatientCase | null>;
+    revokeConsent: (caseId: string, consentId: string) => Promise<PatientCase | null>;
+    addNote: (caseId: string, author: ClinicalNote["author"], text: string) => Promise<PatientCase | null>;
+    reviewNote: (
+      caseId: string,
+      noteId: string,
+      reviewedBy: string,
+      outcome: ClinicalNoteReview["outcome"],
+      comment?: string
+    ) => Promise<PatientCase | null>;
+  };
+  audit: {
+    list: () => Promise<AuditEvent[]>;
+    clearAll: () => Promise<void>;
+    record: (
+      actionCategory: AuditActionCategory,
+      fields?: {
+        targetType?: AuditEvent["targetType"];
+        targetId?: string;
+        detail?: string;
+        mcpServerId?: string;
+        mcpServerName?: string;
+        mcpToolName?: string;
+        approvalOutcome?: AuditEvent["approvalOutcome"];
+        durationMs?: number;
+      }
+    ) => Promise<AuditEvent>;
+    verifyIntegrity: () => Promise<AuditChainVerificationResult>;
+  };
+  encryption: {
+    status: () => Promise<{ enabled: boolean; unlocked: boolean }>;
+    setup: (passphrase: string) => Promise<{ success: boolean; error?: string }>;
+    unlock: (passphrase: string) => Promise<{ success: boolean }>;
+    lock: () => Promise<void>;
+    disable: (passphrase: string) => Promise<{ success: boolean; error?: string }>;
+    changePassphrase: (oldPassphrase: string, newPassphrase: string) => Promise<{ success: boolean; error?: string }>;
+  };
+  modelRegistry: {
+    list: () => Promise<ApprovedModel[]>;
+    isActive: () => Promise<boolean>;
+    isApproved: (provider: string, modelId: string) => Promise<boolean>;
+    approve: (provider: string, modelId: string, approvedUseCases: string[], approvedBy?: string) => Promise<ApprovedModel>;
+    retire: (id: string) => Promise<void>;
+    remove: (id: string) => Promise<void>;
+  };
+  medicalSafety: {
+    checkEmergency: (text: string) => Promise<{ isEmergency: boolean; flags: { matched: string; category: string }[] }>;
+    redact: (text: string) => Promise<{ redacted: string; counts: Record<string, number> }>;
+    checkCitations: (text: string, knownSourceIds: string[]) => Promise<{ unverifiedMarkers: string[]; missingCitations: boolean }>;
+  };
+  evidence: {
+    list: () => Promise<EvidenceSource[]>;
+    addFromUrl: (url: string) => Promise<{ source?: EvidenceSource; error?: string }>;
+    delete: (id: string) => Promise<void>;
+  };
   mcp: {
     connect: (
       config: McpServerConfig
@@ -951,6 +1163,10 @@ export interface ElectronApi {
     status: () => Promise<Record<string, McpServerStatus>>;
     isMastervaultBuiltinAvailable: () => Promise<boolean>;
     pickMastervaultVault: () => Promise<McpServerConfig | null>;
+    cancelTool: (requestId: string) => Promise<void>;
+    startOAuthFlow: (config: McpServerConfig) => Promise<{ authorized: boolean; error?: string }>;
+    hasOAuthTokens: (serverId: string) => Promise<boolean>;
+    clearOAuthCredentials: (serverId: string) => Promise<void>;
   };
   screen: {
     listSources: () => Promise<ScreenSourceInfo[]>;

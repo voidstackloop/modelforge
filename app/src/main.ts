@@ -34,6 +34,12 @@ import { registerAgentIpc } from "./ipc/agent-handlers";
 import { registerTerminalIpc } from "./ipc/terminal-handlers";
 import { registerMcpIpc } from "./ipc/mcp-handlers";
 import { registerGpuIpc } from "./ipc/gpu-handlers";
+import { registerPatientCasesIpc } from "./ipc/patient-cases-handlers";
+import { registerAuditIpc } from "./ipc/audit-handlers";
+import { registerEvidenceIpc } from "./ipc/evidence-handlers";
+import { registerMedicalSafetyIpc } from "./ipc/medical-safety-handlers";
+import { registerEncryptionIpc } from "./ipc/encryption-handlers";
+import { registerModelRegistryIpc } from "./ipc/model-registry-handlers";
 
 // Without these, an unexpected error anywhere in the main process (a bad file
 // parse, a network hiccup, a third-party library throwing) would crash the
@@ -177,6 +183,12 @@ function registerIpcHandlers(): void {
     registerTerminalIpc();
     registerMcpIpc();
     registerGpuIpc();
+    registerPatientCasesIpc();
+    registerAuditIpc();
+    registerEvidenceIpc();
+    registerMedicalSafetyIpc();
+    registerEncryptionIpc();
+    registerModelRegistryIpc();
 }
 
 // Best-effort: connect every enabled MCP server on launch so its tools are

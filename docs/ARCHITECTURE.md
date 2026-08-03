@@ -6,7 +6,7 @@ standalone Python project used offline to train a small model:
 ```
 frontend/   React 19 + Vite renderer — everything the user sees
 app/        Electron main process — window/IPC/OS integration, provider adapters, persistence
-lib/        Rust native addon (napi-rs) — the GGUF downloader's parallel-range HTTP engine
+lib/        Rust native addon (napi-rs) — GGUF downloads, plus atomic JSON store I/O and audit-log hashing
 ml/         Standalone Python project — trains the hardware/model-fit recommender offline
 ```
 
@@ -80,7 +80,8 @@ Roughly grouped by responsibility:
 | Provider adapters | `providers/openai.ts`, `providers/anthropic.ts`, `providers/gemini.ts`, `providers/openai-compatible.ts` (shared implementation for every OpenAI-compatible custom endpoint), `providers/sse.ts` (shared streaming parser), `providers/types.ts` |
 | Local model runtimes | `ollama-manager.ts` (start/stop/pull/list against a local or remote Ollama daemon), `llamacpp-manager.ts` (GGUF inference via node-llama-cpp, GPU backend detection), `local-server-manager.ts` (custom OpenAI-compatible local backends: vLLM, LocalAI, TGI, etc.) |
 | Agent mode | `agent-tools.ts` (every tool implementation, workspace sandboxing, the destructive-command blocklist), `command-sandbox.ts` (OS-level sandboxing via bubblewrap/`sandbox-exec` where available), `terminal-manager.ts` (the embedded PTY-backed terminal panel), `mcp-client.ts` (external MCP server connections) |
-| Persistence | `json-store.ts` (shared atomic-write/corruption-recovery helper), `settings-store.ts`, `sessions-store.ts`, `projects-store.ts`, `secrets-store.ts` (OS-keychain-backed via Electron `safeStorage`), `scheduled-tasks-store.ts`, `download-jobs-store.ts`, `energy-usage-store.ts` |
+| Persistence | `json-store.ts` (shared atomic-write/corruption-recovery helper), `settings-store.ts`, `sessions-store.ts`, `projects-store.ts`, `secrets-store.ts` (OS-keychain-backed via Electron `safeStorage`), `scheduled-tasks-store.ts`, `download-jobs-store.ts`, `energy-usage-store.ts`, `patient-cases-store.ts`, `audit-log-store.ts`, `evidence-store.ts` (see [Clinical workspace](CLINICAL_WORKSPACE.md)) |
+| Clinical safety | `medical-safety.ts` (emergency detection, conflict warnings, redaction, citation checks), `case-encryption.ts` (AES-256-GCM encryption at rest for patient case data), `mcp-oauth.ts` (OAuth 2.1 + PKCE for HTTP MCP servers) — see [Clinical workspace](CLINICAL_WORKSPACE.md) |
 | Retrieval | `rag.ts` / `rag-db.ts` — chunking, Ollama-embedding, and similarity search for large folder/file attachments |
 | Models & downloads | `huggingface.ts` (Hub search API), `download-queue.ts` / `download-worker.ts` / `native-downloader.ts` (resumable parallel downloads, using the Rust addon when available), `download-verification.ts` (checksum/size verification) |
 | System | `system-specs.ts` (RAM/VRAM detection across all GPUs), `resource-monitor.ts`, `power-monitor.ts`, `process-tree.ts`, `benchmark-runner.ts` |
@@ -113,16 +114,39 @@ check the same condition to show a plaintext-storage warning in Settings instead
 
 A small Rust crate (`modelforge-native`), compiled with [napi-rs](https://napi.rs/) into a
 platform-specific `.node` addon that `app/src` loads like any other Node module (see
-`app/native/index.js`). Its only current job is `download_gguf_file`: resuming an interrupted
-Hugging Face GGUF download and using parallel HTTP Range-request connections when the server and
-file size support it, falling back to a single stream otherwise. It mirrors the signature and
-observable behavior of the TypeScript downloader it can replace, so `download-queue.ts` can use
-either implementation interchangeably depending on availability.
+`app/native/index.js`). It currently backs two independent areas, each with its own
+TypeScript bridge module and its own pure-Node fallback:
+
+- **Downloads** (`native-downloader.ts`, `lib/src/download/`, `lib/src/manager.rs`):
+  `download_gguf_file` resumes an interrupted Hugging Face GGUF download using parallel HTTP
+  Range-request connections when the server and file size support it, falling back to a single
+  stream otherwise; `DownloadManager` handles job queuing, global concurrency, and bandwidth
+  limiting. Mirrors the signature and observable behavior of the TypeScript downloader it can
+  replace, so `download-queue.ts` can use either implementation interchangeably.
+- **Data store I/O** (`native-datastore.ts`, `lib/src/datastore.rs`): atomic JSON file
+  read/write (temp-file-then-rename, private file mode on unix) backing `json-store.ts` — and
+  therefore every `*-store.ts` in the app — plus SHA-256 hashing and an O(1) JSON-array append
+  used by `audit-log-store.ts`'s tamper-evident hash chain. See
+  [docs/RUST_DATASTORE_TEST_REPORT.md](RUST_DATASTORE_TEST_REPORT.md) for what moving the audit
+  log's append off a full read-modify-write actually fixed (an O(n²) growth pattern), and
+  [docs/RUST_MIGRATION_ASSESSMENT.md](RUST_MIGRATION_ASSESSMENT.md) for what else in the
+  TypeScript layer is and isn't a good candidate to move here next.
+
+Every datastore function falls back to an equivalent pure-TypeScript implementation when the
+addon isn't loaded (dev/test/E2E environments don't build it by default) — `getNativeCapabilityReport()`
+in `native-datastore.ts`/`native-downloader.ts` distinguishes *why* the addon didn't load (missing
+build, wrong ABI/Node version, unsupported platform, or an error during the addon's own
+initialization) purely for diagnostics; the fallback behavior is identical regardless of which
+reason applies.
 
 Build it with `npm run build:native --prefix app` (invokes `napi build` in `lib/`, which requires
 a Rust toolchain); `npm run build:all --prefix app` does this as part of a full production build.
 The prebuilt `.node` binaries checked into `app/native/` mean a plain `npm run dev` does **not**
-require Rust installed — only rebuilding the native layer itself does.
+require Rust installed — only rebuilding the native layer itself does. **Known gap:** CI's `rust`
+job (`cargo fmt`/`clippy`/`test`) and every native-addon verification in this repository's history
+have run on Linux x86_64 only — nothing currently builds or loads the `.node` addon on Windows or
+macOS in CI, despite installers shipping for both (see the migration assessment's platform-matrix
+section).
 
 ## `ml/hardware-recommender/`
 
@@ -167,4 +191,5 @@ in `main.ts`'s `activeChatRequests` map and aborts the in-flight HTTP request.
 ## See also
 
 - [Agent mode](AGENT_MODE.md) — full tool list, sandboxing model, and approval flow
+- [Clinical workspace](CLINICAL_WORKSPACE.md) — Patient Cases, Evidence Library, Knowledge Graph, Audit & Privacy, encryption at rest, session locking, and the medical MCP integrations (Graphify/BioMCP/DICOM MCP)
 - [Development](DEVELOPMENT.md) — setup, running, testing, building, and releasing

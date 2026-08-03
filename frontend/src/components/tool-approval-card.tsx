@@ -58,12 +58,38 @@ export function ToolApprovalCard({
     onRespond,
     onRespondCheckpoint,
     onAlwaysAllow,
+    executing,
+    progress,
+    onCancel,
+    remoteMcpServer,
+    mcpServerInfo,
 }: {
     call: ToolCall;
     writeDiffPreview?: { oldContent: string | null };
     onRespond: (call: ToolCall, approve: boolean) => void;
     onRespondCheckpoint: (call: ToolCall, shouldContinue: boolean) => void;
     onAlwaysAllow: (call: ToolCall) => void;
+    /** True only for an MCP tool call that's been approved and is now
+     * actually running — built-in tools never set this, since they have no
+     * server-side progress/cancel support to show. */
+    executing?: boolean;
+    progress?: { progress: number; total?: number; message?: string };
+    onCancel?: () => void;
+    /** Set only for an MCP tool call bound to an http-transport (remote)
+     * server — the name to show in the transmission warning. A stdio
+     * server is a local child process, so this stays undefined for those. */
+    remoteMcpServer?: string;
+    /** Set for any MCP tool call — server identity/transport/trust state
+     * plus the tool's own server-declared description, rendered as clearly
+     * server-provided and unverified (never as trusted UI chrome, never
+     * treated as an instruction the app follows). */
+    mcpServerInfo?: {
+        name: string;
+        transport: "stdio" | "http";
+        trusted: boolean;
+        warningBanner?: string;
+        tool?: { description?: string; readOnlyHint?: boolean; destructiveHint?: boolean };
+    };
 }) {
     const { t } = useI18n();
 
@@ -111,6 +137,39 @@ export function ToolApprovalCard({
                 {isNewFile && <StatusBadge tone="info">{t.newFile}</StatusBadge>}
             </div>
 
+            {mcpServerInfo?.warningBanner && (
+                <div className="rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-xs font-medium text-warning">
+                    {mcpServerInfo.warningBanner}
+                </div>
+            )}
+
+            {mcpServerInfo && (
+                <div className="flex flex-col gap-1 rounded-md border border-border bg-background/60 p-2.5 text-xs">
+                    <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground">
+                        <span>
+                            From MCP server <strong className="text-foreground">{mcpServerInfo.name}</strong> (
+                            {mcpServerInfo.transport})
+                        </span>
+                        {mcpServerInfo.trusted && <StatusBadge tone="info">Always-allowed for this tool</StatusBadge>}
+                        {mcpServerInfo.tool?.readOnlyHint === false && <StatusBadge tone="warning">Not marked read-only</StatusBadge>}
+                        {mcpServerInfo.tool?.destructiveHint && <StatusBadge tone="warning">Marked destructive</StatusBadge>}
+                    </div>
+                    {mcpServerInfo.tool?.description && (
+                        <p className="rounded border border-dashed border-border/70 bg-muted/40 p-1.5 text-muted-foreground">
+                            <span className="font-medium">Server-provided description (unverified):</span>{" "}
+                            {mcpServerInfo.tool.description}
+                        </p>
+                    )}
+                </div>
+            )}
+
+            {remoteMcpServer && (
+                <div className="rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-xs text-warning">
+                    This will send the arguments below to <strong>{remoteMcpServer}</strong>, a remote MCP server —
+                    review them before approving. Nothing is sent until you click Allow.
+                </div>
+            )}
+
             {isWrite ? (
                 <div className="flex flex-col gap-1.5">
                     <p className="truncate font-mono text-xs text-muted-foreground">{String(call.arguments.path ?? "")}</p>
@@ -134,19 +193,48 @@ export function ToolApprovalCard({
                 </p>
             )}
 
-            <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" onClick={() => onRespond(call, true)} className="gap-1.5">
-                    <Check className="size-3.5" /> {t.allow}
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => onRespond(call, false)} className="gap-1.5">
-                    <X className="size-3.5" /> {t.deny}
-                </Button>
-                {canAlwaysAllow(call.name) && (
-                    <Button size="sm" variant="ghost" onClick={() => onAlwaysAllow(call)} className="text-xs text-muted-foreground">
-                        {t.alwaysAllowThisSession}
+            {executing ? (
+                <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="size-3.5 animate-spin" />
+                        {progress ? (
+                            <span>
+                                {progress.message ?? "Running…"}
+                                {progress.total ? ` (${progress.progress}/${progress.total})` : ""}
+                            </span>
+                        ) : (
+                            <span>Running…</span>
+                        )}
+                    </div>
+                    {progress?.total ? (
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                                className="h-full rounded-full bg-primary transition-[width]"
+                                style={{ width: `${Math.min(100, (progress.progress / progress.total) * 100)}%` }}
+                            />
+                        </div>
+                    ) : null}
+                    {onCancel && (
+                        <Button size="sm" variant="outline" onClick={onCancel} className="w-fit gap-1.5">
+                            <X className="size-3.5" /> Cancel
+                        </Button>
+                    )}
+                </div>
+            ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                    <Button size="sm" onClick={() => onRespond(call, true)} className="gap-1.5">
+                        <Check className="size-3.5" /> {t.allow}
                     </Button>
-                )}
-            </div>
+                    <Button size="sm" variant="outline" onClick={() => onRespond(call, false)} className="gap-1.5">
+                        <X className="size-3.5" /> {t.deny}
+                    </Button>
+                    {canAlwaysAllow(call.name) && (
+                        <Button size="sm" variant="ghost" onClick={() => onAlwaysAllow(call)} className="text-xs text-muted-foreground">
+                            {t.alwaysAllowThisSession}
+                        </Button>
+                    )}
+                </div>
+            )}
         </div>
     );
 }

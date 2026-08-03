@@ -5,7 +5,7 @@ import { detectSandboxCapabilities } from "../command-sandbox";
 import * as terminalManager from "../terminal-manager";
 import * as mcpClient from "../mcp-client";
 import { agentToolArgsSchemas, mcpToolArgsSchema, parseOrThrow } from "../schemas";
-import { getMainWindow, requireString } from "../app-state";
+import { getMainWindow, requireString, activeMcpToolRequests } from "../app-state";
 
 export function registerAgentIpc(): void {
     ipcMain.handle("agent:pickWorkspace", async () => {
@@ -19,8 +19,8 @@ export function registerAgentIpc(): void {
     ipcMain.handle(
         "tools:execute",
         async (
-            _event: IpcMainInvokeEvent,
-            { workspaceRoot, name, args }: { workspaceRoot: string; name: string; args: unknown }
+            event: IpcMainInvokeEvent,
+            { workspaceRoot, name, args, requestId }: { workspaceRoot: string; name: string; args: unknown; requestId?: string }
         ) => {
             requireString(workspaceRoot, "workspace root");
             requireString(name, "tool name");
@@ -36,9 +36,26 @@ export function registerAgentIpc(): void {
                 const validatedArgs = (schema
                     ? parseOrThrow(schema, args ?? {}, `arguments for tool "${name}"`)
                     : (args ?? {})) as Record<string, unknown>;
-                const result = isMcpTool
-                    ? await mcpClient.callMcpTool(name, validatedArgs)
-                    : await agentTools.executeTool(workspaceRoot, name, validatedArgs);
+
+                let result: unknown;
+                if (isMcpTool) {
+                    // requestId is only supplied by callers that want progress/
+                    // cancellation (preload's executeToolWithProgress) — built-in
+                    // tool calls, and MCP calls from callers that don't care,
+                    // pass none and this is just a plain awaited call as before.
+                    const controller = requestId ? new AbortController() : undefined;
+                    if (requestId && controller) activeMcpToolRequests.set(requestId, controller);
+                    try {
+                        result = await mcpClient.callMcpTool(name, validatedArgs, {
+                            signal: controller?.signal,
+                            onProgress: requestId ? (p) => event.sender.send(`mcp:toolProgress:${requestId}`, p) : undefined,
+                        });
+                    } finally {
+                        if (requestId) activeMcpToolRequests.delete(requestId);
+                    }
+                } else {
+                    result = await agentTools.executeTool(workspaceRoot, name, validatedArgs);
+                }
                 return { result };
             } catch (err) {
                 const error = err as Error;

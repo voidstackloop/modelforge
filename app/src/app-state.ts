@@ -18,6 +18,7 @@ export function customProviderSecretKey(customProviderId: string): string {
 
 export const activeChatRequests = new Map<string, AbortController>();
 export const activeBenchmarkRequests = new Map<string, AbortController>();
+export const activeMcpToolRequests = new Map<string, AbortController>();
 
 let isBusy = false;
 export function getIsBusy(): boolean {

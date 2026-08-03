@@ -1,5 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ToolDefinition } from "./providers/types";
+import { precompileToolSchema, clearValidatorsForServer, validateArgs } from "./mcp-schema-validation";
+import { getOAuthProvider, UnauthorizedError } from "./mcp-oauth";
+import { logger } from "./logger";
 
 export interface McpServerConfig {
     id: string;
@@ -13,189 +19,149 @@ export interface McpServerConfig {
     // http (MCP "Streamable HTTP" transport)
     url?: string;
     headers?: Record<string, string>;
+    // A per-tool-name allowlist the user builds one tool at a time in
+    // Settings — never a blanket "trust this server" flag. Only tools listed
+    // here skip the per-call approval card; everything else (including any
+    // tool this server adds later) still prompts every time. See
+    // frontend/src/lib/tool-approval.ts for how this is consumed.
+    trustProfile?: { autoApprovedTools: string[] };
+    // "oauth2" delegates entirely to mcp-oauth.ts's OAuthClientProvider —
+    // authorization-server discovery, client registration, and per-server
+    // resource-indicator scoping all happen there rather than being
+    // pre-filled here, since RFC 9728/8414 discovery means this app doesn't
+    // need to know the authorization server URL up front.
+    auth?: { type: "none" | "oauth2" };
+    // A hard denylist enforced in code (filtered out of both the tool list
+    // and callMcpTool itself, not just hidden in the UI) — for servers like
+    // DICOM MCP whose upstream tool catalog includes operations this app
+    // must never expose (move_series/move_study), regardless of what the
+    // server claims to offer on any given connection.
+    blockedTools?: string[];
+    // Persistent, non-dismissible-per-session warning shown wherever this
+    // server's tools appear (Settings, the tool-approval card) — for
+    // integrations like DICOM MCP that the upstream project itself warns
+    // are prototypes not intended for clinical use or live patient data.
+    warningBanner?: string;
 }
 
 interface McpToolInfo {
     name: string;
     description?: string;
     inputSchema?: Record<string, unknown>;
-}
-
-interface PendingRequest {
-    resolve: (value: unknown) => void;
-    reject: (error: Error) => void;
+    outputSchema?: Record<string, unknown>;
+    annotations?: {
+        title?: string;
+        readOnlyHint?: boolean;
+        destructiveHint?: boolean;
+        idempotentHint?: boolean;
+        openWorldHint?: boolean;
+    };
 }
 
 interface Connection {
     config: McpServerConfig;
+    client: Client;
+    transport: Transport;
     tools: McpToolInfo[];
-    process?: ChildProcessWithoutNullStreams;
-    buffer: string;
-    nextId: number;
-    pending: Map<number, PendingRequest>;
-    httpSessionId?: string;
+    // Populated for the HTTP transport, which exposes the version the SDK
+    // negotiated during connect(); the stdio transport validates the same
+    // negotiation internally (Client.connect() throws if the server's
+    // returned protocolVersion isn't in SUPPORTED_PROTOCOL_VERSIONS) but
+    // doesn't expose the agreed value back to the caller the way the HTTP
+    // transport does.
+    protocolVersion?: string;
     lastError?: string;
 }
 
 const connections = new Map<string, Connection>();
+// The SDK's own default request timeout applies unless overridden per-call;
+// this constant is kept only for the http transport's underlying fetch,
+// which the SDK's StreamableHTTPClientTransport does not itself bound.
 const REQUEST_TIMEOUT_MS = 30_000;
-const CLIENT_INFO = { name: "Modelforge", version: "1.0.0" };
-const PROTOCOL_VERSION = "2024-11-05";
+const CLIENT_INFO = { name: "ModelForge Medical", version: "1.0.0" };
 
-function sendStdioRequest(conn: Connection, method: string, params?: unknown): Promise<unknown> {
-    if (!conn.process || conn.process.exitCode !== null) {
-        return Promise.reject(new Error("MCP server process is not running."));
-    }
-    const id = conn.nextId++;
-    const message = { jsonrpc: "2.0", id, method, params: params ?? {} };
-    return new Promise((resolve, reject) => {
-        conn.pending.set(id, { resolve, reject });
-        conn.process!.stdin.write(`${JSON.stringify(message)}\n`);
-        setTimeout(() => {
-            if (conn.pending.has(id)) {
-                conn.pending.delete(id);
-                reject(new Error(`MCP request "${method}" timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`));
-            }
-        }, REQUEST_TIMEOUT_MS);
-    });
-}
-
-function sendStdioNotification(conn: Connection, method: string, params?: unknown): void {
-    conn.process?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params: params ?? {} })}\n`);
-}
-
-// The stdio transport frames messages as newline-delimited JSON-RPC objects.
-// Servers sometimes also print plain-text banners/logs to stdout before
-// speaking the protocol — lines that don't parse as JSON are just ignored
-// rather than treated as a fatal error.
-function handleStdioData(conn: Connection, chunk: Buffer): void {
-    conn.buffer += chunk.toString("utf-8");
-    let newlineIndex = conn.buffer.indexOf("\n");
-    while (newlineIndex !== -1) {
-        const line = conn.buffer.slice(0, newlineIndex).trim();
-        conn.buffer = conn.buffer.slice(newlineIndex + 1);
-        newlineIndex = conn.buffer.indexOf("\n");
-        if (!line) continue;
-        let message: { id?: number; result?: unknown; error?: { message?: string } };
-        try {
-            message = JSON.parse(line);
-        } catch {
-            continue;
-        }
-        if (typeof message.id === "number" && conn.pending.has(message.id)) {
-            const { resolve, reject } = conn.pending.get(message.id)!;
-            conn.pending.delete(message.id);
-            if (message.error) reject(new Error(message.error.message ?? "MCP server returned an error."));
-            else resolve(message.result);
+// Blocked tools are removed here, before anything else ever sees them — not
+// filtered later at the UI layer — so a blocked name never reaches
+// getConnectedTools() (what the model is offered), the approval card, or
+// callMcpTool's own dispatch. Logged rather than silently dropped: a server
+// offering a name on the denylist (or on reconnect, a *new* one matching a
+// move-shaped pattern) is exactly the "don't silently trust the server's
+// self-reported tool list" case this exists for.
+function filterBlockedTools(config: McpServerConfig, tools: McpToolInfo[]): McpToolInfo[] {
+    const blocked = new Set(config.blockedTools ?? []);
+    if (blocked.size === 0) return tools;
+    const kept: McpToolInfo[] = [];
+    for (const tool of tools) {
+        if (blocked.has(tool.name)) {
+            logger.warn(`MCP server "${config.name}" (${config.id}) offered blocked tool "${tool.name}" — excluded from the tool list.`);
+        } else {
+            kept.push(tool);
         }
     }
+    return kept;
 }
 
 async function connectStdio(config: McpServerConfig): Promise<Connection> {
     if (!config.command) throw new Error("This server has no command configured.");
-    const proc = spawn(config.command, config.args ?? [], {
-        env: { ...process.env, ...(config.env ?? {}) },
-        stdio: ["pipe", "pipe", "pipe"],
-        shell: process.platform === "win32",
+    const transport = new StdioClientTransport({
+        command: config.command,
+        args: config.args ?? [],
+        env: { ...(getDefaultInheritedEnv()), ...(config.env ?? {}) },
     });
-    const conn: Connection = { config, tools: [], process: proc, buffer: "", nextId: 1, pending: new Map() };
-    proc.stdout.on("data", (chunk: Buffer) => handleStdioData(conn, chunk));
-    proc.on("exit", () => {
-        for (const { reject } of conn.pending.values()) reject(new Error("MCP server process exited."));
-        conn.pending.clear();
-    });
-    proc.on("error", (err) => {
-        // Fires for launch failures (e.g. command not found) — unlike a normal
-        // exit, Node doesn't also emit "exit" in that case, so without this the
-        // pending initialize/tools-list request would just sit until its 30s
-        // timeout instead of failing immediately with a useful message.
-        conn.lastError = err.message;
-        for (const { reject } of conn.pending.values()) reject(err);
-        conn.pending.clear();
-    });
-
-    try {
-        await sendStdioRequest(conn, "initialize", {
-            protocolVersion: PROTOCOL_VERSION,
-            capabilities: {},
-            clientInfo: CLIENT_INFO,
-        });
-        sendStdioNotification(conn, "notifications/initialized");
-        const list = (await sendStdioRequest(conn, "tools/list")) as { tools?: McpToolInfo[] };
-        conn.tools = list.tools ?? [];
-        return conn;
-    } catch (err) {
-        proc.kill();
-        throw err;
-    }
+    const client = new Client(CLIENT_INFO, { capabilities: {} });
+    await client.connect(transport);
+    const list = await client.listTools();
+    const tools = filterBlockedTools(config, list.tools as McpToolInfo[]);
+    for (const tool of tools) precompileToolSchema(config.id, tool.name, tool.inputSchema);
+    return { config, client, transport, tools };
 }
 
-async function httpRequest(
-    config: McpServerConfig,
-    method: string,
-    params: unknown,
-    sessionId: string | undefined
-): Promise<{ result: unknown; sessionId?: string }> {
-    if (!config.url) throw new Error("This server has no URL configured.");
-    let res: Response;
-    try {
-        res = await fetch(config.url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Accept: "application/json, text/event-stream",
-                ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
-                ...(config.headers ?? {}),
-            },
-            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: params ?? {} }),
-            // Unlike the stdio transport (which times out a stuck request via
-            // sendStdioRequest's own setTimeout), fetch() has no timeout by
-            // default — a slow/unresponsive HTTP MCP server would otherwise
-            // hang this call, and the whole agent turn waiting on it, forever.
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-    } catch (err) {
-        if (err instanceof Error && err.name === "TimeoutError") {
-            throw new Error(`MCP request "${method}" timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`);
-        }
-        throw new Error(`Could not reach MCP server: ${(err as Error).message}`);
+// StdioClientTransport's own getDefaultEnvironment() already filters to a
+// safe inherited set (PATH, HOME, etc.) — reproduced here as a thin call so
+// a missing config.env doesn't silently spawn with an empty environment.
+function getDefaultInheritedEnv(): Record<string, string> {
+    const filtered: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined) filtered[key] = value;
     }
-    if (!res.ok) throw new Error(`MCP server responded with HTTP ${res.status} ${res.statusText}`);
-    const newSessionId = res.headers.get("mcp-session-id") ?? sessionId;
-    const contentType = res.headers.get("content-type") ?? "";
-    const text = await res.text();
-    let json: { result?: unknown; error?: { message?: string } };
-    if (contentType.includes("text/event-stream")) {
-        const dataLine = text
-            .split("\n")
-            .filter((line) => line.startsWith("data:"))
-            .pop();
-        if (!dataLine) throw new Error("MCP server sent an empty event stream response.");
-        json = JSON.parse(dataLine.slice(5).trim());
-    } else {
-        json = JSON.parse(text);
-    }
-    if (json.error) throw new Error(json.error.message ?? "MCP server returned an error.");
-    return { result: json.result, sessionId: newSessionId };
+    return filtered;
 }
 
 async function connectHttp(config: McpServerConfig): Promise<Connection> {
-    const conn: Connection = { config, tools: [], buffer: "", nextId: 1, pending: new Map() };
-    const init = await httpRequest(
+    if (!config.url) throw new Error("This server has no URL configured.");
+    const transport = new StreamableHTTPClientTransport(new URL(config.url), {
+        requestInit: { headers: config.headers ?? {} },
+        authProvider: getOAuthProvider(config),
+    });
+    const client = new Client(CLIENT_INFO, { capabilities: {} });
+    try {
+        await client.connect(transport, { timeout: REQUEST_TIMEOUT_MS });
+    } catch (err) {
+        if (err instanceof UnauthorizedError) {
+            throw new Error('This server requires authorization — run "Sign in" for it in Settings first, then connect.');
+        }
+        throw err;
+    }
+    const list = await client.listTools();
+    const tools = filterBlockedTools(config, list.tools as McpToolInfo[]);
+    for (const tool of tools) precompileToolSchema(config.id, tool.name, tool.inputSchema);
+    return {
         config,
-        "initialize",
-        { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO },
-        undefined
-    );
-    conn.httpSessionId = init.sessionId;
-    const list = await httpRequest(config, "tools/list", {}, conn.httpSessionId);
-    conn.tools = (list.result as { tools?: McpToolInfo[] } | undefined)?.tools ?? [];
-    return conn;
+        client,
+        transport,
+        tools,
+        protocolVersion: transport.protocolVersion,
+    };
 }
 
 export async function connectServer(config: McpServerConfig): Promise<{ tools: McpToolInfo[] }> {
     disconnectServer(config.id);
-    const conn = config.transport === "stdio" ? await connectStdio(config) : await connectHttp(config);
+    let conn: Connection;
+    try {
+        conn = config.transport === "stdio" ? await connectStdio(config) : await connectHttp(config);
+    } catch (err) {
+        throw new Error(`Could not connect to MCP server "${config.name}": ${(err as Error).message}`);
+    }
     connections.set(config.id, conn);
     return { tools: conn.tools };
 }
@@ -203,8 +169,11 @@ export async function connectServer(config: McpServerConfig): Promise<{ tools: M
 export function disconnectServer(id: string): void {
     const conn = connections.get(id);
     if (!conn) return;
-    conn.process?.kill();
+    conn.client.close().catch(() => {
+        // Best-effort — the process/connection may already be gone.
+    });
     connections.delete(id);
+    clearValidatorsForServer(id);
 }
 
 export function disconnectAll(): void {
@@ -238,87 +207,246 @@ export function getConnectedTools(): ToolDefinition[] {
     return result;
 }
 
-// MCP tool results are `{ content: [{ type: "text", text }, ...], isError? }`
-// rather than a plain string/JSON value — flatten that into text the chat
-// loop can drop straight into a "tool" message.
-function formatToolResult(result: unknown): string {
-    const r = result as { content?: { type: string; text?: string }[]; isError?: boolean } | undefined;
-    if (!r || !Array.isArray(r.content)) return JSON.stringify(result ?? null, null, 2);
-    const text = r.content
-        .map((block) => (block.type === "text" ? block.text ?? "" : `[${block.type} content]`))
-        .join("\n");
-    return r.isError ? `Error: ${text}` : text;
+interface RawContentBlock {
+    type: string;
+    text?: string;
+    mimeType?: string;
+    uri?: string;
+    name?: string;
+    resource?: { uri: string; mimeType?: string };
 }
 
-// Only a structural check (required fields present, JSON-Schema-declared
-// primitive types roughly match) — not full JSON Schema validation (no
-// $ref/oneOf/pattern/etc). Zod can't do this ahead of time because each
-// server declares its own inputSchema at connect time (see
-// mcpToolArgsSchema's comment in schemas.ts); this catches the common case
-// of a missing required field or an obviously wrong type before spending a
-// round trip (and a turn of the agent loop) on a request the server would
-// just reject anyway.
-export function validateAgainstInputSchema(inputSchema: Record<string, unknown> | undefined, args: Record<string, unknown>): string[] {
-    if (!inputSchema) return [];
-    const problems: string[] = [];
-    const required = Array.isArray(inputSchema.required) ? (inputSchema.required as unknown[]) : [];
-    for (const key of required) {
-        if (typeof key === "string" && !(key in args)) problems.push(`missing required argument "${key}"`);
-    }
-    const properties = inputSchema.properties && typeof inputSchema.properties === "object" ? (inputSchema.properties as Record<string, unknown>) : {};
-    for (const [key, value] of Object.entries(args)) {
-        const propSchema = properties[key];
-        if (!propSchema || typeof propSchema !== "object") continue;
-        const expectedType = (propSchema as Record<string, unknown>).type;
-        if (typeof expectedType !== "string") continue;
-        const actualType = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
-        const normalizedExpected = expectedType === "integer" ? "number" : expectedType;
-        if (normalizedExpected !== actualType && !(normalizedExpected === "object" && actualType === "object")) {
-            problems.push(`"${key}" should be ${expectedType}, got ${actualType}`);
+export interface McpResourceLink {
+    uri: string;
+    name?: string;
+    mimeType?: string;
+}
+
+export interface McpStructuredToolResult {
+    /** Flattened text — what today's chat loop expects (the same shape callMcpTool has always returned). */
+    text: string;
+    /** Preserved verbatim from the server's result, never read before this milestone. */
+    structuredContent?: Record<string, unknown>;
+    /** Any resource/resource_link content blocks, with their MIME type kept instead of collapsed to a placeholder string. */
+    resourceLinks?: McpResourceLink[];
+    isError: boolean;
+    /** Which server/tool/when produced this — so a caller (audit logging, a
+     * future UI) doesn't have to re-derive provenance the qualified tool
+     * name already implies but doesn't timestamp. */
+    provenance: { serverId: string; serverName: string; toolName: string; timestamp: string };
+}
+
+// MCP tool results are `{ content: [...], structuredContent?, isError? }`.
+// Earlier versions of this client only understood `content[].type === "text"`
+// and threw away everything else (structuredContent, MIME types, resource
+// links) — this preserves all of it, while `text` stays exactly what the
+// chat loop has always consumed so nothing downstream needs to change yet.
+//
+// This is also where "no autonomous interpretation of image pixels" (a
+// requirement for the DICOM MCP integration, but enforced generically for
+// any server) actually lives: an `image`/`audio` content block's raw `data`
+// is deliberately never copied into `text` below — only its type and MIME
+// type, as an inert placeholder string. Nothing in this file ever hands a
+// model the bytes of an image a tool returned; see
+// mcp-client.test.ts's "never forwards raw image content data" test.
+function buildStructuredResult(
+    serverId: string,
+    serverName: string,
+    toolName: string,
+    result: unknown
+): McpStructuredToolResult {
+    const r = result as { content?: RawContentBlock[]; structuredContent?: Record<string, unknown>; isError?: boolean } | undefined;
+    const content = Array.isArray(r?.content) ? r!.content : [];
+    const textParts: string[] = [];
+    const resourceLinks: McpResourceLink[] = [];
+    for (const block of content) {
+        if (block.type === "text") {
+            textParts.push(block.text ?? "");
+        } else if (block.type === "resource_link" && block.uri) {
+            textParts.push(`[resource: ${block.name ?? block.uri}]`);
+            resourceLinks.push({ uri: block.uri, name: block.name, mimeType: block.mimeType });
+        } else if (block.type === "resource" && block.resource) {
+            textParts.push(`[embedded resource: ${block.resource.uri}]`);
+            resourceLinks.push({ uri: block.resource.uri, mimeType: block.resource.mimeType });
+        } else if ((block.type === "image" || block.type === "audio") && block.mimeType) {
+            textParts.push(`[${block.type} content, ${block.mimeType}]`);
+        } else {
+            textParts.push(`[${block.type} content]`);
         }
     }
-    return problems;
+    const flatText = content.length > 0 ? textParts.join("\n") : JSON.stringify(result ?? null, null, 2);
+    return {
+        text: r?.isError ? `Error: ${flatText}` : flatText,
+        structuredContent: r?.structuredContent,
+        resourceLinks: resourceLinks.length > 0 ? resourceLinks : undefined,
+        isError: r?.isError ?? false,
+        provenance: { serverId, serverName, toolName, timestamp: new Date().toISOString() },
+    };
 }
 
-export async function callMcpTool(qualified: string, args: Record<string, unknown>): Promise<string> {
+function splitQualifiedName(qualified: string): { serverId: string; toolName: string } {
     const rest = qualified.slice("mcp__".length);
     const separator = rest.indexOf("__");
     if (separator === -1) throw new Error(`Malformed MCP tool name: ${qualified}`);
-    const serverId = rest.slice(0, separator);
-    const toolName = rest.slice(separator + 2);
+    return { serverId: rest.slice(0, separator), toolName: rest.slice(separator + 2) };
+}
+
+function requireConnection(serverId: string): Connection {
     const conn = connections.get(serverId);
     if (!conn) throw new Error(`MCP server "${serverId}" is not connected.`);
+    return conn;
+}
 
-    const toolInfo = conn.tools.find((t) => t.name === toolName);
-    const problems = validateAgainstInputSchema(toolInfo?.inputSchema, args);
+export interface McpToolCallProgress {
+    progress: number;
+    total?: number;
+    message?: string;
+}
+
+export interface McpToolCallOptions {
+    /** Aborts the in-flight request — the SDK turns this into the spec's
+     * `notifications/cancelled`, not just a client-side give-up. */
+    signal?: AbortSignal;
+    /** Requires the server to actually send progress notifications; most
+     * won't for a fast call, so this may simply never fire. */
+    onProgress?: (progress: McpToolCallProgress) => void;
+}
+
+/** Full structured result — used where structuredContent/resource links/
+ * provenance matter (audit logging, future UI). `callMcpTool` below stays
+ * the plain-string entry point the chat loop already uses. */
+export async function callMcpToolStructured(
+    qualified: string,
+    args: Record<string, unknown>,
+    options?: McpToolCallOptions
+): Promise<McpStructuredToolResult> {
+    const { serverId, toolName } = splitQualifiedName(qualified);
+    const conn = requireConnection(serverId);
+
+    // Defense in depth: filterBlockedTools() already keeps a blocked name out
+    // of conn.tools (so it's never offered to the model or shown in the
+    // approval card), but this call site is checked independently rather
+    // than trusting "it's not in the list" alone — a caller that somehow
+    // still produces a blocked qualified name must not reach the server.
+    if (conn.config.blockedTools?.includes(toolName)) {
+        throw new Error(`"${toolName}" is blocked on server "${conn.config.name}" and cannot be called.`);
+    }
+
+    const problems = validateArgs(serverId, toolName, args);
     if (problems.length > 0) {
         throw new Error(`Invalid arguments for "${toolName}": ${problems.join("; ")}`);
     }
 
-    if (conn.config.transport === "stdio") {
-        const result = await sendStdioRequest(conn, "tools/call", { name: toolName, arguments: args });
-        return formatToolResult(result);
-    }
-    const { result, sessionId } = await httpRequest(
-        conn.config,
-        "tools/call",
-        { name: toolName, arguments: args },
-        conn.httpSessionId
-    );
-    conn.httpSessionId = sessionId;
-    return formatToolResult(result);
+    const result = await conn.client.callTool({ name: toolName, arguments: args }, undefined, {
+        signal: options?.signal,
+        onprogress: options?.onProgress
+            ? (p) => options.onProgress!({ progress: p.progress, total: p.total, message: p.message })
+            : undefined,
+    });
+    return buildStructuredResult(serverId, conn.config.name, toolName, result);
+}
+
+export async function callMcpTool(qualified: string, args: Record<string, unknown>, options?: McpToolCallOptions): Promise<string> {
+    const structured = await callMcpToolStructured(qualified, args, options);
+    return structured.text;
+}
+
+// --- Resources, resource templates, prompts (added alongside the tools/list
+// + tools/call support that already existed) ---------------------------
+
+export interface McpResourceInfo {
+    uri: string;
+    name: string;
+    description?: string;
+    mimeType?: string;
+}
+
+export interface McpResourceTemplateInfo {
+    uriTemplate: string;
+    name: string;
+    description?: string;
+    mimeType?: string;
+}
+
+export interface McpPromptInfo {
+    name: string;
+    description?: string;
+    arguments?: { name: string; description?: string; required?: boolean }[];
+}
+
+export interface McpResourceContent {
+    uri: string;
+    mimeType?: string;
+    text?: string;
+    blob?: string;
+}
+
+export async function listResources(serverId: string): Promise<McpResourceInfo[]> {
+    const conn = requireConnection(serverId);
+    const result = await conn.client.listResources();
+    return result.resources as McpResourceInfo[];
+}
+
+export async function listResourceTemplates(serverId: string): Promise<McpResourceTemplateInfo[]> {
+    const conn = requireConnection(serverId);
+    const result = await conn.client.listResourceTemplates();
+    return result.resourceTemplates as McpResourceTemplateInfo[];
+}
+
+export async function readResource(serverId: string, uri: string): Promise<McpResourceContent[]> {
+    const conn = requireConnection(serverId);
+    const result = await conn.client.readResource({ uri });
+    return result.contents as McpResourceContent[];
+}
+
+export async function listPrompts(serverId: string): Promise<McpPromptInfo[]> {
+    const conn = requireConnection(serverId);
+    const result = await conn.client.listPrompts();
+    return result.prompts as McpPromptInfo[];
+}
+
+export async function getPrompt(
+    serverId: string,
+    name: string,
+    args?: Record<string, string>
+): Promise<{ description?: string; messages: { role: string; content: unknown }[] }> {
+    const conn = requireConnection(serverId);
+    return conn.client.getPrompt({ name, arguments: args });
+}
+
+export interface McpServerToolSummary {
+    name: string;
+    description?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
 }
 
 export interface McpServerStatus {
     connected: boolean;
     toolCount: number;
+    protocolVersion?: string;
     error?: string;
+    /** Server-declared name/description/annotations for each tool — surfaced
+     * to the user (Settings trust-profile picker, the tool-approval card) as
+     * server-provided and unverified, never treated as trusted UI chrome. */
+    tools: McpServerToolSummary[];
 }
 
 export function getServerStatuses(): Record<string, McpServerStatus> {
     const out: Record<string, McpServerStatus> = {};
     for (const [id, conn] of connections.entries()) {
-        out[id] = { connected: true, toolCount: conn.tools.length, error: conn.lastError };
+        out[id] = {
+            connected: true,
+            toolCount: conn.tools.length,
+            protocolVersion: conn.protocolVersion,
+            error: conn.lastError,
+            tools: conn.tools.map((t) => ({
+                name: t.name,
+                description: t.description,
+                readOnlyHint: t.annotations?.readOnlyHint,
+                destructiveHint: t.annotations?.destructiveHint,
+            })),
+        };
     }
     return out;
 }

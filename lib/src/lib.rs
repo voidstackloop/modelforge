@@ -1,3 +1,4 @@
+mod datastore;
 mod download;
 mod error;
 mod manager;
@@ -7,6 +8,41 @@ use napi_derive::napi;
 use std::sync::Arc;
 
 pub use manager::DownloadManager;
+
+/// Reads a JSON "database" file whole. Returns `null` for a missing file —
+/// the TS caller (`app/src/json-store.ts`) treats that exactly like an
+/// `ENOENT` from `fs.readFileSync` — and throws for any other I/O failure so
+/// it gets logged rather than silently treated as "file doesn't exist".
+#[napi]
+pub fn read_json_file_native(path: String) -> napi::Result<Option<String>> {
+    datastore::read_json_file(&path).map_err(|err| napi::Error::from_reason(err.to_string()))
+}
+
+/// Atomically writes `contents` to `path` (temp file + rename). See
+/// `datastore::write_json_file_atomic` for why this must match
+/// `json-store.ts`'s `writeJson` byte-for-byte.
+#[napi]
+pub fn write_json_file_atomic_native(path: String, contents: String) -> napi::Result<()> {
+    datastore::write_json_file_atomic(&path, &contents)
+        .map_err(|err| napi::Error::from_reason(err.to_string()))
+}
+
+/// SHA-256 hex digest — backs `audit-log-store.ts`'s hash-chain, which
+/// otherwise hashes every audit event on every write.
+#[napi]
+pub fn sha256_hex_native(input: String) -> String {
+    datastore::sha256_hex(&input)
+}
+
+/// O(1) append onto an existing JSON array file — see
+/// `datastore::append_json_array_element` for the full rationale. Returns
+/// `false` (not an error) whenever the fast path doesn't apply, so the
+/// caller falls back to a full rewrite.
+#[napi]
+pub fn append_json_array_element_native(path: String, element_json: String) -> napi::Result<bool> {
+    datastore::append_json_array_element(&path, &element_json)
+        .map_err(|err| napi::Error::from_reason(err.to_string()))
+}
 
 #[napi(object)]
 #[derive(Clone, Copy)]

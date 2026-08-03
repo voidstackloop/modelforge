@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { CASE_LOCKED_EVENT, ENCRYPTION_STATUS_CHANGED_EVENT } from "./case-auto-lock";
 import type { ChatSession, Project } from "@/types/electron";
 
 interface SessionsContextValue {
@@ -6,6 +7,10 @@ interface SessionsContextValue {
     projects: Project[];
     loading: boolean;
     hasApi: boolean;
+    /** True when case-encryption is enabled but locked — chat sessions share
+     * that same encryption gate (see sessions-store.ts), so `sessions` is
+     * empty and stale, not "genuinely no chats yet", whenever this is true. */
+    sessionsLocked: boolean;
     refresh: () => Promise<void>;
     createSession: (model: string | null, projectId?: string | null) => Promise<ChatSession>;
     deleteSession: (id: string) => Promise<void>;
@@ -21,6 +26,7 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
     const [sessions, setSessions] = useState<ChatSession[]>([]);
     const [projects, setProjects] = useState<Project[]>([]);
     const [loading, setLoading] = useState(true);
+    const [sessionsLocked, setSessionsLocked] = useState(false);
     const hasApi = typeof window !== "undefined" && !!window.api;
 
     const refresh = useCallback(async () => {
@@ -28,9 +34,29 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
             setLoading(false);
             return;
         }
-        const [sessionList, projectList] = await Promise.all([window.api.sessions.list(), window.api.projects.list()]);
-        setSessions(sessionList);
-        setProjects(projectList);
+        const status = await window.api.encryption.status();
+        if (status.enabled && !status.unlocked) {
+            // Projects aren't encrypted (only sessions/cases share the case-
+            // encryption gate), so they still load normally even while locked.
+            setProjects(await window.api.projects.list());
+            setSessions([]);
+            setSessionsLocked(true);
+            setLoading(false);
+            return;
+        }
+        try {
+            const [sessionList, projectList] = await Promise.all([window.api.sessions.list(), window.api.projects.list()]);
+            setSessions(sessionList);
+            setProjects(projectList);
+            setSessionsLocked(false);
+        } catch {
+            // A lock could still race in between the status check above and
+            // this call (e.g. auto-lock firing mid-refresh) — treat any
+            // failure to list sessions the same as a known-locked state
+            // rather than surfacing a raw error.
+            setSessions([]);
+            setSessionsLocked(true);
+        }
         setLoading(false);
     }, [hasApi]);
 
@@ -39,6 +65,15 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
         // and must be loaded once the provider mounts, not derived from props/state.
         // eslint-disable-next-line react-hooks/set-state-in-effect
         refresh();
+    }, [refresh]);
+
+    useEffect(() => {
+        window.addEventListener(CASE_LOCKED_EVENT, refresh);
+        window.addEventListener(ENCRYPTION_STATUS_CHANGED_EVENT, refresh);
+        return () => {
+            window.removeEventListener(CASE_LOCKED_EVENT, refresh);
+            window.removeEventListener(ENCRYPTION_STATUS_CHANGED_EVENT, refresh);
+        };
     }, [refresh]);
 
     const createSession = useCallback(
@@ -98,6 +133,7 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
                 projects,
                 loading,
                 hasApi,
+                sessionsLocked,
                 refresh,
                 createSession,
                 deleteSession,

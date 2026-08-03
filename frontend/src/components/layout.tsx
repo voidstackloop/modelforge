@@ -25,6 +25,10 @@ import {
     Sparkles,
     Download,
     Server,
+    ClipboardList,
+    BookOpen,
+    Share2,
+    ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +43,8 @@ import { CommandPalette } from "@/components/command-palette";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { OnboardingWizard } from "@/components/onboarding-wizard";
 import { useSessions } from "@/lib/sessions-context";
+import { useCaseAutoLock } from "@/lib/use-case-auto-lock";
+import { CaseLockScreen } from "@/components/case-lock-screen";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { ChatOptions, ChatSession, Project, PromptPreset } from "@/types/electron";
@@ -591,7 +597,8 @@ function ProjectGroup({
 }
 
 export default function Layout() {
-    const { sessions, projects, hasApi, createSession, deleteSession, createProject, refresh } = useSessions();
+    const { sessions, projects, hasApi, sessionsLocked, createSession, deleteSession, createProject, refresh } = useSessions();
+    useCaseAutoLock();
     const { t } = useI18n();
     const navigate = useNavigate();
     const { sessionId } = useParams();
@@ -758,6 +765,18 @@ export default function Layout() {
 
     const collapsed = sidebarCollapsed;
 
+    // Chat sessions share the case-encryption gate (sessions-store.ts) — when
+    // it's locked, `sessions` is empty-and-stale rather than "no chats yet",
+    // so the whole app shell is replaced with the unlock prompt instead of
+    // rendering a misleadingly empty sidebar/chat view.
+    if (sessionsLocked) {
+        return (
+            <TooltipProvider>
+                <CaseLockScreen onUnlocked={refresh} />
+            </TooltipProvider>
+        );
+    }
+
     return (
         <TooltipProvider>
         <div className="flex h-svh overflow-hidden bg-background">
@@ -771,7 +790,7 @@ export default function Layout() {
                     <div className={cn("flex items-center gap-2.5", collapsed && "flex-col gap-1.5")}>
                         <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground"><Sparkles className="size-4" /></span>
                         {!collapsed && (
-                            <div><span className="block text-[15px] font-semibold tracking-[-0.02em]">{t.appName}</span><span className="section-eyebrow mt-0.5 block">AI workspace</span></div>
+                            <div><span className="block text-[15px] font-semibold tracking-[-0.02em]">{t.appName}</span><span className="section-eyebrow mt-0.5 block">Clinical workspace</span></div>
                         )}
                     </div>
                     <div className={cn("flex items-center gap-1", collapsed && "flex-col")}>
@@ -833,6 +852,12 @@ export default function Layout() {
                             )}
                         </>
                     )}
+                    {!collapsed && <SectionHeader title={t.navClinicalGroup} className="mb-0 px-2 pb-1 pt-3" />}
+                    <SidebarNavLink to="/cases" icon={<ClipboardList className="size-4" />} label={t.patientCases} collapsed={collapsed} disabled={!hasApi} />
+                    <SidebarNavLink to="/evidence" icon={<BookOpen className="size-4" />} label={t.evidenceLibrary} collapsed={collapsed} disabled={!hasApi} />
+                    <SidebarNavLink to="/knowledge-graph" icon={<Share2 className="size-4" />} label={t.knowledgeGraph} collapsed={collapsed} disabled={!hasApi} />
+                    <SidebarNavLink to="/audit" icon={<ShieldCheck className="size-4" />} label={t.auditPrivacy} collapsed={collapsed} disabled={!hasApi} />
+
                     {!collapsed && <SectionHeader title={t.navWorkspaceGroup} className="mb-0 px-2 pb-1 pt-3" />}
                     <SidebarNavLink to="/compare" icon={<Scale className="size-4" />} label={t.compareModels} collapsed={collapsed} disabled={!hasApi} />
                     <SidebarNavLink to="/usage" icon={<BarChart3 className="size-4" />} label={t.usageDashboard} collapsed={collapsed} disabled={!hasApi} />

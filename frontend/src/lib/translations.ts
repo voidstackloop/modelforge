@@ -269,6 +269,17 @@ export interface Dictionary {
     runtimeManager: string;
     navWorkspaceGroup: string;
     navConversationsGroup: string;
+    clinicalAssistant: string;
+    patientCases: string;
+    evidenceLibrary: string;
+    knowledgeGraph: string;
+    auditPrivacy: string;
+    navClinicalGroup: string;
+    localProcessing: string;
+    remoteProcessing: string;
+    newCase: string;
+    noCasesYet: string;
+    deleteCase: string;
     usageTotalCost: string;
     usageTotalTokens: string;
     usageTotalSessions: string;
@@ -453,7 +464,7 @@ export interface Dictionary {
 }
 
 export const en: Dictionary = {
-    appName: "Modelforge",
+    appName: "ModelForge Medical",
     newChat: "New chat",
     newProject: "New project",
     searchChats: "Search chats and messages...",
@@ -727,6 +738,17 @@ export const en: Dictionary = {
     runtimeManager: "Runtime Manager",
     navWorkspaceGroup: "Workspace",
     navConversationsGroup: "Conversations",
+    clinicalAssistant: "Clinical Assistant",
+    patientCases: "Patient Cases",
+    evidenceLibrary: "Evidence Library",
+    knowledgeGraph: "Knowledge Graph",
+    auditPrivacy: "Audit & Privacy",
+    navClinicalGroup: "Clinical",
+    localProcessing: "Local — stays on this device",
+    remoteProcessing: "Remote — sent to a cloud provider",
+    newCase: "New case",
+    noCasesYet: "No patient cases yet.",
+    deleteCase: "Delete case",
     usageTotalCost: "Estimated total cost",
     usageTotalTokens: "Total tokens",
     usageTotalSessions: "Chats with usage",
@@ -920,7 +942,7 @@ export const en: Dictionary = {
 };
 
 export const tr: Dictionary = {
-    appName: "Modelforge",
+    appName: "ModelForge Medical",
     newChat: "Yeni sohbet",
     newProject: "Yeni proje",
     searchChats: "Sohbetlerde ve mesajlarda ara...",
@@ -1196,6 +1218,17 @@ export const tr: Dictionary = {
     runtimeManager: "Çalışma Zamanı Yöneticisi",
     navWorkspaceGroup: "Çalışma alanı",
     navConversationsGroup: "Sohbetler",
+    clinicalAssistant: "Klinik Asistan",
+    patientCases: "Hasta Vakaları",
+    evidenceLibrary: "Kanıt Kütüphanesi",
+    knowledgeGraph: "Bilgi Grafiği",
+    auditPrivacy: "Denetim ve Gizlilik",
+    navClinicalGroup: "Klinik",
+    localProcessing: "Yerel — bu cihazda kalır",
+    remoteProcessing: "Uzak — bir bulut sağlayıcısına gönderilir",
+    newCase: "Yeni vaka",
+    noCasesYet: "Henüz hasta vakası yok.",
+    deleteCase: "Vakayı sil",
     usageTotalCost: "Tahmini toplam maliyet",
     usageTotalTokens: "Toplam token",
     usageTotalSessions: "Kullanımı olan sohbetler",

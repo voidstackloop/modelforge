@@ -156,6 +156,9 @@ export interface AppSettings {
     // Distinct from agentMaxSteps — bounds verify-fail-retry cycles
     // specifically, so a persistently failing check can't loop forever.
     verificationMaxRetries?: number;
+    caseAutoLockMinutes?: number;
+    redactBeforeRemoteSend?: boolean;
+    auditLogRetentionDays?: number;
     energyMonitoringEnabled?: boolean;
     electricityPricePerKwh?: number;
     energyCurrency?: string;

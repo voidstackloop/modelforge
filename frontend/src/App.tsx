@@ -6,6 +6,11 @@ import Compare from "./pages/Compare";
 import UsageDashboard from "./pages/UsageDashboard";
 import DownloadCenter from "./pages/DownloadCenter";
 import RuntimeManager from "./pages/RuntimeManager";
+import PatientCases from "./pages/PatientCases";
+import PatientCaseDetail from "./pages/PatientCaseDetail";
+import EvidenceLibrary from "./pages/EvidenceLibrary";
+import KnowledgeGraph from "./pages/KnowledgeGraph";
+import AuditPrivacy from "./pages/AuditPrivacy";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ToastProvider } from "@/components/toast";
 import { SessionsProvider } from "@/lib/sessions-context";
@@ -23,6 +28,11 @@ const router = createHashRouter([
       { path: "usage", element: <UsageDashboard /> },
       { path: "downloads", element: <DownloadCenter /> },
       { path: "runtimes", element: <RuntimeManager /> },
+      { path: "cases", element: <PatientCases /> },
+      { path: "cases/:caseId", element: <PatientCaseDetail /> },
+      { path: "evidence", element: <EvidenceLibrary /> },
+      { path: "knowledge-graph", element: <KnowledgeGraph /> },
+      { path: "audit", element: <AuditPrivacy /> },
     ],
   },
 ]);

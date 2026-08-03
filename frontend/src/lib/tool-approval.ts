@@ -39,3 +39,22 @@ export const AUTO_APPROVABLE_TOOLS = new Set([
 export function canAlwaysAllow(toolName: string): boolean {
     return AUTO_APPROVABLE_TOOLS.has(toolName);
 }
+
+// MCP servers get a separate, persisted trust mechanism instead of the
+// session-only "always allow" checkbox built-in tools use — see
+// McpServerConfig.trustProfile in mcp-client.ts. It's still opt-in one tool
+// at a time (never "trust this whole server"), just durable across
+// restarts instead of reset every time a chat is reopened. This flattens
+// every connected server's allowlist into the same qualified-name shape
+// (`mcp__<serverId>__<toolName>`) the tool-loop's approval set already
+// understands, so trusted MCP tools skip the card the exact same way an
+// already-approved built-in tool does.
+export function trustedMcpToolNames(mcpServers: { id: string; trustProfile?: { autoApprovedTools: string[] } }[]): string[] {
+    const names: string[] = [];
+    for (const server of mcpServers) {
+        for (const tool of server.trustProfile?.autoApprovedTools ?? []) {
+            names.push(`mcp__${server.id}__${tool}`);
+        }
+    }
+    return names;
+}

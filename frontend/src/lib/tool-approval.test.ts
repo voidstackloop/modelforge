@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canAlwaysAllow } from "./tool-approval";
+import { canAlwaysAllow, trustedMcpToolNames } from "./tool-approval";
 
 describe("canAlwaysAllow", () => {
     it("allows a standing grant for workspace-local reads", () => {
@@ -34,5 +34,23 @@ describe("canAlwaysAllow", () => {
 
     it("defaults to denying an unrecognised tool", () => {
         expect(canAlwaysAllow("some_future_tool")).toBe(false);
+    });
+});
+
+describe("trustedMcpToolNames", () => {
+    it("flattens each server's allowlist into qualified tool names", () => {
+        const names = trustedMcpToolNames([
+            { id: "graphify", trustProfile: { autoApprovedTools: ["query", "path"] } },
+            { id: "biomcp", trustProfile: { autoApprovedTools: ["search_pubmed"] } },
+        ]);
+        expect(names.sort()).toEqual(["mcp__biomcp__search_pubmed", "mcp__graphify__path", "mcp__graphify__query"]);
+    });
+
+    it("skips a server with no trust profile at all", () => {
+        expect(trustedMcpToolNames([{ id: "no-trust" }])).toEqual([]);
+    });
+
+    it("returns an empty list for no servers", () => {
+        expect(trustedMcpToolNames([])).toEqual([]);
     });
 });

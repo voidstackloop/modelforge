@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { z } from "zod";
 import { logger } from "./logger";
 import { formatZodError } from "./schemas";
+import { readJsonFileNative, writeJsonFileAtomicNative } from "./native-datastore";
 
 // Shared persistence helpers for the small JSON "database" files this app
 // keeps in userData (sessions/projects/settings/secrets).
@@ -36,17 +37,34 @@ function backUpAndFallBack<T>(filePath: string, reason: string, fallback: T): T 
     return fallback;
 }
 
-export function readJson<T>(filePath: string, fallback: T): T {
-    let raw: string;
+// Tries the Rust addon first (see native-datastore.ts) — `undefined` means
+// it isn't available at all (fall back to plain `fs`), `null` means it ran
+// and the file doesn't exist (same as `fs`'s ENOENT), and a thrown error
+// means it ran and hit a genuine I/O failure other than "missing", which is
+// left to fall through to the `fs` attempt below so the exact same error
+// gets logged with the exact same wording as before this addon existed.
+function readFileRaw(filePath: string): string | null {
     try {
-        raw = fs.readFileSync(filePath, "utf-8");
+        const native = readJsonFileNative(filePath);
+        if (native !== undefined) return native;
+    } catch {
+        // Fall through to the fs.readFileSync path below.
+    }
+
+    try {
+        return fs.readFileSync(filePath, "utf-8");
     } catch (err) {
         const nodeErr = err as NodeJS.ErrnoException;
         if (nodeErr.code !== "ENOENT") {
             logger.error(`Failed to read ${filePath}: ${nodeErr.message}`);
         }
-        return fallback;
+        return null;
     }
+}
+
+export function readJson<T>(filePath: string, fallback: T): T {
+    const raw = readFileRaw(filePath);
+    if (raw === null) return fallback;
 
     restrictExistingPermissions(filePath);
 
@@ -66,16 +84,8 @@ export function readJson<T>(filePath: string, fallback: T): T {
 // failure, rather than handing the caller something that merely happens to
 // satisfy a cast.
 export function readJsonWithSchema<T>(filePath: string, fallback: T, schema: z.ZodType<T>): T {
-    let raw: string;
-    try {
-        raw = fs.readFileSync(filePath, "utf-8");
-    } catch (err) {
-        const nodeErr = err as NodeJS.ErrnoException;
-        if (nodeErr.code !== "ENOENT") {
-            logger.error(`Failed to read ${filePath}: ${nodeErr.message}`);
-        }
-        return fallback;
-    }
+    const raw = readFileRaw(filePath);
+    if (raw === null) return fallback;
 
     restrictExistingPermissions(filePath);
 
@@ -124,6 +134,18 @@ function restrictExistingPermissions(filePath: string): void {
 }
 
 export function writeJson(filePath: string, data: unknown): void {
+    const content = JSON.stringify(data, null, 2);
+
+    // Tries the Rust addon first (same temp-file-then-rename, same private
+    // file mode — see datastore::write_json_file_atomic). A thrown error
+    // here is a genuine I/O failure the addon hit; fall through to the pure
+    // Node path below rather than losing the write entirely.
+    try {
+        if (writeJsonFileAtomicNative(filePath, content)) return;
+    } catch (err) {
+        logger.error(`Native write to ${filePath} failed, falling back: ${(err as Error).message}`);
+    }
+
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const tmpPath = `${filePath}.tmp-${process.pid}`;
     // The mode goes on the temp file, because the rename below replaces the
@@ -135,6 +157,6 @@ export function writeJson(filePath: string, data: unknown): void {
     // applies `mode` — it ignores the option for a path that already exists,
     // and an interrupted earlier write can leave one behind under this pid.
     fs.rmSync(tmpPath, { force: true });
-    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: PRIVATE_FILE_MODE });
+    fs.writeFileSync(tmpPath, content, { mode: PRIVATE_FILE_MODE });
     fs.renameSync(tmpPath, filePath);
 }

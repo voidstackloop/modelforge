@@ -1,8 +1,9 @@
 import { ipcMain, IpcMainInvokeEvent, dialog } from "electron";
 import { logger } from "../logger";
 import * as mcpClient from "../mcp-client";
+import * as mcpOAuth from "../mcp-oauth";
 import { mcpServerConfigSchema, parseOrThrow } from "../schemas";
-import { requireString, getMainWindow } from "../app-state";
+import { requireString, getMainWindow, activeMcpToolRequests } from "../app-state";
 import { buildMastervaultServerConfig, isMastervaultBuiltinAvailable } from "../mastervault-builtin";
 
 export function registerMcpIpc(): void {
@@ -42,4 +43,31 @@ export function registerMcpIpc(): void {
     });
 
     ipcMain.handle("mcp:status", () => mcpClient.getServerStatuses());
+
+    ipcMain.handle("mcp:cancelTool", (_event: IpcMainInvokeEvent, requestId: string) => {
+        requireString(requestId, "request id");
+        activeMcpToolRequests.get(requestId)?.abort();
+    });
+
+    ipcMain.handle("mcp:startOAuthFlow", async (_event: IpcMainInvokeEvent, input: unknown) => {
+        try {
+            const config = parseOrThrow(mcpServerConfigSchema, input, "MCP server config");
+            await mcpOAuth.startOAuthFlow(config);
+            return { authorized: true };
+        } catch (err) {
+            const error = err as Error;
+            logger.error(`MCP OAuth flow failed: ${error.message}`);
+            return { authorized: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle("mcp:hasOAuthTokens", (_event: IpcMainInvokeEvent, serverId: string) => {
+        requireString(serverId, "server id");
+        return mcpOAuth.hasStoredOAuthTokens(serverId);
+    });
+
+    ipcMain.handle("mcp:clearOAuthCredentials", (_event: IpcMainInvokeEvent, serverId: string) => {
+        requireString(serverId, "server id");
+        mcpOAuth.clearOAuthCredentials(serverId);
+    });
 }

@@ -16,6 +16,10 @@ import type { Project } from "./projects-store";
 import type { DownloadJob } from "./download-jobs-store";
 import type { GpuSelection } from "./gpu-selection";
 import type { GpuTelemetrySample } from "./gpu-telemetry";
+import type { PatientCase } from "./patient-cases-store";
+import type { AuditEvent } from "./audit-log-store";
+import type { EvidenceSource } from "./evidence-store";
+import type { ApprovedModel } from "./model-registry-store";
 
 export interface ToolExecuteResult {
     result?: unknown;
@@ -343,6 +347,27 @@ export const api = {
         pickWorkspace: (): Promise<string | null> => ipcRenderer.invoke("agent:pickWorkspace"),
         executeTool: (workspaceRoot: string, name: string, args: Record<string, unknown>): Promise<ToolExecuteResult> =>
             ipcRenderer.invoke("tools:execute", { workspaceRoot, name, args }),
+        // Only meaningfully different from executeTool for MCP tools — a
+        // requestId lets main thread progress notifications back on a push
+        // channel and lets the caller cancel mid-call. Built-in tools ignore
+        // both (no requestId means agent-handlers.ts skips this path
+        // entirely), so this is additive, not a second code path to keep in
+        // sync with executeTool's behavior.
+        executeToolWithProgress: (
+            workspaceRoot: string,
+            name: string,
+            args: Record<string, unknown>,
+            onProgress: (progress: { progress: number; total?: number; message?: string }) => void
+        ): { requestId: string; promise: Promise<ToolExecuteResult> } => {
+            const requestId = randomId();
+            const channel = `mcp:toolProgress:${requestId}`;
+            const listener = (_event: unknown, progress: { progress: number; total?: number; message?: string }) => onProgress(progress);
+            ipcRenderer.on(channel, listener);
+            const promise = ipcRenderer
+                .invoke("tools:execute", { workspaceRoot, name, args, requestId })
+                .finally(() => ipcRenderer.removeListener(channel, listener));
+            return { requestId, promise };
+        },
         rollbackLastWrite: (workspaceRoot: string): Promise<RollbackResult | null> =>
             ipcRenderer.invoke("agent:rollbackLastWrite", workspaceRoot),
         detectScripts: (workspaceRoot: string): Promise<ProjectScripts> =>
@@ -391,12 +416,106 @@ export const api = {
         list: (workspaceRoot?: string): Promise<TerminalInfo[]> => ipcRenderer.invoke("terminal:list", workspaceRoot),
     },
 
+    patientCases: {
+        list: (): Promise<PatientCase[]> => ipcRenderer.invoke("patientCases:list"),
+        get: (id: string): Promise<PatientCase | null> => ipcRenderer.invoke("patientCases:get", id),
+        create: (title: string): Promise<PatientCase> => ipcRenderer.invoke("patientCases:create", title),
+        update: (id: string, partial: Record<string, unknown>): Promise<PatientCase | null> =>
+            ipcRenderer.invoke("patientCases:update", { id, partial }),
+        delete: (id: string): Promise<void> => ipcRenderer.invoke("patientCases:delete", id),
+        buildContext: (id: string): Promise<{ text: string; includedFields: string[] } | null> =>
+            ipcRenderer.invoke("patientCases:buildContext", id),
+        checkConflicts: (
+            allergies: string[],
+            medications: string[]
+        ): Promise<{ kind: string; medication: string; conflictsWith: string; detail: string }[]> =>
+            ipcRenderer.invoke("patientCases:checkConflicts", { allergies, medications }),
+        grantConsent: (
+            caseId: string,
+            scope: "ai-assistance" | "remote-model-use" | "research",
+            method: string
+        ): Promise<PatientCase | null> => ipcRenderer.invoke("patientCases:grantConsent", { caseId, scope, method }),
+        revokeConsent: (caseId: string, consentId: string): Promise<PatientCase | null> =>
+            ipcRenderer.invoke("patientCases:revokeConsent", { caseId, consentId }),
+        addNote: (caseId: string, author: "clinician" | "model-inference", text: string): Promise<PatientCase | null> =>
+            ipcRenderer.invoke("patientCases:addNote", { caseId, author, text }),
+        reviewNote: (
+            caseId: string,
+            noteId: string,
+            reviewedBy: string,
+            outcome: "accepted" | "accepted-with-edits" | "rejected",
+            comment?: string
+        ): Promise<PatientCase | null> => ipcRenderer.invoke("patientCases:reviewNote", { caseId, noteId, reviewedBy, outcome, comment }),
+    },
+
+    audit: {
+        list: (): Promise<AuditEvent[]> => ipcRenderer.invoke("audit:list"),
+        clearAll: (): Promise<void> => ipcRenderer.invoke("audit:clearAll"),
+        record: (
+            actionCategory: AuditEvent["actionCategory"],
+            fields?: {
+                targetType?: AuditEvent["targetType"];
+                targetId?: string;
+                detail?: string;
+                mcpServerId?: string;
+                mcpServerName?: string;
+                mcpToolName?: string;
+                approvalOutcome?: AuditEvent["approvalOutcome"];
+                durationMs?: number;
+            }
+        ): Promise<AuditEvent> => ipcRenderer.invoke("audit:record", { actionCategory, fields }),
+        verifyIntegrity: (): Promise<{ valid: boolean; checkedCount: number; brokenAtIndex?: number; reason?: string }> =>
+            ipcRenderer.invoke("audit:verifyIntegrity"),
+    },
+
+    encryption: {
+        status: (): Promise<{ enabled: boolean; unlocked: boolean }> => ipcRenderer.invoke("encryption:status"),
+        setup: (passphrase: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke("encryption:setup", passphrase),
+        unlock: (passphrase: string): Promise<{ success: boolean }> => ipcRenderer.invoke("encryption:unlock", passphrase),
+        lock: (): Promise<void> => ipcRenderer.invoke("encryption:lock"),
+        disable: (passphrase: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke("encryption:disable", passphrase),
+        changePassphrase: (oldPassphrase: string, newPassphrase: string): Promise<{ success: boolean; error?: string }> =>
+            ipcRenderer.invoke("encryption:changePassphrase", { oldPassphrase, newPassphrase }),
+    },
+
+    modelRegistry: {
+        list: (): Promise<ApprovedModel[]> => ipcRenderer.invoke("modelRegistry:list"),
+        isActive: (): Promise<boolean> => ipcRenderer.invoke("modelRegistry:isActive"),
+        isApproved: (provider: string, modelId: string): Promise<boolean> =>
+            ipcRenderer.invoke("modelRegistry:isApproved", { provider, modelId }),
+        approve: (provider: string, modelId: string, approvedUseCases: string[], approvedBy?: string): Promise<ApprovedModel> =>
+            ipcRenderer.invoke("modelRegistry:approve", { provider, modelId, approvedUseCases, approvedBy }),
+        retire: (id: string): Promise<void> => ipcRenderer.invoke("modelRegistry:retire", id),
+        remove: (id: string): Promise<void> => ipcRenderer.invoke("modelRegistry:remove", id),
+    },
+
+    medicalSafety: {
+        checkEmergency: (text: string): Promise<{ isEmergency: boolean; flags: { matched: string; category: string }[] }> =>
+            ipcRenderer.invoke("medicalSafety:checkEmergency", text),
+        redact: (text: string): Promise<{ redacted: string; counts: Record<string, number> }> =>
+            ipcRenderer.invoke("medicalSafety:redact", text),
+        checkCitations: (text: string, knownSourceIds: string[]): Promise<{ unverifiedMarkers: string[]; missingCitations: boolean }> =>
+            ipcRenderer.invoke("medicalSafety:checkCitations", { text, knownSourceIds }),
+    },
+
+    evidence: {
+        list: (): Promise<EvidenceSource[]> => ipcRenderer.invoke("evidence:list"),
+        addFromUrl: (url: string): Promise<{ source?: EvidenceSource; error?: string }> =>
+            ipcRenderer.invoke("evidence:addFromUrl", url),
+        delete: (id: string): Promise<void> => ipcRenderer.invoke("evidence:delete", id),
+    },
+
     mcp: {
         connect: (config: McpServerConfig): Promise<McpConnectResult> => ipcRenderer.invoke("mcp:connect", config),
         disconnect: (id: string): Promise<void> => ipcRenderer.invoke("mcp:disconnect", id),
         status: (): Promise<Record<string, McpServerStatus>> => ipcRenderer.invoke("mcp:status"),
         isMastervaultBuiltinAvailable: (): Promise<boolean> => ipcRenderer.invoke("mcp:isMastervaultBuiltinAvailable"),
         pickMastervaultVault: (): Promise<McpServerConfig | null> => ipcRenderer.invoke("mcp:pickMastervaultVault"),
+        cancelTool: (requestId: string): Promise<void> => ipcRenderer.invoke("mcp:cancelTool", requestId),
+        startOAuthFlow: (config: McpServerConfig): Promise<{ authorized: boolean; error?: string }> =>
+            ipcRenderer.invoke("mcp:startOAuthFlow", config),
+        hasOAuthTokens: (serverId: string): Promise<boolean> => ipcRenderer.invoke("mcp:hasOAuthTokens", serverId),
+        clearOAuthCredentials: (serverId: string): Promise<void> => ipcRenderer.invoke("mcp:clearOAuthCredentials", serverId),
     },
 
     screen: {

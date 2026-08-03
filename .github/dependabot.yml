@@ -1,0 +1,68 @@
+version: 2
+updates:
+  # Each of these is an independent package.json/package-lock.json — kept as
+  # separate entries (rather than one root entry) so an update PR for, say,
+  # frontend never bundles unrelated app or e2e dependency bumps.
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # Security patches land immediately rather than waiting in a batched
+      # group PR that might sit unreviewed.
+      production-dependencies:
+        applies-to: version-updates
+        dependency-type: production
+      development-dependencies:
+        applies-to: version-updates
+        dependency-type: development
+
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      production-dependencies:
+        applies-to: version-updates
+        dependency-type: production
+      development-dependencies:
+        applies-to: version-updates
+        dependency-type: development
+
+  - package-ecosystem: npm
+    directory: /e2e
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /mastervault-mcp-server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # lib/ is the napi-rs (Rust) download engine bound into the Electron app.
+  - package-ecosystem: cargo
+    directory: /lib
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # ml/hardware-recommender is a standalone Python project (see ci.yml's
+  # python-recommender job) — its own dependency surface, tracked separately
+  # from the shipped app since only its exported ONNX artifact ships.
+  - package-ecosystem: pip
+    directory: /ml/hardware-recommender
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # The CI/release workflows' own actions (actions/checkout, setup-node, …)
+  # — easy to forget since they're not in any package.json.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

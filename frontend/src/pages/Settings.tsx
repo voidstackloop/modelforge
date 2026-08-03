@@ -90,6 +90,7 @@ import {
     type KeybindingAction,
 } from "@/lib/keybindings";
 import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, formatModelRef, parseModelRef, CUSTOM_PROVIDER_PRESETS } from "@/lib/providers";
+import { MCP_SERVER_PRESETS, type McpServerPreset } from "@/lib/mcp-presets";
 import { useSessions } from "@/lib/sessions-context";
 import { useI18n } from "@/lib/i18n";
 import type { Locale } from "@/lib/translations";
@@ -253,6 +254,8 @@ export default function Settings() {
     const toast = useToast();
     const activePullCount = useRef(0);
     const loadedTabs = useRef(new Set<SettingsTab>());
+    const hfSearchRequest = useRef(0);
+    const hfFilesRequest = useRef(0);
 
     useEffect(() => {
         window.api.benchmark.getLast().then(setBenchmarkResult).catch(() => undefined);
@@ -269,6 +272,10 @@ export default function Settings() {
     const [mcpDraftTransport, setMcpDraftTransport] = useState<"stdio" | "http">("stdio");
     const [mcpDraftCommand, setMcpDraftCommand] = useState("");
     const [mcpDraftUrl, setMcpDraftUrl] = useState("");
+    const [mcpDraftOAuth, setMcpDraftOAuth] = useState(false);
+    const [mcpDraftPresetExtras, setMcpDraftPresetExtras] = useState<{ blockedTools?: string[]; warningBanner?: string } | null>(null);
+    const [mcpOAuthTokensPresent, setMcpOAuthTokensPresent] = useState<Record<string, boolean>>({});
+    const [mcpOAuthInProgress, setMcpOAuthInProgress] = useState<Record<string, boolean>>({});
     const [mastervaultAvailable, setMastervaultAvailable] = useState(false);
     const [mastervaultAdding, setMastervaultAdding] = useState(false);
 
@@ -338,6 +345,11 @@ export default function Settings() {
             window.api.secrets.has("figma_token").then(setFigmaTokenSet);
             window.api.secrets.has("gemini_api_key").then(setGeminiKeySet);
             window.api.mcp.status().then(setMcpStatuses);
+            for (const server of settings?.mcpServers ?? []) {
+                if (server.auth?.type === "oauth2") {
+                    window.api.mcp.hasOAuthTokens(server.id).then((has) => setMcpOAuthTokensPresent((prev) => ({ ...prev, [server.id]: has })));
+                }
+            }
             for (const provider of settings?.customProviders ?? []) {
                 window.api.secrets.has(`custom_${provider.id}_api_key`).then((has) =>
                     setCustomKeySet((prev) => ({ ...prev, [provider.id]: has }))
@@ -356,34 +368,52 @@ export default function Settings() {
     // rather than on every keystroke, since it's a network call.
     useEffect(() => {
         const query = search.trim();
+        const requestId = ++hfSearchRequest.current;
         if (activeTab !== "models" || !hasApi || !query || /^https?:\/\//i.test(query) || /^hf\.co\//i.test(query)) {
             // Intentional: clears stale results when the search box empties or
             // looks like a direct tag/URL paste rather than a search query.
             // eslint-disable-next-line react-hooks/set-state-in-effect
             setHfResults([]);
             setHfError(null);
+            setHfSearching(false);
             return;
         }
         setHfSearching(true);
         const timer = setTimeout(async () => {
-            const res = await window.api.huggingface.search(query);
-            setHfResults(res.results ?? []);
-            setHfError(res.error ?? null);
-            setHfSearching(false);
+            try {
+                const res = await window.api.huggingface.search(query);
+                if (hfSearchRequest.current !== requestId) return;
+                setHfResults(res.results ?? []);
+                setHfError(res.error ?? null);
+            } catch (reason) {
+                if (hfSearchRequest.current !== requestId) return;
+                setHfResults([]);
+                setHfError((reason as Error).message);
+            } finally {
+                if (hfSearchRequest.current === requestId) setHfSearching(false);
+            }
         }, 400);
         return () => clearTimeout(timer);
     }, [activeTab, hasApi, search]);
 
     async function toggleHfExpanded(modelId: string) {
+        const requestId = ++hfFilesRequest.current;
         if (hfExpandedId === modelId) {
             setHfExpandedId(null);
+            setHfFiles([]);
+            setHfAssessments({});
+            setHfFilesLoading(false);
+            setHfAssessmentsLoading(false);
             return;
         }
         setHfExpandedId(modelId);
         setHfFilesLoading(true);
+        setHfFiles([]);
         setHfAssessments({});
+        setHfAssessmentsLoading(false);
         try {
             const res = await window.api.huggingface.listFiles(modelId);
+            if (hfFilesRequest.current !== requestId) return;
             if (res.error) throw new Error(res.error);
             const files = res.files ?? [];
             setHfFiles(files);
@@ -391,14 +421,18 @@ export default function Settings() {
             if (files.length > 0) {
                 setHfAssessmentsLoading(true);
                 const assessments = await window.api.system.assessGgufFiles(groupGgufFiles(files).map((group) => ({ modelId, filename: group[0].path, sizeBytes: ggufGroupSize(group) })));
+                if (hfFilesRequest.current !== requestId) return;
                 setHfAssessments(Object.fromEntries(assessments.map((assessment) => [assessment.filename, assessment])));
             }
         } catch (reason) {
+            if (hfFilesRequest.current !== requestId) return;
             setHfFiles([]);
             toast.error((reason as Error).message);
         } finally {
-            setHfFilesLoading(false);
-            setHfAssessmentsLoading(false);
+            if (hfFilesRequest.current === requestId) {
+                setHfFilesLoading(false);
+                setHfAssessmentsLoading(false);
+            }
         }
     }
 
@@ -695,6 +729,23 @@ export default function Settings() {
         setShowAddCustomProvider(true);
     }
 
+    // Prefills the same manual stdio form used for a hand-typed MCP server —
+    // this never connects on its own. The user still reviews the command
+    // (filling in any <placeholder> like a folder path) and clicks Add, same
+    // as any other MCP server, so a preset is never a way to silently start
+    // running a local binary the user didn't explicitly approve.
+    function prefillMcpPreset(preset: McpServerPreset) {
+        setMcpDraftName(preset.name);
+        setMcpDraftTransport("stdio");
+        setMcpDraftCommand(preset.commandTemplate);
+        setMcpDraftPresetExtras(
+            preset.blockedTools || preset.warningBanner
+                ? { blockedTools: preset.blockedTools, warningBanner: preset.warningBanner }
+                : null
+        );
+        setShowAddMcp(true);
+    }
+
     async function addCustomProvider() {
         if (!settings) return;
         const name = customDraftName.trim();
@@ -866,24 +917,49 @@ export default function Settings() {
     async function connectMcpServer(server: McpServerConfig) {
         setMcpConnecting((c) => ({ ...c, [server.id]: true }));
         const res = await window.api.mcp.connect(server);
-        setMcpStatuses((s) => ({
-            ...s,
-            [server.id]: res.error
-                ? { connected: false, toolCount: 0, error: res.error }
-                : { connected: true, toolCount: res.tools?.length ?? 0 },
-        }));
+        if (res.error) {
+            setMcpStatuses((s) => ({ ...s, [server.id]: { connected: false, toolCount: 0, tools: [], error: res.error } }));
+        } else {
+            // Re-fetch full status rather than hand-building a partial one —
+            // getServerStatuses() now also returns each tool's
+            // name/description/annotations, needed for the trust-profile
+            // picker below and the approval card's server-identity display.
+            setMcpStatuses(await window.api.mcp.status());
+        }
         setMcpConnecting((c) => ({ ...c, [server.id]: false }));
     }
 
     async function disconnectMcpServer(id: string) {
         await window.api.mcp.disconnect(id);
-        setMcpStatuses((s) => ({ ...s, [id]: { connected: false, toolCount: 0 } }));
+        setMcpStatuses((s) => ({ ...s, [id]: { connected: false, toolCount: 0, tools: [] } }));
+    }
+
+    // Persisted, per-tool, one-at-a-time — never a "trust this server"
+    // toggle. Unchecking removes just that one tool name from the list;
+    // everything else the server offers (including anything it adds later)
+    // still prompts on every call.
+    async function toggleMcpToolTrust(serverId: string, toolName: string, trusted: boolean) {
+        if (!settings) return;
+        const servers = settings.mcpServers ?? [];
+        const nextServers = servers.map((s) => {
+            if (s.id !== serverId) return s;
+            const current = new Set(s.trustProfile?.autoApprovedTools ?? []);
+            if (trusted) current.add(toolName);
+            else current.delete(toolName);
+            return { ...s, trustProfile: { autoApprovedTools: [...current] } };
+        });
+        const updated = await window.api.settings.save({ mcpServers: nextServers });
+        setSettings(updated);
     }
 
     async function addMcpServer() {
         if (!settings) return;
         const name = mcpDraftName.trim();
         if (!name) return;
+        const presetExtras = {
+            ...(mcpDraftPresetExtras?.blockedTools ? { blockedTools: mcpDraftPresetExtras.blockedTools } : {}),
+            ...(mcpDraftPresetExtras?.warningBanner ? { warningBanner: mcpDraftPresetExtras.warningBanner } : {}),
+        };
         const server: McpServerConfig =
             mcpDraftTransport === "stdio"
                 ? {
@@ -893,15 +969,49 @@ export default function Settings() {
                       enabled: true,
                       command: mcpDraftCommand.trim().split(/\s+/)[0] ?? "",
                       args: mcpDraftCommand.trim().split(/\s+/).slice(1),
+                      ...presetExtras,
                   }
-                : { id: crypto.randomUUID(), name, transport: "http", enabled: true, url: mcpDraftUrl.trim() };
+                : {
+                      id: crypto.randomUUID(),
+                      name,
+                      transport: "http",
+                      enabled: true,
+                      url: mcpDraftUrl.trim(),
+                      ...(mcpDraftOAuth ? { auth: { type: "oauth2" as const } } : {}),
+                      ...presetExtras,
+                  };
         const updated = await window.api.settings.save({ mcpServers: [...(settings.mcpServers ?? []), server] });
         setSettings(updated);
         setMcpDraftName("");
         setMcpDraftCommand("");
         setMcpDraftUrl("");
+        setMcpDraftOAuth(false);
+        setMcpDraftPresetExtras(null);
         setShowAddMcp(false);
-        connectMcpServer(server);
+        // An OAuth-gated server needs a sign-in first — connecting
+        // immediately would just fail with "requires authorization" (see
+        // mcp-client.ts's UnauthorizedError handling), so skip the
+        // auto-connect the plain-server path does and let the user hit
+        // "Sign in" from the server row instead.
+        if (!mcpDraftOAuth) connectMcpServer(server);
+    }
+
+    async function signInToMcpServer(server: McpServerConfig) {
+        setMcpOAuthInProgress((s) => ({ ...s, [server.id]: true }));
+        try {
+            const res = await window.api.mcp.startOAuthFlow(server);
+            if (res.authorized) {
+                setMcpOAuthTokensPresent((s) => ({ ...s, [server.id]: true }));
+                connectMcpServer(server);
+            }
+        } finally {
+            setMcpOAuthInProgress((s) => ({ ...s, [server.id]: false }));
+        }
+    }
+
+    async function clearMcpServerCredentials(serverId: string) {
+        await window.api.mcp.clearOAuthCredentials(serverId);
+        setMcpOAuthTokensPresent((s) => ({ ...s, [serverId]: false }));
     }
 
     // One-click add for the bundled MasterVault server: the folder picker is
@@ -2207,6 +2317,11 @@ export default function Settings() {
                                             }
                                             stacked
                                         >
+                                            {server.warningBanner && (
+                                                <div className="mb-2 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-xs text-warning">
+                                                    {server.warningBanner}
+                                                </div>
+                                            )}
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant={status?.connected ? "default" : "secondary"}>
                                                     {status?.connected
@@ -2215,6 +2330,27 @@ export default function Settings() {
                                                 </Badge>
                                                 {status?.error && (
                                                     <span className="text-xs text-destructive">{status.error}</span>
+                                                )}
+                                                {server.auth?.type === "oauth2" && (
+                                                    <>
+                                                        <Badge variant={mcpOAuthTokensPresent[server.id] ? "default" : "secondary"}>
+                                                            {mcpOAuthTokensPresent[server.id] ? "Signed in" : "Not signed in"}
+                                                        </Badge>
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            disabled={mcpOAuthInProgress[server.id]}
+                                                            onClick={() => signInToMcpServer(server)}
+                                                        >
+                                                            {mcpOAuthInProgress[server.id] ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                                                            {mcpOAuthTokensPresent[server.id] ? "Re-authorize" : "Sign in"}
+                                                        </Button>
+                                                        {mcpOAuthTokensPresent[server.id] && (
+                                                            <Button size="sm" variant="ghost" onClick={() => clearMcpServerCredentials(server.id)}>
+                                                                Clear credentials
+                                                            </Button>
+                                                        )}
+                                                    </>
                                                 )}
                                                 {status?.connected ? (
                                                     <Button
@@ -2248,6 +2384,36 @@ export default function Settings() {
                                                     <Trash2 className="size-3.5 text-destructive" />
                                                 </Button>
                                             </div>
+                                            {status?.connected && status.tools.length > 0 && (
+                                                <div className="mt-2 flex flex-col gap-1 rounded-lg border border-border/60 bg-muted/30 p-2.5">
+                                                    <p className="text-[11px] text-muted-foreground">
+                                                        Always-allow specific tools from this server (skips the approval
+                                                        card for that tool only — pick read-only tools only):
+                                                    </p>
+                                                    {status.tools.map((tool) => {
+                                                        const trusted = (server.trustProfile?.autoApprovedTools ?? []).includes(tool.name);
+                                                        return (
+                                                            <label key={tool.name} className="flex items-start gap-2 text-xs">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={trusted}
+                                                                    onChange={(e) => toggleMcpToolTrust(server.id, tool.name, e.target.checked)}
+                                                                    className="mt-0.5 size-3.5 accent-primary"
+                                                                />
+                                                                <span>
+                                                                    <span className="font-mono">{tool.name}</span>
+                                                                    {tool.readOnlyHint === false && (
+                                                                        <span className="ml-1.5 text-warning">(not marked read-only)</span>
+                                                                    )}
+                                                                    {tool.description && (
+                                                                        <span className="ml-1.5 text-muted-foreground">— {tool.description}</span>
+                                                                    )}
+                                                                </span>
+                                                            </label>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
                                         </SettingsRow>
                                     );
                                 })}
@@ -2294,31 +2460,77 @@ export default function Settings() {
                                                     className="h-8 text-xs"
                                                 />
                                             ) : (
-                                                <Input
-                                                    value={mcpDraftUrl}
-                                                    onChange={(e) => setMcpDraftUrl(e.target.value)}
-                                                    placeholder={t.mcpUrlHint}
-                                                    className="h-8 text-xs"
-                                                />
+                                                <>
+                                                    <Input
+                                                        value={mcpDraftUrl}
+                                                        onChange={(e) => setMcpDraftUrl(e.target.value)}
+                                                        placeholder={t.mcpUrlHint}
+                                                        className="h-8 text-xs"
+                                                    />
+                                                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={mcpDraftOAuth}
+                                                            onChange={(e) => setMcpDraftOAuth(e.target.checked)}
+                                                            className="size-3.5 accent-primary"
+                                                        />
+                                                        Requires OAuth 2.1 sign-in (authorization code + PKCE)
+                                                    </label>
+                                                </>
+                                            )}
+                                            {mcpDraftPresetExtras?.warningBanner && (
+                                                <div className="rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-xs text-warning">
+                                                    {mcpDraftPresetExtras.warningBanner}
+                                                </div>
                                             )}
                                             <div className="flex gap-2">
                                                 <Button size="sm" onClick={addMcpServer} className="gap-1.5">
                                                     <Plus className="size-3.5" /> {t.mcpAdd}
                                                 </Button>
-                                                <Button size="sm" variant="outline" onClick={() => setShowAddMcp(false)}>
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => {
+                                                        setShowAddMcp(false);
+                                                        setMcpDraftPresetExtras(null);
+                                                    }}
+                                                >
                                                     {t.cancel}
                                                 </Button>
                                             </div>
                                         </div>
                                     ) : (
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => setShowAddMcp(true)}
-                                            className="w-fit gap-1.5"
-                                        >
-                                            <Plus className="size-3.5" /> {t.addMcpServer}
-                                        </Button>
+                                        <div className="flex flex-col gap-2">
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => setShowAddMcp(true)}
+                                                className="w-fit gap-1.5"
+                                            >
+                                                <Plus className="size-3.5" /> {t.addMcpServer}
+                                            </Button>
+                                            <div className="flex flex-col gap-1.5">
+                                                {MCP_SERVER_PRESETS.map((preset) => (
+                                                    <div key={preset.name} className="flex flex-wrap items-center gap-2">
+                                                        <button
+                                                            onClick={() => prefillMcpPreset(preset)}
+                                                            className="rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted/70"
+                                                        >
+                                                            + {preset.name}
+                                                        </button>
+                                                        <a
+                                                            href={preset.docsUrl}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            className="text-[11px] text-muted-foreground underline decoration-dotted"
+                                                        >
+                                                            docs
+                                                        </a>
+                                                        <span className="text-[11px] text-muted-foreground">{preset.setupHint}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
                                     )}
                                 </SettingsRow>
                             </SettingsSection>
