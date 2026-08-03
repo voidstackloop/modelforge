@@ -608,6 +608,7 @@ export interface AppSettings {
   caseAutoLockMinutes?: number;
   redactBeforeRemoteSend?: boolean;
   auditLogRetentionDays?: number;
+  auditLogBackend?: "json" | "sqlite";
 }
 
 export interface ChatOptions {
@@ -1128,6 +1129,7 @@ export interface ElectronApi {
       }
     ) => Promise<AuditEvent>;
     verifyIntegrity: () => Promise<AuditChainVerificationResult>;
+    sqliteCapability: () => Promise<{ available: boolean; reason?: string; detail?: string }>;
   };
   encryption: {
     status: () => Promise<{ enabled: boolean; unlocked: boolean }>;

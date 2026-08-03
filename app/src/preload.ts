@@ -466,6 +466,8 @@ export const api = {
         ): Promise<AuditEvent> => ipcRenderer.invoke("audit:record", { actionCategory, fields }),
         verifyIntegrity: (): Promise<{ valid: boolean; checkedCount: number; brokenAtIndex?: number; reason?: string }> =>
             ipcRenderer.invoke("audit:verifyIntegrity"),
+        sqliteCapability: (): Promise<{ available: boolean; reason?: string; detail?: string }> =>
+            ipcRenderer.invoke("audit:sqliteCapability"),
     },
 
     encryption: {

@@ -332,6 +332,70 @@ function ModelRegistrySection() {
     );
 }
 
+/** Experimental, opt-in: routes the audit log through a Rust/SQLite store
+ * instead of the JSON file (see docs/RUST_MIGRATION_ASSESSMENT.md). Off by
+ * default and safe to leave off — this exists to make the backend
+ * switchable/testable, not because JSON has a known problem serious enough
+ * to recommend switching. */
+function StorageBackendSection({ onBackendChanged }: { onBackendChanged: () => void }) {
+    const [backend, setBackend] = useState<"json" | "sqlite">("json");
+    const [capability, setCapability] = useState<{ available: boolean; reason?: string; detail?: string } | null>(null);
+    const [busy, setBusy] = useState(false);
+
+    function refresh() {
+        window.api.settings.get().then((s) => setBackend(s.auditLogBackend ?? "json"));
+        window.api.audit.sqliteCapability().then(setCapability);
+    }
+    useEffect(refresh, []);
+
+    async function toggle() {
+        setBusy(true);
+        try {
+            const next = backend === "sqlite" ? "json" : "sqlite";
+            await window.api.settings.save({ auditLogBackend: next });
+            refresh();
+            onBackendChanged();
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    const capabilityUnavailableReason: Record<string, string> = {
+        "not-built": "the native module wasn't built into this install",
+        "abi-or-platform-mismatch": "the native module doesn't match this machine's platform/Node version",
+        "load-error": "the native module failed to load",
+    };
+
+    return (
+        <div className="rounded-xl border border-border/70 bg-card p-3.5">
+            <div className="flex items-center justify-between gap-2">
+                <div>
+                    <p className="text-xs font-semibold">Audit log storage backend</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                        Experimental. Existing events migrate in automatically the first time you switch, and are
+                        never deleted from the JSON file — switching back to JSON afterward is always possible.
+                    </p>
+                </div>
+                <Badge variant={backend === "sqlite" ? "warning" : "secondary"}>{backend === "sqlite" ? "SQLite" : "JSON (default)"}</Badge>
+            </div>
+
+            {capability && !capability.available && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                    SQLite backend unavailable on this install —{" "}
+                    {capabilityUnavailableReason[capability.reason ?? ""] ?? "it couldn't be loaded"}. Staying on JSON
+                    regardless of this setting.
+                </p>
+            )}
+
+            <div className="mt-2.5">
+                <Button size="sm" variant="outline" disabled={busy || (backend === "json" && !capability?.available)} onClick={toggle}>
+                    {backend === "sqlite" ? "Switch back to JSON" : "Switch to experimental SQLite backend"}
+                </Button>
+            </div>
+        </div>
+    );
+}
+
 const CATEGORY_LABEL: Record<AuditEvent["actionCategory"], string> = {
     "case-created": "Case created",
     "case-updated": "Case updated",
@@ -409,6 +473,8 @@ export default function AuditPrivacy() {
                     <EncryptionSection />
 
                     <ModelRegistrySection />
+
+                    <StorageBackendSection onBackendChanged={refresh} />
 
                     <div className="grid gap-3 sm:grid-cols-2">
                         <div className="rounded-xl border border-border/70 bg-card p-3.5">
