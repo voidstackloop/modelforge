@@ -35,7 +35,7 @@ dashmap = "6"
 # the build/runtime machine — required for a portable Electron addon, since
 # we can't assume any particular system SQLite version (or its presence at
 # all) on a user's machine.
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [build-dependencies]
 napi-build = "2"
