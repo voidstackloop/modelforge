@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it, afterEach } from "vitest";
 import { estimateModelFit } from "./model-fit-estimator";
 import type { SystemSpecs } from "./system-specs";
@@ -19,9 +20,18 @@ function baseSpecs(overrides: Partial<SystemSpecs> = {}): SystemSpecs {
 // Creates a real file of an exact size WITHOUT writing that many actual
 // bytes to disk (sparse allocation via ftruncate) — needed because
 // estimateModelFit stats the real file on disk, not a mocked size.
+//
+// ext4/APFS treat a plain ftruncate-to-grow on an empty file as a true
+// sparse hole (no real blocks allocated). NTFS does not: without first
+// flagging the file sparse via `fsutil sparse setflag`, growing it to
+// hundreds of GB tries to actually reserve that much real disk space and
+// fails with ENOSPC on a CI runner's much smaller disk (observed on a
+// Windows release-build runner creating this suite's 500 GB fixture).
 function sparseFile(dir: string, name: string, sizeBytes: number): string {
     const filePath = path.join(dir, name);
-    const fd = fs.openSync(filePath, "w");
+    fs.closeSync(fs.openSync(filePath, "w"));
+    if (process.platform === "win32") execFileSync("fsutil", ["sparse", "setflag", filePath]);
+    const fd = fs.openSync(filePath, "r+");
     fs.ftruncateSync(fd, sizeBytes);
     fs.closeSync(fd);
     return filePath;

@@ -57,8 +57,13 @@ describe("audit-log-store", () => {
         // inherently slower than the default 5s/20s test budget at this
         // scale (5000+ writes) even though the store itself is working
         // correctly. The generous timeout covers both cases rather than
-        // being addon-presence-conditional.
-        60_000
+        // being addon-presence-conditional. 180s (not 60s) specifically
+        // because a Windows CI runner's file I/O for 5,000+ small
+        // read-modify-write cycles plus real-time antivirus scanning
+        // overhead measurably exceeded 60s in a real release-build run,
+        // even though the same test comfortably finishes in a few seconds
+        // on Linux/macOS.
+        180_000
     );
 
     it("clearAll empties the log", () => {

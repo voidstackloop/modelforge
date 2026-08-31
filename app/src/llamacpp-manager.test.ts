@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -344,6 +344,20 @@ describe("toLlamaCppFunctions", () => {
 describe("chat() end-to-end via the fake node-llama-cpp module", () => {
     let dir: string;
     let modelPath: string;
+
+    // Every test here acquires mainResourceOrchestrator's real exclusive-
+    // accelerator lease for real (see this describe block's own top comment
+    // on why that's deliberate, not something to mock away). vitest.config.ts's
+    // global 20s default (unchanged for every other file) was never
+    // actually exercised on a real CI runner before this describe block's
+    // very first run against a real release build — a macOS runner's lower
+    // core count and/or first-call hardware-detection latency measurably
+    // exceeded it. Not independently reproduced locally (no macOS access in
+    // this environment); widening the budget here is the safe fix
+    // regardless of which of those it turns out to be, and doesn't change
+    // what's actually being verified.
+    beforeAll(() => vi.setConfig({ testTimeout: 60_000 }));
+    afterAll(() => vi.setConfig({ testTimeout: 20_000 }));
 
     beforeEach(() => {
         process.env.MODELFORGE_E2E_FAKE_LLAMACPP = "1";

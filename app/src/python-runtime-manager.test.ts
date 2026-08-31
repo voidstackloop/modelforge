@@ -216,7 +216,15 @@ describe("ManagedPythonWorker", () => {
 
     it("runs each request as a user-interactive python-worker lease, sized up for the CPU-heavy 'recommend' method", async () => {
         const w = worker();
-        const withLeaseSpy = vi.spyOn(mainResourceOrchestrator, "withLease");
+        // Bypasses real resource admission entirely (the caller's task
+        // callback ignores the lease argument, so this is a safe stand-in)
+        // — this test only cares what request shape python-runtime-
+        // manager.ts asks for, not whether the *real* host machine actually
+        // has 2 free CPU threads to grant right now. Real admission here
+        // made this test genuinely fail on lower-core-count CI runners
+        // (observed on a macOS release-build runner: "Requested 2 CPU
+        // threads, but only 1 are safely available").
+        const withLeaseSpy = vi.spyOn(mainResourceOrchestrator, "withLease").mockImplementation((_request, task) => task(undefined as never));
 
         await w.request("health");
         expect(withLeaseSpy.mock.calls.at(-1)?.[0]).toMatchObject({ workloadKind: "python-worker", priority: "user-interactive", requirements: { cpuThreads: 1 } });
