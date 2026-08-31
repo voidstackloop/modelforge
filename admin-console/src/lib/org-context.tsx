@@ -37,9 +37,6 @@ export function MeProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const load = useCallback(async () => {
-        // Intentional fetch-on-mount/refresh, same pattern (and same
-        // suppression) as frontend/'s sessions-context.tsx.
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setError(undefined);
         try {
             const response = await getMe();
@@ -50,6 +47,9 @@ export function MeProvider({ children }: { children: ReactNode }) {
     }, []);
 
     useEffect(() => {
+        // Intentional fetch-on-mount/refresh, same pattern (and same
+        // suppression) as frontend/'s sessions-context.tsx.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         void load();
     }, [load]);
 

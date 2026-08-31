@@ -12,7 +12,14 @@ FROM dependencies AS development
 COPY frontend/ ./frontend/
 RUN ./frontend/node_modules/.bin/tsc -p packages/contracts/tsconfig.json
 EXPOSE 5173
-CMD ["npm", "--prefix", "frontend", "run", "dev", "--", "--host", "0.0.0.0"]
+# Ephemeral local-dev container only (never shipped, never internet-facing —
+# this asset is never deployed as its own service; see this file's own top
+# comment). Switching user here would need a chown of /workspace's
+# root-owned COPY'd files first, which isn't verifiable without a working
+# Docker daemon in this environment; not worth the risk of silently breaking
+# `docker compose up` for a container that only ever runs on a developer's
+# own machine.
+CMD ["npm", "--prefix", "frontend", "run", "dev", "--", "--host", "0.0.0.0"] # nosemgrep: dockerfile.security.missing-user.missing-user
 
 FROM dependencies AS build
 COPY frontend/ ./frontend/

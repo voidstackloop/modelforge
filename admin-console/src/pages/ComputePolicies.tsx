@@ -74,6 +74,7 @@ export default function ComputePolicies() {
         // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedPool intentionally read, not a re-trigger dependency (see the explicit reload below)
     }, [organizationId]);
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional fetch-on-mount, same pattern as org-context.tsx
     useEffect(() => { void load(); }, [load]);
     useEffect(() => {
         if (!selectedPool) return;

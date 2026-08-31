@@ -39,17 +39,21 @@ export default function Inference() {
         setError(undefined);
         listAiProviders(organizationId).then((items) => { setProviders(items); setProviderId((value) => value || items[0]?.id || ""); }).catch((reason) => setError(describeApiError(reason, organizationId)));
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional fetch-on-mount, same pattern as org-context.tsx
     useEffect(loadProviders, [organizationId]);
     useEffect(() => { listComputePools(organizationId).then((items) => { setComputePools(items); setPoolId((value) => value || items.find((item) => item.status === "active")?.id || ""); }).catch((reason) => setError(describeApiError(reason, organizationId))); }, [organizationId]);
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting dependent selection when the parent selection changes
         if (!providerId) { setModels([]); setModelId(""); return; }
         listAiProviderModels(organizationId, providerId).then((items) => { setModels(items); setModelId(items[0]?.id ?? ""); }).catch((reason) => setError(describeApiError(reason, organizationId)));
     }, [organizationId, providerId]);
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting dependent selection when the parent selection changes
         if (!modelId) { setArtifacts([]); setArtifactId(""); return; }
         listAiModelArtifacts(organizationId, modelId).then((items) => { setArtifacts(items); setArtifactId(items[0]?.id ?? ""); }).catch((reason) => setError(describeApiError(reason, organizationId)));
     }, [organizationId, modelId]);
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting dependent selection when the parent selection changes
         if (!artifactId) { setDeployments([]); return; }
         listAiInferenceDeployments(organizationId, artifactId).then(setDeployments).catch((reason) => setError(describeApiError(reason, organizationId)));
     }, [organizationId, artifactId]);

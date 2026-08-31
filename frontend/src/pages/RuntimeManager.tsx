@@ -211,6 +211,7 @@ export default function RuntimeManager() {
   }, [refreshResourceTelemetry]);
   // Lazy: only assessed when the Models tab is actually opened, and
   // re-assessed whenever the installed-model list changes while it's open.
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional lazy fetch when the tab is opened
   useEffect(() => { if (tab === "models") void refreshModelAssessments(); }, [tab, refreshModelAssessments]);
   useEffect(() => { if (!hasApi) return; return window.api.downloads.onUpdate((jobs) => { const signature = jobs.filter((job) => job.state === "ready").map((job) => `${job.id}:${job.updatedAt}`).sort().join("|"); if (signature !== completedDownloadSignature.current) { completedDownloadSignature.current = signature; void refreshModels(); } }); }, [hasApi, refreshModels]);
   const visibleLogs = useMemo(() => (statuses.find((item) => item.backend === logBackend)?.logs ?? []).filter((line) => (logSource === "all" || line.includes(`[${logSource}]`)) && line.toLowerCase().includes(logSearch.toLowerCase())), [statuses, logBackend, logSearch, logSource]);
@@ -425,6 +426,7 @@ const BUDGET_MODE_COPY: Record<ResourceBudgetMode, { en: string; tr: string; det
 // duplicated here.
 function ResourceSettingsPanel({ settings, saving, onSave, tr }: { settings: ResourceSettingsValue; saving: boolean; onSave(next: ResourceSettingsValue): void; tr: boolean }) {
   const [draft, setDraft] = useState(settings);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting the local draft when the saved settings change
   useEffect(() => setDraft(settings), [settings]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
 
@@ -461,6 +463,7 @@ function ResourceSettingsPanel({ settings, saving, onSave, tr }: { settings: Res
 function FleetAgentPanel({ fingerprint, status, saving, onSave, tr }: { fingerprint: string | null; status: { enabled: boolean; nodeId: string | null; running: boolean } | null; saving: boolean; onSave(next: { enabled: boolean; nodeId: string }): void; tr: boolean }) {
   const [enabled, setEnabled] = useState(status?.enabled ?? false);
   const [nodeId, setNodeId] = useState(status?.nodeId ?? "");
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting the local draft when the fetched status changes, same pattern as ResourceSettingsPanel above
   useEffect(() => { setEnabled(status?.enabled ?? false); setNodeId(status?.nodeId ?? ""); }, [status]);
   const dirty = enabled !== (status?.enabled ?? false) || nodeId !== (status?.nodeId ?? "");
   const [copied, setCopied] = useState(false);

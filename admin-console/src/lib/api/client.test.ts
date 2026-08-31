@@ -357,6 +357,7 @@ describe("api/client", () => {
 
         it("PUTs a quota update to the pool-scoped endpoint", async () => {
             const { poolId: _poolId, ...request } = quotaBody;
+            void _poolId; // destructured only to exclude it from `request` below
             vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, quotaBody));
             await setComputeQuota("org-1", "pool-1", request);
             const [url, init] = vi.mocked(fetch).mock.calls[0];

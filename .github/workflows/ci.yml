@@ -17,9 +17,21 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: |
+            packages/contracts/package-lock.json
             frontend/package-lock.json
             app/package-lock.json
             mastervault-mcp-server/package-lock.json
+
+      # frontend/ and app/ both depend on this via `file:../packages/contracts`
+      # (see their package.json) — `npm ci` in either just copies/symlinks
+      # whatever's on disk at packages/contracts right now, dist/ included.
+      # Only app/'s and server/'s own `npm run build` self-heal this via a
+      # `prebuild` hook; every other command here (lint, typecheck, test,
+      # frontend's own build) has no such hook and fails with "Cannot find
+      # module '@modelforge/contracts'" on a fresh checkout without this step.
+      - name: Install and build @modelforge/contracts
+        working-directory: packages/contracts
+        run: npm ci && npm run build
 
       - name: Install frontend dependencies
         working-directory: frontend
@@ -170,7 +182,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: server/package-lock.json
+          cache-dependency-path: |
+            packages/contracts/package-lock.json
+            server/package-lock.json
+
+      # server/ depends on this via `file:../packages/contracts` (see its
+      # package.json). Its own `npm run build` self-heals via a `prebuild`
+      # hook, but `npm run typecheck`/`npm test` below run first and have no
+      # such hook — see the `test` job's identical step for the full reason.
+      - name: Install and build @modelforge/contracts
+        working-directory: packages/contracts
+        run: npm ci && npm run build
 
       - name: Install server dependencies
         working-directory: server
@@ -241,9 +263,16 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: |
+            packages/contracts/package-lock.json
             frontend/package-lock.json
             app/package-lock.json
             e2e/package-lock.json
+
+      # frontend/'s own build has no prebuild hook that would do this for it
+      # — see the `test` job's identical step for the full reason.
+      - name: Install and build @modelforge/contracts
+        working-directory: packages/contracts
+        run: npm ci && npm run build
 
       - name: Install frontend dependencies
         working-directory: frontend

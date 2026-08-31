@@ -1883,6 +1883,7 @@ export default function Chat() {
     // in that case rather than blocking entry entirely.
     const [modelTotalLayers, setModelTotalLayers] = useState<number | null>(null);
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting derived state when the selected model changes
         if (parsedModel?.provider !== "llamacpp") { setModelTotalLayers(null); return; }
         let cancelled = false;
         window.api.llamacpp.getModelTotalLayers(parsedModel.modelId)

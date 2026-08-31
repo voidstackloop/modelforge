@@ -80,6 +80,7 @@ export default function Compute() {
         finally { setSavingQuota(undefined); }
     }
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional fetch-on-mount + poll, same pattern as org-context.tsx
     useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 15_000); return () => window.clearInterval(timer); }, [load]);
 
     async function transition(node: ComputeNode, state: ComputeNodeState) {

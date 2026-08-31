@@ -39,7 +39,7 @@ describe("imaging content delivery", () => {
 
     describe("CloudFrontContentDelivery", () => {
         const DOMAIN = "d111111abcdef8.cloudfront.net";
-        const KEY_PAIR_ID = "K2JCJMDEHXQW5F";
+        const KEY_PAIR_ID = "K2JCJMDEHXQW5F"; // gitleaks:allow — AWS's own public docs example key pair id
         const KEY = "org-uuid/study-uuid/series-uuid/instance-uuid.dcm";
 
         function delivery(now?: () => number) {

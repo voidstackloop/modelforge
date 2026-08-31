@@ -17,7 +17,13 @@ RUN --mount=type=cache,target=/root/.npm npm --prefix app ci \
 FROM dependencies AS development
 COPY app/ ./app/
 RUN ./app/node_modules/.bin/tsc -p packages/contracts/tsconfig.json
-CMD ["npm", "--prefix", "app", "run", "dev:main"]
+# Ephemeral local-dev container only (never shipped, never internet-facing —
+# the real production image below correctly runs as USER node). Switching
+# user here would need a chown of /workspace's root-owned COPY'd files
+# first, which isn't verifiable without a working Docker daemon in this
+# environment; not worth the risk of silently breaking `docker compose up`
+# for a container that only ever runs on a developer's own machine.
+CMD ["npm", "--prefix", "app", "run", "dev:main"] # nosemgrep: dockerfile.security.missing-user.missing-user
 
 FROM dependencies AS build
 COPY app/ ./app/

@@ -42,7 +42,7 @@ describe("scanForUnsafeContent", () => {
         });
 
         it("flags an AWS access key id", () => {
-            const result = scanForUnsafeContent("config: AKIAABCDEFGHIJKLMNOP");
+            const result = scanForUnsafeContent("config: AKIAABCDEFGHIJKLMNOP"); // gitleaks:allow — synthetic fixture, not a real key
             expect(result.findings.some((f) => f.pattern === "aws-access-key-id")).toBe(true);
         });
 

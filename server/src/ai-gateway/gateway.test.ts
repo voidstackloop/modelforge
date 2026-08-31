@@ -192,7 +192,7 @@ describe("ClinicalAiGateway", () => {
 
     describe("submitRequest — content scanning", () => {
         it("blocks a request whose selected clinical data itself contains a secret-shaped string, never reaching the provider", async () => {
-            const { gateway, input, client } = await setup({ medications: ["Lisinopril 10mg — pharmacy portal key: sk-abcdefghijklmnopqrstuvwxyz123456"] });
+            const { gateway, input, client } = await setup({ medications: ["Lisinopril 10mg — pharmacy portal key: sk-abcdefghijklmnopqrstuvwxyz123456"] }); // gitleaks:allow — synthetic fixture, not a real key
             const result = await gateway.submitRequest(input, actor());
             expect(result.outcome).toBe("content-blocked");
             if (result.outcome === "content-blocked") expect(result.findings.some((f) => f.pattern === "openai-api-key")).toBe(true);

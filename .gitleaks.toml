@@ -1,0 +1,22 @@
+# Extends gitleaks' default ruleset. Adds a narrow allowlist for specific,
+# verified-synthetic values this repo's own test fixtures and docs
+# deliberately contain (never a real credential) — see the CI workflow's
+# "security" job comment for why gitleaks scans full commit history, which
+# means a value flagged in an old commit stays flagged even after later
+# commits change the surrounding line, unless it's allowlisted here.
+#
+# Every entry below was checked by hand against the commit gitleaks reports
+# before being added: b74a2cf (compose.dev.yml, docs/IMAGING.md) and 6630c77
+# (server/src/ai-gateway/*.test.ts, server/src/imaging/content-delivery.test.ts).
+title = "modelforge gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+regexes = [
+  '''MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=''', # compose.dev.yml IMAGING_ENCRYPTION_KEY — base64 of sequential digits, dev-only
+  '''AKIAABCDEFGHIJKLMNOP''', # content-scanner.test.ts — synthetic AWS-access-key-id-shaped fixture, asserts the scanner flags it
+  '''sk-abcdefghijklmnopqrstuvwxyz123456''', # content-scanner.test.ts / gateway.test.ts — synthetic OpenAI-key-shaped fixture
+  '''K2JCJMDEHXQW5F''', # docs/IMAGING.md / content-delivery.test.ts — AWS's own public documentation example CloudFront key pair id
+]

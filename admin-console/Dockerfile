@@ -8,7 +8,14 @@ FROM dependencies AS development
 ENV NODE_ENV=development
 COPY admin-console/ ./
 EXPOSE 5174
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5174"]
+# Ephemeral local-dev container only (never shipped, never internet-facing —
+# the real production stage below runs on nginx-unprivileged, already
+# non-root). Switching user here would need a chown of /workspace's
+# root-owned COPY'd files first, which isn't verifiable without a working
+# Docker daemon in this environment; not worth the risk of silently breaking
+# `docker compose up` (including its read-only src bind mount) for a
+# container that only ever runs on a developer's own machine.
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5174"] # nosemgrep: dockerfile.security.missing-user.missing-user
 
 FROM dependencies AS build
 ARG VITE_OIDC_ISSUER

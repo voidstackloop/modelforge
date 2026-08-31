@@ -428,7 +428,7 @@ IMAGING_S3_KMS_KEY_ID=arn:aws:kms:eu-west-1:...:key/...
 IMAGING_S3_REGION=eu-west-1
 IMAGING_S3_KEY_PREFIX=            # optional
 IMAGING_CLOUDFRONT_DOMAIN=d111111abcdef8.cloudfront.net
-IMAGING_CLOUDFRONT_KEY_PAIR_ID=K2JCJMDEHXQW5F
+IMAGING_CLOUDFRONT_KEY_PAIR_ID=K2JCJMDEHXQW5F # gitleaks:allow — AWS's own public docs example key pair id
 IMAGING_CLOUDFRONT_PRIVATE_KEY=   # base64 of the PEM private key
 ```
 
