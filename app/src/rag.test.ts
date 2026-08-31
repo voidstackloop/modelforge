@@ -145,13 +145,28 @@ describe("indexFolder", () => {
     // longer exists at all, so omitting embeddingModel entirely (as every
     // caller that never explicitly configures one does) always hits this.
     it("reports a failure reason instead of silently swallowing an unavailable embedding backend", async () => {
-        const result = await indexFolder({
-            folderPath: "/test/folder-e", folderName: "folder-e",
-            files: [file({ path: "/test/folder-e/a.txt", content: "hello" })],
-        });
-        expect(result.embedded).toBe(false);
-        expect(result.error).toMatch(/unavailable/i);
-        expect(llamacpp.embed).not.toHaveBeenCalled();
+        // indexFolder acquires its resource-orchestrator lease before ever
+        // checking whether an embedding model is configured, so on a
+        // CI runner with little real spare CPU capacity the *lease
+        // acquisition itself* can fail first — masking the "unavailable
+        // embedding backend" path this test actually wants to exercise
+        // with an unrelated ResourceAdmissionError (observed on a macOS
+        // release-build runner). Bypassing real admission here isolates
+        // the test from host capacity entirely; the "resource-orchestrator
+        // integration" describe block below is where real admission is
+        // deliberately still exercised.
+        const withLeaseSpy = vi.spyOn(mainResourceOrchestrator, "withLease").mockImplementation((_request, task) => task(undefined as never));
+        try {
+            const result = await indexFolder({
+                folderPath: "/test/folder-e", folderName: "folder-e",
+                files: [file({ path: "/test/folder-e/a.txt", content: "hello" })],
+            });
+            expect(result.embedded).toBe(false);
+            expect(result.error).toMatch(/unavailable/i);
+            expect(llamacpp.embed).not.toHaveBeenCalled();
+        } finally {
+            withLeaseSpy.mockRestore();
+        }
     });
 });
 
