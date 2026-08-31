@@ -23,7 +23,11 @@ export default defineConfig({
     // that's comfortably generous locally can still time out there. Give CI
     // more headroom uniformly rather than chasing each timeout one at a time.
     expect: { timeout: process.env.CI ? 20_000 : 10_000 },
-    reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
+    // "github" surfaces the failing test's file/line/error directly as a
+    // GitHub Actions annotation — without it, a CI failure here shows up
+    // only as the job's own bare "Process completed with exit code 1",
+    // forcing a full artifact download just to find out which spec failed.
+    reporter: process.env.CI ? [["list"], ["github"], ["html", { open: "never" }]] : "list",
     use: {
         // Only kept for a run that actually failed — cheap on disk, and the
         // difference between "it broke somewhere" and "here's exactly what

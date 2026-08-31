@@ -84,9 +84,13 @@ export class PostgresComputeControlStore implements ComputeControlStore {
             const node = computeNodeSchema.parse({
                 ...existing, freeCpuThreads: Math.min(existing.cpuThreads, heartbeat.freeCpuThreads), freeRamMB: Math.min(existing.totalRamMB, heartbeat.freeRamMB),
                 devices: heartbeat.devices, inventoryVersion: heartbeat.inventoryVersion, lastHeartbeatAt: heartbeat.capturedAt,
-                state: existing.state === "offline" ? "online" : existing.state, updatedAt: heartbeat.capturedAt,
+                // Server-generated, not the agent-supplied capturedAt: updatedAt
+                // is this row's own bookkeeping timestamp, and a heartbeat's
+                // capturedAt is untrusted client input — a clock-skewed or
+                // malformed agent payload must never propagate into it.
+                state: existing.state === "offline" ? "online" : existing.state, updatedAt: this.now().toISOString(),
             });
-            await client.query("UPDATE compute_nodes SET state=$3,inventory_version=$4,last_heartbeat_at=$5,document=$6,updated_at=$5 WHERE organization_id=$1 AND id=$2", [organizationId, nodeId, node.state, node.inventoryVersion, node.lastHeartbeatAt, JSON.stringify(node)]);
+            await client.query("UPDATE compute_nodes SET state=$3,inventory_version=$4,last_heartbeat_at=$5,document=$6,updated_at=$7 WHERE organization_id=$1 AND id=$2", [organizationId, nodeId, node.state, node.inventoryVersion, node.lastHeartbeatAt, JSON.stringify(node), node.updatedAt]);
             await client.query("DELETE FROM compute_accelerator_devices WHERE organization_id=$1 AND node_id=$2", [organizationId, nodeId]);
             for (const device of node.devices) await client.query(
                 "INSERT INTO compute_accelerator_devices(id,organization_id,node_id,health,vendor,total_vram_mb,free_vram_mb,document) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",

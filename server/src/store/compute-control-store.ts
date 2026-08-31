@@ -99,7 +99,11 @@ export class InMemoryComputeControlStore implements ComputeControlStore {
             devices: clone(heartbeat.devices), inventoryVersion: heartbeat.inventoryVersion,
             lastHeartbeatAt: heartbeat.capturedAt,
             state: existing.state === "offline" ? "online" : existing.state,
-            updatedAt: heartbeat.capturedAt,
+            // Server-generated, not the agent-supplied capturedAt: updatedAt
+            // is this row's own bookkeeping timestamp, and a heartbeat's
+            // capturedAt is untrusted client input — a clock-skewed or
+            // malformed agent payload must never propagate into it.
+            updatedAt: this.iso(),
         };
         this.nodes.set(key, node);
         return clone(node);
