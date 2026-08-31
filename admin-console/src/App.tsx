@@ -19,6 +19,7 @@ import Backup from "@/pages/Backup";
 import Inference from "@/pages/Inference";
 import McpRegistry from "@/pages/McpRegistry";
 import Compute from "@/pages/Compute";
+import ComputePolicies from "@/pages/ComputePolicies";
 
 // createHashRouter, not createBrowserRouter: zero-config-safe — works from
 // any static host with no SPA-fallback rewrite rule needed. Isolated to
@@ -62,6 +63,7 @@ const router = createHashRouter([
                     { path: "inference", element: <Inference /> },
                     { path: "mcp-registry", element: <McpRegistry /> },
                     { path: "compute", element: <Compute /> },
+                    { path: "compute-policies", element: <ComputePolicies /> },
                 ],
             },
         ],

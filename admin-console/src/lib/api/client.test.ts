@@ -40,6 +40,9 @@ const {
     setMcpRegistryEntryStatus,
     getComputeQuota,
     setComputeQuota,
+    listComputePoliciesForPool,
+    createComputePolicy,
+    activateComputePolicy,
 } = await import("./client");
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -345,6 +348,33 @@ describe("api/client", () => {
             expect(String(url)).toContain("/organizations/org-1/compute/pools/pool-1/quota");
             expect(init?.method).toBe("PUT");
             expect(JSON.parse(init?.body as string)).toEqual(request);
+        });
+    });
+
+    describe("compute resource policies", () => {
+        const signed = { name: "guardrails", poolId: "pool-1", hardLimits: { maxCpuThreads: 32 }, workloadClassLimits: {}, signature: "c2ln", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-02-01T00:00:00.000Z" };
+
+        it("lists policies filtered to a pool", async () => {
+            vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, [{ id: "policy-1", ...signed, version: 1, status: "active" }]));
+            await listComputePoliciesForPool("org-1", "pool-1");
+            expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain("/organizations/org-1/compute/policies?poolId=pool-1");
+        });
+
+        it("submits an already-signed policy without modifying it", async () => {
+            vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(201, { id: "policy-1", ...signed, version: 1, status: "draft" }));
+            await createComputePolicy("org-1", signed);
+            const [url, init] = vi.mocked(fetch).mock.calls[0];
+            expect(String(url)).toContain("/organizations/org-1/compute/policies");
+            expect(init?.method).toBe("POST");
+            expect(JSON.parse(init?.body as string)).toEqual(signed);
+        });
+
+        it("activates a policy version (also the rollback path for a retired version)", async () => {
+            vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, { id: "policy-1", ...signed, version: 1, status: "active" }));
+            await activateComputePolicy("org-1", "policy-1");
+            const [url, init] = vi.mocked(fetch).mock.calls[0];
+            expect(String(url)).toContain("/organizations/org-1/compute/policies/policy-1/activate");
+            expect(init?.method).toBe("POST");
         });
     });
 });

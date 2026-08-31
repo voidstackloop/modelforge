@@ -435,7 +435,25 @@ export interface ComputeNode { id: string; name: string; region: string; state: 
 export interface ComputePool { id: string; name: string; region: string; status: "active" | "draining" | "disabled"; schedulingPolicy: string; nodeIds: string[] }
 export interface ComputeRequest { id: string; poolId: string; workloadKind: string; priority: string; profile: string; state: "queued" | "assigned" | "running" | "preempting" | "completed" | "failed" | "cancelled"; queuedAt: string }
 export interface ComputeLease { id: string; requestId: string; poolId: string; nodeId: string; acceleratorDeviceIds: string[]; cpuThreads: number; ramMB: number; fencingToken: string; state: "offered" | "acknowledged" | "running" | "released" | "expired" | "failed"; expiresAt: string; explanation: { score: number; scoreReasons: string[]; degradedToCpu: boolean; borrowedCapacity: boolean } }
-export interface ComputePolicy { id: string; name: string; poolId?: string; version: number; status: "draft" | "active" | "retired"; issuedAt: string; expiresAt: string; hardLimits: Record<string, unknown> }
+export interface ComputeResourceLimit {
+    maxCpuThreads?: number; maxRamMB?: number; maxPinnedMemoryMB?: number; maxAccelerators?: number;
+    maxVramMBPerDevice?: number; maxConcurrencyPerDevice?: number; maxTemperatureC?: number; maxPowerWatts?: number;
+    allowCpuFallback?: boolean; allowedRuntimes?: string[]; allowedModelIds?: string[];
+}
+export type ComputePriorityClass = "interactive" | "imaging" | "scheduled" | "background" | "maintenance";
+export interface ComputePolicy {
+    id: string; name: string; poolId?: string; version: number; status: "draft" | "active" | "retired";
+    issuedAt: string; expiresAt: string; hardLimits: ComputeResourceLimit;
+    workloadClassLimits: Partial<Record<ComputePriorityClass, ComputeResourceLimit>>;
+}
+/** The exact signed body POST /compute/policies expects — produced offline
+ * by server/scripts/sign-compute-policy.js, never assembled or signed in
+ * the browser (the Ed25519 private key never touches the admin console). */
+export interface SignedComputePolicyRequest {
+    name: string; poolId?: string; hardLimits: ComputeResourceLimit;
+    workloadClassLimits: Partial<Record<ComputePriorityClass, ComputeResourceLimit>>;
+    signature: string; issuedAt: string; expiresAt: string;
+}
 export interface ComputeSummary { nodes: { total: number; online: number }; capacity: { cpuThreads: number; ramMB: number; accelerators: number }; pools: number; queuedRequests: number; activeLeases: number }
 export interface ComputeQuota { poolId: string; reservedCpuThreads: number; reservedRamMB: number; reservedAccelerators: number; burstCpuThreads: number; burstRamMB: number; burstAccelerators: number; weight: number; borrowingEnabled: boolean }
 export interface SetComputeQuotaRequest { reservedCpuThreads: number; reservedRamMB: number; reservedAccelerators: number; burstCpuThreads: number; burstRamMB: number; burstAccelerators: number; weight: number; borrowingEnabled: boolean }

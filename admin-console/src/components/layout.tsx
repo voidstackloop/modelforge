@@ -131,6 +131,9 @@ export default function Layout() {
                     {allow("compute:list") && (
                         <NavItem to={`/organizations/${organizationId}/compute`} icon={<Gauge className="size-4" />} label="Compute fleet" />
                     )}
+                    {allow("compute:list") && (
+                        <NavItem to={`/organizations/${organizationId}/compute-policies`} icon={<ShieldCheck className="size-4" />} label="Compute policies" />
+                    )}
                 </aside>
                 <main className="flex-1 overflow-y-auto">
                     <Outlet />

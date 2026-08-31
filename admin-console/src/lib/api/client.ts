@@ -344,3 +344,19 @@ export const getComputeQuota = async (orgId: string, poolId: string): Promise<T.
 };
 export const setComputeQuota = (orgId: string, poolId: string, body: T.SetComputeQuotaRequest): Promise<T.ComputeQuota> =>
     authorizedRequest(`/organizations/${orgId}/compute/pools/${poolId}/quota`, { method: "PUT", body: JSON.stringify(body) }).then((r) => parseOrThrow<T.ComputeQuota>(r));
+
+export const listComputePoliciesForPool = (orgId: string, poolId: string): Promise<T.ComputePolicy[]> =>
+    authorizedRequest(`/organizations/${orgId}/compute/policies?poolId=${encodeURIComponent(poolId)}`).then((r) => parseOrThrow<T.ComputePolicy[]>(r));
+
+/** The signed body must already carry a valid Ed25519 signature produced
+ * offline by server/scripts/sign-compute-policy.js — this call never signs
+ * anything itself, and the server rejects (400/503) anything it can't
+ * verify against the organization's configured public key. */
+export const createComputePolicy = (orgId: string, body: T.SignedComputePolicyRequest): Promise<T.ComputePolicy> =>
+    authorizedRequest(`/organizations/${orgId}/compute/policies`, { method: "POST", body: JSON.stringify(body) }).then((r) => parseOrThrow<T.ComputePolicy>(r));
+
+/** Activating any retained (non-expired) earlier version is how a rollback
+ * is expressed — there is no separate rollback endpoint (see
+ * docs/COMPUTE_CONTROL_PLANE.md's "Signed resource policies" section). */
+export const activateComputePolicy = (orgId: string, policyId: string): Promise<T.ComputePolicy> =>
+    authorizedRequest(`/organizations/${orgId}/compute/policies/${policyId}/activate`, { method: "POST" }).then((r) => parseOrThrow<T.ComputePolicy>(r));
