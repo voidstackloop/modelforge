@@ -3470,6 +3470,27 @@ describe("CORS (@fastify/cors, gated on adminConsoleOrigin — see config.ts)", 
         expect(response.headers["access-control-allow-origin"]).toBe("https://admin.example-hospital.test");
     });
 
+    it("allows PUT, PATCH, and DELETE preflights — every mutating admin-console call (quota, break-glass policy, user/group/policy updates, deletes) needs these, not just GET/POST", async () => {
+        // Caught by an actual browser session against a real server, not by
+        // any prior test: @fastify/cors's own default `methods` is
+        // 'GET,HEAD,POST' only (verified directly against the installed
+        // @fastify/cors@11 package) — the one preflight test that existed
+        // before this only ever asserted a GET preflight, so a real
+        // browser's PUT-method quota save silently failed CORS while every
+        // .inject()-based integration test (which bypasses CORS entirely)
+        // stayed green.
+        const app = buildTestApp("https://admin.example-hospital.test");
+        for (const method of ["PUT", "PATCH", "DELETE"]) {
+            const response = await app.inject({
+                method: "OPTIONS",
+                url: "/me",
+                headers: { origin: "https://admin.example-hospital.test", "access-control-request-method": method, "access-control-request-headers": "authorization" },
+            });
+            expect(response.statusCode, `${method} preflight`).toBe(204);
+            expect(response.headers["access-control-allow-methods"], `${method} preflight`).toContain(method);
+        }
+    });
+
     it("never sets Access-Control-Allow-Credentials (auth here is a header, never an ambient cookie)", async () => {
         const app = buildTestApp("https://admin.example-hospital.test");
         const response = await app.inject({ method: "GET", url: "/health", headers: { origin: "https://admin.example-hospital.test" } });

@@ -295,7 +295,18 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         // do. See config.ts's adminConsoleOrigin doc comment for why this
         // is opt-in (unset = no CORS plugin at all) rather than a default
         // wildcard/allow-list.
-        fastify.register(cors, { origin: options.adminConsoleOrigin, credentials: false });
+        //
+        // methods must be explicit: @fastify/cors's own default is
+        // 'GET,HEAD,POST' only (verified directly against the installed
+        // @fastify/cors@11 package, not assumed) — every PUT/PATCH/DELETE
+        // route the admin console calls (quota, break-glass policy, user/
+        // group/policy/service-principal updates, policy/invitation
+        // deletes) would otherwise fail preflight from a real browser. This
+        // was caught by an actual browser session against a real server,
+        // not by any existing test — app.inject()-based integration tests
+        // bypass CORS entirely, and admin-console unit tests mock fetch
+        // directly, so neither exercises a real preflight.
+        fastify.register(cors, { origin: options.adminConsoleOrigin, credentials: false, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] });
     }
 
     // Routes are registered inside a nested plugin, not directly on

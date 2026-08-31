@@ -20,6 +20,7 @@ const {
     deletePolicy,
     listUsers,
     invokeBreakGlass,
+    createAccessReviewCampaign,
     decideAccessReviewItem,
     setBreakGlassPolicy,
     proposePolicyVersion,
@@ -79,6 +80,20 @@ describe("api/client", () => {
         expect(String(url)).toContain("/me");
         expect(init?.method).toBeUndefined(); // default GET
         expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer token-123");
+    });
+
+    it("never sends Content-Type: application/json on a bodyless POST — a real Fastify server 400s an empty body declared as JSON", async () => {
+        // Regression test: caught by an actual browser session against a
+        // real server, not by any test that existed before this one — every
+        // mock in this file resolves regardless of what headers were sent,
+        // so this specific bug (activateComputePolicy, and every other
+        // bodyless POST helper in this file, all silently 400ing in
+        // production) had no test coverage at all until now.
+        vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, { id: "campaign-1" }));
+        await createAccessReviewCampaign("org-1");
+        const [, init] = vi.mocked(fetch).mock.calls[0];
+        expect(init?.body).toBeUndefined();
+        expect((init?.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
     });
 
     it("sends the correct method, path, and JSON body for a POST endpoint", async () => {

@@ -41,10 +41,20 @@ async function authorizedRequest(path: string, init?: RequestInit): Promise<Resp
     }
     let response: Response;
     try {
-        response = await fetch(`${API_BASE_URL}${path}`, {
-            ...init,
-            headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${user.access_token}`, "Content-Type": "application/json" },
-        });
+        // Content-Type: application/json only when there actually is a body
+        // — sending it on a bodyless call (activateComputePolicy,
+        // createAccessReviewCampaign, verifyAiInferenceDeployment, ...)
+        // declares a JSON body that never arrives, and Fastify's body
+        // parser correctly rejects that as a 400 ("Body cannot be empty
+        // when content-type is set to 'application/json'"). Caught by an
+        // actual browser session against a real server — every call site
+        // using this helper for a bodyless POST was silently broken, and no
+        // existing test could have caught it (admin-console unit tests mock
+        // fetch directly, so they never exercise a real Content-Type/body
+        // mismatch the way an actual HTTP client does).
+        const headers: Record<string, string> = { ...(init?.headers as Record<string, string> ?? {}), Authorization: `Bearer ${user.access_token}` };
+        if (init?.body !== undefined) headers["Content-Type"] = "application/json";
+        response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
     } catch (err) {
         throw new ApiError(0, undefined, `Could not reach the admin API: ${err instanceof Error ? err.message : String(err)}`);
     }
