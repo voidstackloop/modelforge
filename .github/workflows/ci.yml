@@ -266,6 +266,7 @@ jobs:
             packages/contracts/package-lock.json
             frontend/package-lock.json
             app/package-lock.json
+            lib/package-lock.json
             e2e/package-lock.json
 
       # frontend/'s own build has no prebuild hook that would do this for it
@@ -281,6 +282,19 @@ jobs:
       - name: Install app dependencies
         working-directory: app
         run: npm ci
+
+      # Several specs (audit-sqlite-*.spec.ts, audit-backend-toggle-
+      # failure.spec.ts) exercise the Settings UI's SQLite audit-backend
+      # toggle, which stays disabled — by design, see
+      # audit-sqlite-backend-toggle.spec.ts's own comment — whenever
+      # app/native isn't present. The separate `rust` job below builds this
+      # addon too, but on its own runner with no shared filesystem, so this
+      # job needs its own debug build (faster than --release; sufficient
+      # for tests) or those specs fail with "toggle stayed disabled" every
+      # time, not a rust/napi problem of their own.
+      - name: Build native addon (napi, debug)
+        working-directory: lib
+        run: npm ci && npm run build:debug
 
       - name: Install e2e dependencies
         working-directory: e2e
