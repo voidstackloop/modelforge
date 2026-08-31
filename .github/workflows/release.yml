@@ -24,6 +24,20 @@ jobs:
         with:
           node-version: 22
 
+      # frontend/ and app/ both depend on this via `file:../packages/contracts`
+      # (see their package.json). `npm ci` in either just symlinks
+      # packages/contracts itself into their node_modules — it never builds
+      # *that* package's own dist/ output, and never installs its own
+      # dependencies (zod, typescript) either, since this repo uses plain
+      # `file:` references rather than true npm workspaces. Only app/'s own
+      # `npm run build` below self-heals via a `prebuild` hook; "Run tests"
+      # has no such hook and fails to resolve `@modelforge/contracts` at all
+      # without this step (see ci.yml's identical step for the same fix
+      # applied there first).
+      - name: Install and build @modelforge/contracts
+        working-directory: packages/contracts
+        run: npm ci && npm run build
+
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
