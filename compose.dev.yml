@@ -67,6 +67,31 @@ services:
       IMAGING_LOCAL_ROOT: /var/lib/modelforge/imaging
       # Exactly 32 bytes after base64 decoding. Development only.
       IMAGING_ENCRYPTION_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE= # gitleaks:allow — sequential digits, dev-only placeholder
+      # Opt-in S3 imaging storage against a real bucket (see
+      # infra/imaging-cdk/README.md) — unset by default, so this container
+      # stays on local-filesystem storage above unless you export real
+      # values in your own shell before `docker compose up`. Setting
+      # IMAGING_S3_BUCKET/KMS_KEY_ID/REGION (all three, or none) switches
+      # config.ts's storage-mode detection to S3; the CLOUDFRONT_* trio is
+      # separately optional on top of that. Never put real values directly
+      # in this file — compose only reads them from the host environment.
+      IMAGING_S3_BUCKET: ${IMAGING_S3_BUCKET:-}
+      IMAGING_S3_KMS_KEY_ID: ${IMAGING_S3_KMS_KEY_ID:-}
+      IMAGING_S3_REGION: ${IMAGING_S3_REGION:-}
+      IMAGING_S3_KEY_PREFIX: ${IMAGING_S3_KEY_PREFIX:-}
+      IMAGING_CLOUDFRONT_DOMAIN: ${IMAGING_CLOUDFRONT_DOMAIN:-}
+      IMAGING_CLOUDFRONT_KEY_PAIR_ID: ${IMAGING_CLOUDFRONT_KEY_PAIR_ID:-}
+      IMAGING_CLOUDFRONT_PRIVATE_KEY: ${IMAGING_CLOUDFRONT_PRIVATE_KEY:-}
+      # The AWS SDK's default credential chain (S3ImagingObjectStore's
+      # `new S3Client({ region })`, no explicit keys in code) picks these up
+      # automatically when set. Only needed in S3 mode; harmless empty
+      # otherwise. On real AWS compute (ECS/EC2/EKS), prefer an attached
+      # IAM role instead (see infra/imaging-cdk/README.md's server task
+      # role) and leave these three unset — static keys are the fallback
+      # for a plain `docker compose up` host with no AWS-native identity.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       RATE_LIMIT_MAX: "1000"
     ports:
       - "${SERVER_PORT:-4000}:4000"

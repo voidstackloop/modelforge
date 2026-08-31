@@ -50,6 +50,25 @@ services:
       TRUST_PROXY: "1"
       IMAGING_LOCAL_ROOT: /var/lib/modelforge/imaging
       IMAGING_ENCRYPTION_KEY: ${IMAGING_ENCRYPTION_KEY:?set IMAGING_ENCRYPTION_KEY}
+      # Opt-in S3 imaging storage (see infra/imaging-cdk/ and
+      # docs/IMAGING.md's "Required AWS resources") — leave unset to stay
+      # on the local-filesystem volume above. Setting IMAGING_S3_BUCKET/
+      # KMS_KEY_ID/REGION switches config.ts's storage-mode detection to
+      # S3; CLOUDFRONT_* is separately optional on top of that.
+      IMAGING_S3_BUCKET: ${IMAGING_S3_BUCKET:-}
+      IMAGING_S3_KMS_KEY_ID: ${IMAGING_S3_KMS_KEY_ID:-}
+      IMAGING_S3_REGION: ${IMAGING_S3_REGION:-}
+      IMAGING_S3_KEY_PREFIX: ${IMAGING_S3_KEY_PREFIX:-}
+      IMAGING_CLOUDFRONT_DOMAIN: ${IMAGING_CLOUDFRONT_DOMAIN:-}
+      IMAGING_CLOUDFRONT_KEY_PAIR_ID: ${IMAGING_CLOUDFRONT_KEY_PAIR_ID:-}
+      IMAGING_CLOUDFRONT_PRIVATE_KEY: ${IMAGING_CLOUDFRONT_PRIVATE_KEY:-}
+      # Only needed in S3 mode. On real AWS compute, prefer an attached IAM
+      # role instead (infra/imaging-cdk/README.md's server task role) and
+      # leave these unset — static keys are the fallback for a host with no
+      # AWS-native identity to inherit from.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       POOL_MAX: ${POOL_MAX:-20}
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
       RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}

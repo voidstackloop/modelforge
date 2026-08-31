@@ -404,6 +404,13 @@ DICOM values.
 
 ### Required AWS resources
 
+`infra/imaging-cdk/` provisions everything in the table below as one CDK
+stack — see that directory's README for the signing-key-generation step,
+deploy instructions, and how its outputs map onto the env vars in
+"Configuration" below. The table itself is still the source of truth for
+*what's* required; the stack is a direct translation of it, not an
+independent design.
+
 | Resource | Requirement |
 |---|---|
 | S3 bucket | Block Public Access fully on; versioning on; default encryption SSE-KMS with the CMK below; bucket policy allowing **only** the CloudFront distribution via Origin Access Control |

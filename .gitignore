@@ -23,6 +23,11 @@ graphify-out/
 .env.production
 /models/
 /secrets/
+infra/imaging-cdk/cdk.out/
+# The CloudFront signing key pair generated per infra/imaging-cdk/README.md
+# — the private half must never be committed; the public half doesn't need
+# to be either (each real deployment generates its own).
+infra/imaging-cdk/*.pem
 
 # Personal AI-assistant tooling state — machine-specific absolute paths and
 # per-developer config, not portable across machines or meant to be shared.

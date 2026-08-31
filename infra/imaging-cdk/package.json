@@ -1,0 +1,25 @@
+{
+    "name": "@modelforge/imaging-cdk",
+    "version": "0.1.0",
+    "private": true,
+    "description": "AWS CDK app provisioning the S3 bucket, KMS CMK, CloudFront distribution, and signing key group that docs/IMAGING.md's 'Required AWS resources' table specifies for server/'s S3ImagingObjectStore. See this directory's README.md before deploying.",
+    "type": "module",
+    "scripts": {
+        "build": "tsc",
+        "clean": "rm -rf dist cdk.out",
+        "typecheck": "tsc --noEmit",
+        "synth": "cdk synth",
+        "diff": "cdk diff",
+        "deploy": "cdk deploy"
+    },
+    "devDependencies": {
+        "@types/node": "^22.10.2",
+        "aws-cdk": "^2.1139.0",
+        "tsx": "^4.19.2",
+        "typescript": "^5.7.2"
+    },
+    "dependencies": {
+        "aws-cdk-lib": "^2.267.0",
+        "constructs": "^10.8.1"
+    }
+}
