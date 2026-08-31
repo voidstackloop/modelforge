@@ -9,7 +9,7 @@ import type {
     ResourcePool,
     TenantComputeQuota,
 } from "@modelforge/contracts";
-import type { SchedulerPlacement, SchedulerSnapshot } from "../compute/scheduler.js";
+import type { SchedulerDecision, SchedulerPlacement, SchedulerSnapshot } from "../compute/scheduler.js";
 import { type AuditActor, type AuditStore, InMemoryAuditStore } from "./audit-store.js";
 
 export type RegisterComputeNodeInput = Omit<ComputeNode, "organizationId" | "state" | "lastHeartbeatAt" | "createdAt" | "updatedAt">;
@@ -41,6 +41,14 @@ export interface ComputeControlStore {
     cancelRequest(organizationId: string, requestId: string, actor: AuditActor): Promise<ComputeResourceRequest | null>;
     getSchedulingSnapshot(organizationId: string, poolId: string, now: string): Promise<SchedulerSnapshot | null>;
     commitPlacement(organizationId: string, requestId: string, placement: SchedulerPlacement, policyVersion: number | undefined, actor: AuditActor): Promise<ComputeResourceLease | null>;
+    /** Shadow mode (see docs/COMPUTE_CONTROL_PLANE_ROLLOUT.md phase 3) — logs
+     * what the scheduler *would* have decided for a request that is never
+     * actually committed to a lease. Recorded against a real, already-
+     * persisted (and about to be cancelled) request id, since
+     * compute_allocation_events.request_id is a hard NOT NULL foreign key —
+     * there is deliberately no way to log a shadow decision without a real
+     * request row behind it. */
+    recordShadowDecision(organizationId: string, requestId: string, decision: SchedulerDecision, actor: AuditActor): Promise<void>;
 
     getLease(organizationId: string, leaseId: string): Promise<ComputeResourceLease | null>;
     listLeases(organizationId: string, filter?: { poolId?: string; nodeId?: string; state?: ComputeResourceLease["state"] }): Promise<ComputeResourceLease[]>;
@@ -182,6 +190,10 @@ export class InMemoryComputeControlStore implements ComputeControlStore {
         this.requests.set(key, updated);
         await this.audit(organizationId, actor, "computeRequest.cancelled", "computeRequest", requestId);
         return clone(updated);
+    }
+
+    async recordShadowDecision(organizationId: string, requestId: string, decision: SchedulerDecision, actor: AuditActor): Promise<void> {
+        await this.audit(organizationId, actor, "computeRequest.shadowDecision", "computeRequest", requestId, { decision });
     }
 
     async getSchedulingSnapshot(organizationId: string, poolId: string, now: string): Promise<SchedulerSnapshot | null> {

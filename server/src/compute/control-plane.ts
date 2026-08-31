@@ -15,10 +15,27 @@ export interface SubmitResult {
 export class ComputeControlPlane {
     constructor(private readonly store: ComputeControlStore, private readonly scheduler = new ComputeScheduler(), private readonly now: () => Date = () => new Date()) {}
 
-    async submit(organizationId: string, input: SubmitComputeRequestInput, actor: AuditActor, options: { allowSafePreemption?: boolean } = {}): Promise<SubmitResult> {
+    async submit(organizationId: string, input: SubmitComputeRequestInput, actor: AuditActor, options: { allowSafePreemption?: boolean; dryRun?: boolean } = {}): Promise<SubmitResult> {
         const request = await this.store.submitRequest(organizationId, input, actor);
+        if (options.dryRun) return this.submitDryRun(organizationId, request, actor, options);
         const scheduled = await this.scheduleRequest(request, actor, options);
         return { request: (await this.store.getRequest(organizationId, request.id)) ?? request, ...scheduled };
+    }
+
+    /** Computes and records what the scheduler *would* decide, without ever
+     * calling commitPlacement — no lease is created, no capacity is
+     * consumed, and no other request's admission is affected. The
+     * underlying request row still has to exist momentarily (see
+     * recordShadowDecision's own doc comment on the store interface) but is
+     * cancelled immediately after, so it never lingers in the real queue. */
+    private async submitDryRun(organizationId: string, request: ComputeResourceRequest, actor: AuditActor, options: { allowSafePreemption?: boolean }): Promise<SubmitResult> {
+        const snapshot = await this.store.getSchedulingSnapshot(organizationId, request.poolId, this.now().toISOString());
+        const decision: SchedulerDecision = snapshot
+            ? this.scheduler.schedule(request, snapshot, options)
+            : { status: "rejected", reasons: ["The selected compute pool no longer exists."] };
+        await this.store.recordShadowDecision(organizationId, request.id, decision, actor);
+        const cancelled = await this.store.cancelRequest(organizationId, request.id, actor);
+        return { request: cancelled ?? request, decision };
     }
 
     async scheduleRequest(request: ComputeResourceRequest, actor: AuditActor, options: { allowSafePreemption?: boolean } = {}): Promise<{ decision: SchedulerDecision; lease?: ComputeResourceLease }> {

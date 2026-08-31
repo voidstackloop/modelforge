@@ -12,16 +12,11 @@ This sequences docs/COMPUTE_CONTROL_PLANE.md's own mechanism — contracts, sche
 
 **Before phase 3**: enroll a small number of real nodes (a handful of workstations plus, ideally, one dedicated inference server) in one pool, and confirm heartbeats/assignments actually flow — `GET /compute/summary` should show them online, and `admin-console`'s Compute page should render them with live CPU/RAM/device telemetry.
 
-## Phase 3 — Shadow mode: a real, currently-missing feature, not just an ops step
+## Phase 3 — Shadow mode (done)
 
-The original design calls for running the scheduler in shadow mode — computing placement decisions without acting on them, to compare against whatever admission already happens today (locally, each node's own `ResourceOrchestrator` continues to decide for itself). **This does not exist in the code today.** `POST /compute/requests` always calls `ComputeControlPlane.submit()`, which schedules *and* commits a real lease (`store.commitPlacement()`) in the same call — there is no `dryRun`/observe-only flag anywhere in `submitRequestBody`, `ComputeScheduler.schedule()`, or `ComputeControlPlane`.
+`POST /compute/requests?dryRun=true` computes a real scheduler decision (`ComputeScheduler.schedule()` against the real current snapshot — same code path a committing request uses) and records it as a `compute_allocation_events` row (`event_type: "shadow_decision"`) plus a `computeRequest.shadowDecision` audit entry, but never calls `commitPlacement()` — no lease is created, no capacity or quota is consumed, and the underlying request is cancelled immediately rather than left sitting in the real queue (necessary since `compute_allocation_events.request_id` is a hard `NOT NULL` foreign key — a shadow decision has to be logged against *some* real, if immediately-cancelled, request row). Verified end-to-end, including that a real submission made right after a shadow one sees completely untouched capacity, and with a real-Postgres test proving the same holds under the actual database (`postgres-compute-control-store.test.ts`, gated on `DATABASE_URL` like every other Postgres-backed test in this repo).
 
-Shipping shadow mode for real needs:
-- A `dryRun?: boolean` field on the submit-request body and `ComputeControlPlane.submit()`'s `options`, short-circuiting before `store.commitPlacement()` and returning the scheduler's decision (`SchedulerDecision`) without ever creating a lease or consuming quota/capacity.
-- Somewhere to record dry-run decisions for later comparison against what actually happened (the simplest correct option: log them as `compute_allocation_events` rows tagged `event_type: "shadow_decision"`, reusing the existing append-only audit table rather than a new one).
-- A comparison report (even a manual one, cross-referencing shadow decisions against the timing/placement of whatever local admission actually did) before trusting the scheduler's judgment on real capacity.
-
-Until this is built, **phase 4 cannot be entered safely** — there is no way to observe the scheduler's decisions without it immediately committing real leases against real capacity. This is the one concrete blocking gap in the whole rollout sequence; everything from phase 4 onward assumes it's closed first.
+What's still manual: actually *comparing* shadow decisions against whatever local admission does in parallel is a reporting exercise, not more code — query `compute_allocation_events` for `event_type = 'shadow_decision'` and cross-reference against real placements over the same window before trusting the scheduler's judgment on real capacity.
 
 ## Phase 4 — Canary pools, no preemption or borrowing
 

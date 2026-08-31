@@ -42,4 +42,25 @@ describe("InMemoryComputeControlStore", () => {
         expect(await store.sweepExpired(now.toISOString())).toEqual([result.lease!.id]);
         expect((await store.getRequest(ORG, result.request.id))?.state).toBe("queued");
     });
+
+    it("dryRun computes a real decision, consumes no capacity, and leaves the request cancelled, not queued", async () => {
+        const now = new Date("2026-08-30T12:00:00.000Z");
+        const store = new InMemoryComputeControlStore(undefined, () => now);
+        await store.registerNode(ORG, { id: NODE, name: "cpu", region: "eu-tr", labels: {}, operatingSystem: "linux", architecture: "x64", agentVersion: "1", certificateFingerprint: "fp", cpuThreads: 8, freeCpuThreads: 7, totalRamMB: 16_000, freeRamMB: 14_000, numaNodes: 1, supportedRuntimes: ["llamacpp"], warmModelIds: [], inventoryVersion: "1", devices: [] }, actor);
+        const pool = await store.createPool(ORG, { name: "pool", region: "eu-tr", labels: {}, nodeIds: [NODE], status: "active", schedulingPolicy: "interactive-first" }, actor);
+        const control = new ComputeControlPlane(store, undefined, () => now);
+        const body = { poolId: pool.id, workloadKind: "cpu", priority: "background" as const, profile: "balanced" as const, requirements: { cpuThreads: 4, ramMB: 4_000, pinnedMemoryMB: 0, acceleratorCount: 0, acceleratorDeviceIds: [], vramMBPerDevice: 0, sameNumaNode: false, sameVendor: true, exclusiveAccelerators: false, runtime: "llamacpp" as const, allowCpuFallback: false }, checkpointable: false, restartable: false };
+
+        const shadow = await control.submit(ORG, body, actor, { dryRun: true });
+        expect(shadow.decision.status).toBe("placed");
+        expect(shadow.lease).toBeUndefined();
+        expect(shadow.request.state).toBe("cancelled");
+        expect(await store.listLeases(ORG)).toHaveLength(0);
+
+        // A real submission right after must see completely untouched
+        // capacity — the shadow decision must never have reserved anything.
+        const real = await control.submit(ORG, body, actor);
+        expect(real.decision.status).toBe("placed");
+        expect(real.lease).toBeDefined();
+    });
 });

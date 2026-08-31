@@ -152,12 +152,18 @@ export function registerComputeControlRoutes(fastify: FastifyInstance, deps: Rou
         const { organizationId } = organizationParams.parse(request.params);
         const caller = await requireOrgUser(deps, request, organizationId);
         await requirePermission(deps.store, caller, "compute:submit", `organization:${organizationId}/computeRequest:*`);
+        // Shadow mode (docs/COMPUTE_CONTROL_PLANE_ROLLOUT.md phase 3): a
+        // query flag, not a body field, since it shapes how this call is
+        // processed rather than being a property of the request itself —
+        // matches poolId/state below being query params, not body fields,
+        // for the same reason.
+        const dryRun = (request.query as { dryRun?: string }).dryRun === "true";
         const elapsed = startTimer();
-        const result = await deps.computeControlPlane.submit(organizationId, submitRequestBody.parse(request.body), actorFrom(caller), { allowSafePreemption: true });
+        const result = await deps.computeControlPlane.submit(organizationId, submitRequestBody.parse(request.body), actorFrom(caller), { allowSafePreemption: true, dryRun });
         const decisionStatus = result.decision.status;
-        computeSchedulingDecisionDuration.observe({ result: decisionStatus }, elapsed());
-        computeSchedulingDecisions.inc({ result: decisionStatus });
-        reply.code(201).send(result);
+        computeSchedulingDecisionDuration.observe({ result: dryRun ? `shadow-${decisionStatus}` : decisionStatus }, elapsed());
+        computeSchedulingDecisions.inc({ result: dryRun ? `shadow-${decisionStatus}` : decisionStatus });
+        reply.code(dryRun ? 200 : 201).send(result);
     });
 
     fastify.get("/organizations/:organizationId/compute/requests", { preHandler: deps.authPreHandler }, async (request, reply) => {

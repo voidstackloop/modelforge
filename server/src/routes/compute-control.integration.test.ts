@@ -88,6 +88,30 @@ describe("compute control routes", () => {
         expect(after.json()).toMatchObject({ poolId, weight: 3, reservedCpuThreads: 4, burstAccelerators: 2 });
     });
 
+    it("shadow mode (dryRun) computes a real placement decision without creating a lease or leaving the request queued", async () => {
+        const { poolId } = await enrollAndPool();
+        const body = {
+            poolId, workloadKind: "active-inference", priority: "interactive", profile: "interactive", checkpointable: false, restartable: false,
+            requirements: { cpuThreads: 4, ramMB: 4_096, pinnedMemoryMB: 0, acceleratorCount: 1, acceleratorDeviceIds: [], acceleratorVendor: "nvidia", vramMBPerDevice: 4_096, sameNumaNode: false, sameVendor: true, exclusiveAccelerators: true, runtime: "llamacpp", modelId: "model-4b", allowCpuFallback: false },
+        };
+
+        const dryRun = await app.inject({ method: "POST", url: `/organizations/${organizationId}/compute/requests?dryRun=true`, headers: { authorization: `Bearer ${token}` }, payload: body });
+        expect(dryRun.statusCode, dryRun.body).toBe(200);
+        expect(dryRun.json().decision.status).toBe("placed");
+        expect(dryRun.json().lease).toBeUndefined();
+        expect(dryRun.json().request.state).toBe("cancelled");
+
+        // A real (non-dry-run) request right after must still see full
+        // capacity — the shadow decision consumed nothing.
+        const real = await app.inject({ method: "POST", url: `/organizations/${organizationId}/compute/requests`, headers: { authorization: `Bearer ${token}` }, payload: body });
+        expect(real.statusCode, real.body).toBe(201);
+        expect(real.json().decision.status).toBe("placed");
+        expect(real.json().lease).toBeDefined();
+
+        const leases = await app.inject({ method: "GET", url: `/organizations/${organizationId}/compute/leases`, headers: { authorization: `Bearer ${token}` } });
+        expect(leases.json()).toHaveLength(1);
+    });
+
     it("does not expose another organization's inventory", async () => {
         await enrollAndPool();
         const otherToken = await new SignJWT({ sub: "idp|other" }).setProtectedHeader({ alg: "RS256", kid: KID }).setIssuedAt().setIssuer(ISSUER).setAudience(AUDIENCE).setExpirationTime("1h").sign(key);
