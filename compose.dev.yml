@@ -108,7 +108,7 @@ services:
       keycloak:
         condition: service_started
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:4000/health',r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 5s
       timeout: 4s
       retries: 30
@@ -145,4 +145,3 @@ volumes:
   redis-dev-data:
   keycloak-dev-data:
   imaging-dev-data:
-

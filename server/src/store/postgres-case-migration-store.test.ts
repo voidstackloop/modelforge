@@ -138,7 +138,7 @@ describe.skipIf(!DATABASE_URL)("PostgresCaseMigrationStore (integration — requ
             await repo.rollback(session.id, ACTOR);
 
             const rows = await pool.query(
-                "SELECT action FROM audit_log WHERE organization_id = $1 AND target_id = $2 ORDER BY created_at",
+                "SELECT action FROM audit_log WHERE organization_id = $1 AND target_id = $2 ORDER BY sequence::bigint",
                 [orgId, session.id]
             );
             expect(rows.rows.map((r: { action: string }) => r.action)).toEqual([

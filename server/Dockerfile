@@ -5,8 +5,13 @@ COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages
 COPY packages/contracts/src ./packages/contracts/src
 COPY server/package.json server/package-lock.json ./server/
 COPY server/vendor ./server/vendor
+# npm copies file: dependencies inside container builds. Point the server at
+# the workspace package so the development-stage contract build below is the
+# exact code imported by tsx, not a stale copy captured before that build ran.
 RUN --mount=type=cache,target=/root/.npm \
     npm --prefix server ci \
+    && rm -rf server/node_modules/@modelforge/contracts \
+    && ln -s ../../../packages/contracts server/node_modules/@modelforge/contracts \
     && ln -s ../../server/node_modules packages/contracts/node_modules
 
 FROM dependencies AS development
