@@ -1,11 +1,32 @@
 *node_modules/
+*dist/
 app/dist/
 app/release/
 app/native/
 frontend/dist/
+admin-console/dist/
+server/dist
+packages/contracts/dist
+packages/server/dist/
 lib/target/
 e2e/test-results/
 e2e/playwright-report/
 graphify-out/
 **/__pycache__/
 *.pyc
+.env
+.env.*
+!.env.example
+!.env.*.example
+!**/.env.example
+!**/.env.*.example
+.env.production
+/models/
+/secrets/
+
+# Personal AI-assistant tooling state — machine-specific absolute paths and
+# per-developer config, not portable across machines or meant to be shared.
+/.claude/
+/.codex/
+/.agents/
+app/tsconfig.tsbuildinfo
