@@ -1,0 +1,7 @@
+{
+  "name": "adm-zip",
+  "version": "0.0.0-modelforge-disabled",
+  "private": true,
+  "main": "index.js",
+  "description": "Fail-closed replacement: archive handling is not used by ModelForge's dcmjs Part 10 read/write path."
+}

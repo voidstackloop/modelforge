@@ -1,0 +1,201 @@
+{
+  "title": "ModelForge Medical — Server SLOs",
+  "description": "Dashboard-as-code for server/src/metrics.ts's Prometheus exposition (GET /metrics). Panels are wired directly to docs/ENTERPRISE_ARCHITECTURE_ROADMAP.md §17's provisional production objectives — see docs/OBSERVABILITY.md for what's implemented vs. what still needs a real Prometheus/Grafana deployment and alerting policy (both infra/operator decisions, not something this repo can provision on its own).",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "utc",
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "tags": ["modelforge", "server", "slo"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Prometheus"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "HTTP request rate by route",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(modelforge_http_request_duration_seconds_count[5m])) by (route, method)",
+          "legendFormat": "{{method}} {{route}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "title": "HTTP p95 latency by route",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(modelforge_http_request_duration_seconds_bucket[5m])) by (le, route))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "title": "HTTP 5xx rate by route",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(modelforge_http_request_duration_seconds_count{status_code=~\"5..\"}[5m])) by (route)",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "thresholdsStyle": { "mode": "line" } }, "thresholds": { "steps": [{ "value": 0, "color": "green" }, { "value": 0.1, "color": "red" }] } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Authorization decision latency (p95) — objective: <= 100ms",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(modelforge_authz_decision_duration_seconds_bucket[5m])) by (le, effect))",
+          "legendFormat": "{{effect}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "steps": [{ "value": 0, "color": "green" }, { "value": 0.1, "color": "red" }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Case/session read latency (p95) — objective: <= 300ms",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(modelforge_http_request_duration_seconds_bucket{method=\"GET\", route=~\"/organizations/:organizationId/(cases|sessions).*\"}[15m])) by (le))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [{ "value": 0, "color": "green" }, { "value": 0.3, "color": "red" }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Case/session write latency (p95) — objective: <= 500ms",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 16 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(modelforge_http_request_duration_seconds_bucket{method=~\"POST|PATCH|DELETE\", route=~\"/organizations/:organizationId/(cases|sessions).*\"}[15m])) by (le))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [{ "value": 0, "color": "green" }, { "value": 0.5, "color": "red" }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Audit write outcome rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(modelforge_audit_write_total[5m])) by (outcome)", "legendFormat": "{{outcome}}" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "failure" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "title": "Audit write duration (p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(modelforge_audit_write_duration_seconds_bucket[5m])) by (le))" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 9,
+      "title": "Authorization cache hit ratio by cache",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "description": "modelforge_authorization_cache_stat is a Gauge snapshotted from an already-cumulative in-process counter (see metrics.ts) — rate() over it is still valid, the same way rate() works on any monotonically-increasing series regardless of Prometheus metric type.",
+      "targets": [
+        {
+          "expr": "sum(rate(modelforge_authorization_cache_stat{stat=\"hits\"}[5m])) by (cache) / (sum(rate(modelforge_authorization_cache_stat{stat=\"hits\"}[5m])) by (cache) + sum(rate(modelforge_authorization_cache_stat{stat=\"misses\"}[5m])) by (cache))",
+          "legendFormat": "{{cache}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] }
+    },
+    {
+      "id": 10,
+      "title": "Authorization cache degraded (Redis outage indicator)",
+      "type": "state-timeline",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 30 },
+      "description": "Non-zero means this cache is bypassing reads/writes and serving degraded — see the metric's own HELP text and docs/ENTERPRISE_ARCHITECTURE_ROADMAP.md's 'Redis failure can leave stale grants' risk. This is an operator signal, not the safety mechanism itself: the authorization-epoch check (migration 004) is what actually keeps stale-cache reads safe regardless of what this panel shows.",
+      "targets": [{ "expr": "modelforge_authorization_cache_degraded", "legendFormat": "{{cache}}" }],
+      "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "id": 11,
+      "title": "Process CPU / memory",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 30 },
+      "targets": [
+        { "expr": "rate(process_cpu_user_seconds_total[5m]) + rate(process_cpu_system_seconds_total[5m])", "legendFormat": "cpu" },
+        { "expr": "process_resident_memory_bytes", "legendFormat": "rss" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "id": 12,
+      "title": "Event loop lag (p99)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 36 },
+      "description": "From prom-client's collectDefaultMetrics (Node.js runtime metrics) — sustained lag here means the event loop is blocked long enough to delay every in-flight request, independent of what the HTTP-latency panels above show per route.",
+      "targets": [{ "expr": "nodejs_eventloop_lag_p99_seconds" }],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    }
+  ]
+}
