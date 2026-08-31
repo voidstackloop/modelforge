@@ -19,7 +19,9 @@
     "build": "tsc",
     "build:bundled": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist-bundled/index.js --banner:js=\"import { createRequire as __mvCreateRequire } from 'node:module'; const require = __mvCreateRequire(import.meta.url);\"",
     "clean": "rm -rf dist dist-bundled",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "engines": {
     "node": ">=18"
@@ -33,6 +35,7 @@
     "@types/node": "^22.10.0",
     "esbuild": "^0.24.2",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
   }
 }

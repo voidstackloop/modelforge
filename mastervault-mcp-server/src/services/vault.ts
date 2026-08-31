@@ -129,6 +129,25 @@ export class VaultService {
     return path.relative(this.vaultRoot, absPath).split(path.sep).join("/");
   }
 
+  /**
+   * Boolean sibling of assertRealPathInside, for filtering during a
+   * recursive walk (search) rather than rejecting the whole operation — one
+   * escaping symlink encountered mid-walk should be silently skipped, not
+   * abort every other file's search results. `read()`/`list()`/etc. already
+   * guard their own single target the same way `assertRealPathInside`
+   * always has; `walk()` below is the equivalent guard for every path a
+   * recursive search visits, file or directory.
+   */
+  private async isRealPathInside(absPath: string): Promise<boolean> {
+    try {
+      const real = await fs.realpath(absPath);
+      const rel = path.relative(this.vaultRoot, real);
+      return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+    } catch {
+      return false;
+    }
+  }
+
   /** Read a text file, optionally by 1-indexed inclusive line range. */
   async read(
     relPath: string,
@@ -209,7 +228,13 @@ export class VaultService {
     };
   }
 
-  /** Recursively collect text-file paths under a directory (vault-relative). */
+  /** Recursively collect text-file paths under a directory (vault-relative).
+   *  Every entry — directory or file — is realpath-checked before being
+   *  descended into or collected, so a symlink placed inside the vault
+   *  (e.g. by an external sync tool, not by this server) that resolves
+   *  outside it can never be traversed or read through search(), the same
+   *  guarantee every other VaultService method already gives its own
+   *  single target. */
   private async walk(absDir: string, acc: string[]): Promise<void> {
     let dirents;
     try {
@@ -220,9 +245,13 @@ export class VaultService {
     for (const d of dirents) {
       const childAbs = path.join(absDir, d.name);
       if (d.isDirectory()) {
-        await this.walk(childAbs, acc);
+        if (await this.isRealPathInside(childAbs)) {
+          await this.walk(childAbs, acc);
+        }
       } else if (TEXT_EXTENSIONS.has(path.extname(d.name).toLowerCase())) {
-        acc.push(childAbs);
+        if (await this.isRealPathInside(childAbs)) {
+          acc.push(childAbs);
+        }
       }
     }
   }
