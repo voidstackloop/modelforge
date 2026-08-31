@@ -6,7 +6,6 @@ export interface CuratedModel {
 }
 
 export const PROVIDER_LABELS: Record<ProviderId, string> = {
-    ollama: "Ollama (local)",
     openai: "ChatGPT",
     anthropic: "Claude",
     llamacpp: "llama.cpp (local)",
@@ -18,7 +17,15 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = {
 };
 
 // Providers that run models on this machine — no API key, no per-token cost.
-export const LOCAL_PROVIDERS: ProviderId[] = ["ollama", "llamacpp", "mlx", "rocm", "vllm"];
+export const LOCAL_PROVIDERS: ProviderId[] = ["llamacpp", "mlx", "rocm", "vllm"];
+
+// Manual GPU-layer-count input's ceiling wherever the selected model's real
+// layer count isn't known (no model selected yet, or the backend's
+// getModelTotalLayers lookup hasn't resolved/failed) — the largest published
+// open-weight GGUF architectures today have well under 200 transformer
+// blocks, so this is a generous "can't be infinite" backstop, not a tuned
+// value; once a real per-model count resolves it replaces this entirely.
+export const GPU_LAYERS_FALLBACK_MAX = 999;
 
 // Curated as of this app's last update — model lineups change often, so the
 // model picker also lets you type a custom model ID directly.
@@ -63,10 +70,10 @@ export const CUSTOM_PROVIDER_PRESETS: CustomProviderPreset[] = [
     { name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", modelIds: ["openai/gpt-5", "anthropic/claude-sonnet-5"] },
 ];
 
-// Sessions store a single "model" string; encode the provider into it since
-// Ollama model names already contain colons (e.g. "llama3.1:8b"). Custom
-// providers encode a second identifier (which configured endpoint) ahead of
-// the actual model id — see formatCustomModelRef.
+// Sessions store a single "model" string; encode the provider into it as a
+// single-colon-separated ref. Custom providers encode a second identifier
+// (which configured endpoint) ahead of the actual model id — see
+// formatCustomModelRef.
 export function formatModelRef(provider: ProviderId, modelId: string): string {
     return `${provider}:${modelId}`;
 }
@@ -83,7 +90,7 @@ export function parseCustomModelId(modelId: string): { customProviderId: string;
     return { customProviderId: modelId.slice(0, sep), actualModel: modelId.slice(sep + 2) };
 }
 
-const VALID_PROVIDERS: ProviderId[] = ["ollama", "openai", "anthropic", "llamacpp", "gemini", "custom", "mlx", "rocm", "vllm"];
+const VALID_PROVIDERS: ProviderId[] = ["openai", "anthropic", "llamacpp", "gemini", "custom", "mlx", "rocm", "vllm"];
 
 export function parseModelRef(ref: string): { provider: ProviderId; modelId: string } | null {
     const sepIndex = ref.indexOf(":");
@@ -91,4 +98,20 @@ export function parseModelRef(ref: string): { provider: ProviderId; modelId: str
     const provider = ref.slice(0, sepIndex) as ProviderId;
     if (!VALID_PROVIDERS.includes(provider)) return null;
     return { provider, modelId: ref.slice(sepIndex + 1) };
+}
+
+/**
+ * Resolves the identity used to render one assistant response. New messages
+ * carry an immutable model ref; the picker value is only a compatibility
+ * fallback for sessions saved before response-level attribution existed.
+ */
+export function resolveResponseModel(
+    responseModelRef: string | undefined,
+    fallbackProvider: ProviderId | undefined,
+    fallbackModelId: string | undefined
+): { provider: ProviderId; modelId: string } | null {
+    const attributed = responseModelRef ? parseModelRef(responseModelRef) : null;
+    if (attributed) return attributed;
+    if (!fallbackProvider || fallbackModelId === undefined) return null;
+    return { provider: fallbackProvider, modelId: fallbackModelId };
 }

@@ -55,7 +55,7 @@ import { TerminalPanel } from "@/components/terminal-panel";
 import { cn } from "@/lib/utils";
 import { useSessions } from "@/lib/sessions-context";
 import { useI18n } from "@/lib/i18n";
-import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, LOCAL_PROVIDERS, PROVIDER_LABELS, formatModelRef, formatCustomModelRef, parseModelRef } from "@/lib/providers";
+import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, LOCAL_PROVIDERS, PROVIDER_LABELS, GPU_LAYERS_FALLBACK_MAX, formatModelRef, formatCustomModelRef, parseModelRef, resolveResponseModel } from "@/lib/providers";
 import { estimateCost, formatCost } from "@/lib/pricing";
 import { extractVariables, fillTemplate } from "@/lib/prompt-templates";
 import { PromptVariableDialog } from "@/components/prompt-variable-dialog";
@@ -71,6 +71,7 @@ import {
     CLINICAL_MODES,
     type ClinicalModeKey,
     CLINICAL_RESPONSE_CONTRACT,
+    checkResponseContractCompliance,
 } from "@/lib/clinical-constants";
 import {
     COMPACTION_BUDGET_TOKENS,
@@ -83,7 +84,6 @@ import {
 } from "@/lib/context-compaction";
 import type {
     ChatMessage,
-    OllamaModel,
     AppSettings,
     AttachedFile,
     ImageAttachment,
@@ -252,6 +252,28 @@ function CitationCheckNotice({ content, knownSourceIds }: { content: string; kno
     );
 }
 
+// Deterministic, non-model check (see clinical-constants.ts) — the system
+// prompt instructs every clinically relevant answer to include all eight
+// contract sections, but a prompt instruction is not a guarantee (same
+// reasoning as the emergency banner and CitationCheckNotice above). This
+// flags a response that clearly attempted the structured format but
+// silently dropped one or more required sections, rather than leaving that
+// omission to go unnoticed in a long answer.
+function ResponseContractNotice({ content }: { content: string }) {
+    const result = useMemo(() => checkResponseContractCompliance(content), [content]);
+    if (!result.applicable || result.missingSections.length === 0) return null;
+
+    return (
+        <div className="mt-1 flex max-w-[82%] items-start gap-1.5 rounded-md bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning sm:max-w-[75%]">
+            <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+            <span>
+                Missing required section{result.missingSections.length > 1 ? "s" : ""}:{" "}
+                {result.missingSections.map((s) => s.replace(/^\d+\.\s*/, "")).join(", ")}. Verify independently before relying on this.
+            </span>
+        </div>
+    );
+}
+
 // Memoized so a token arriving mid-stream (which only replaces the last
 // message in the array) doesn't force every prior message — including its
 // markdown parse/highlight pass — to re-render on every chunk. `message`
@@ -275,6 +297,11 @@ const MessageBubble = memo(function MessageBubble({
     knownSourceIds,
 }: MessageBubbleProps) {
     const { t } = useI18n();
+    const attributedModel = m.role === "assistant" && m.model ? parseModelRef(m.model) : null;
+    const responseModel = resolveResponseModel(m.role === "assistant" ? m.model : undefined, provider, modelId);
+    const usageProvider = responseModel?.provider;
+    const usageModelId = responseModel?.modelId;
+    const attributedModelLabel = attributedModel?.modelId.split(/[\\/]/).pop() ?? attributedModel?.modelId;
 
     if (m.role === "tool") {
         if (m.isVerification) {
@@ -342,6 +369,14 @@ const MessageBubble = memo(function MessageBubble({
                             {m.role === "user" ? <span className="text-[9px] font-bold">Y</span> : <Bot className="size-3" />}
                         </span>
                         {m.role === "user" ? t.you : t.assistant}
+                        {attributedModel && (
+                            <span
+                                className="max-w-52 truncate rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground"
+                                title={`${PROVIDER_LABELS[attributedModel.provider]} · ${attributedModel.modelId}`}
+                            >
+                                {attributedModelLabel}
+                            </span>
+                        )}
                         {m.role === "assistant" && m.content && (
                             <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning" title="AI-generated — not clinically verified. Confirm independently before acting.">
                                 Not verified
@@ -392,7 +427,10 @@ const MessageBubble = memo(function MessageBubble({
                 </div>
             )}
             {m.role === "assistant" && m.content && !(isStreaming && isLastAssistant) && (
-                <CitationCheckNotice content={m.content} knownSourceIds={knownSourceIds} />
+                <>
+                    <CitationCheckNotice content={m.content} knownSourceIds={knownSourceIds} />
+                    <ResponseContractNotice content={m.content} />
+                </>
             )}
             <div className="mt-1 flex gap-1 opacity-45 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                 <button
@@ -450,7 +488,7 @@ const MessageBubble = memo(function MessageBubble({
                 )}
                 {m.role === "assistant" && m.usage && (
                     <span className="self-center px-1 text-xs text-muted-foreground">
-                        {formatUsage(m.usage, provider, modelId)}
+                        {formatUsage(m.usage, usageProvider, usageModelId)}
                     </span>
                 )}
             </div>
@@ -493,8 +531,6 @@ export default function Chat() {
     const { t } = useI18n();
     const toast = useToast();
 
-    const [models, setModels] = useState<OllamaModel[]>([]);
-    const [ollamaRunning, setOllamaRunning] = useState<boolean | null>(null);
     const [llamaCppModels, setLlamaCppModels] = useState<LocalGgufModel[]>([]);
     const [model, setModel] = useState<string>("");
     const [pendingCustomProvider, setPendingCustomProvider] = useState<ProviderId | null>(null);
@@ -518,6 +554,10 @@ export default function Chat() {
     const [indexingFolder, setIndexingFolder] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
     const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
+    // React state updates are asynchronous. This ref closes the small window
+    // between starting a request and the next render so a model-picker event
+    // cannot retarget the header while that request is being established.
+    const generationActiveRef = useRef(false);
     // Evidence Library titles, treated as "known sources" for the citation
     // check below — fetched once and kept loosely in sync, not on every
     // keystroke, since this only feeds a best-effort UI nudge, not a hard gate.
@@ -614,11 +654,19 @@ export default function Chat() {
             const trusted = trustedMcpToolNames(s.mcpServers ?? []);
             if (trusted.length > 0) setAutoApprovedTools((prev) => new Set([...prev, ...trusted]));
         });
-        window.api.ollama.listModels().then(setModels);
         window.api.llamacpp.listModels().then(setLlamaCppModels);
-        window.api.patientCases.list().then((cases) => setAvailableCases(cases.map((c) => ({ id: c.id, title: c.title }))));
+        window.api.patientCases
+            .list()
+            .then((cases) => setAvailableCases(cases.map((c) => ({ id: c.id, title: c.title }))))
+            .catch((err) => {
+                // Left uncaught, "attach a case" simply never appears —
+                // indistinguishable from "you have no cases," when the
+                // real cause could be encryption locked or a shared
+                // backend being unreachable.
+                toast.error(`Couldn't load patient cases to attach: ${(err as Error).message}`);
+            });
         window.api.mcp.status().then(setMcpStatuses);
-    }, [hasApi]);
+    }, [hasApi, toast]);
 
     useEffect(() => {
         if (!hasApi || !agentWorkspace) {
@@ -649,46 +697,50 @@ export default function Chat() {
         })();
     }, [agentWorkspace, pendingToolCalls, writeDiffPreviews]);
 
-    // Only checked while an Ollama model is selected — the banner's render
-    // condition also gates on the provider, so a stale value from a previous
-    // Ollama selection can never show for a cloud model.
-    useEffect(() => {
-        if (!hasApi || parseModelRef(model)?.provider !== "ollama") return;
-        window.api.ollama.status().then(setOllamaRunning);
-    }, [hasApi, model]);
-
     useEffect(() => {
         if (!hasApi || !sessionId) return;
-        window.api.sessions.get(sessionId).then((session) => {
-            if (!session) return;
-            setMessages(session.messages);
-            if (session.model) setModel(session.model);
-            setParams(session.params ?? {});
-            setSessionSystemPrompt(session.systemPrompt ?? null);
-            setAgentMode(session.agentMode ?? false);
-            closeWorkspaceIfChanged(session.agentWorkspace ?? null);
-            setAgentWorkspace(session.agentWorkspace ?? null);
-            setPendingToolCalls([]);
-            setAgentStepCount(0);
-            setVerificationAttempt(0);
-            setPlanSteps(session.planSteps ?? []);
-            setContextSummary(session.contextSummary ?? null);
-            setContextSummaryThroughIndex(session.contextSummaryThroughIndex ?? 0);
-            setRenderLimit(RENDER_WINDOW_SIZE);
-            setAutoApprovedTools(new Set());
-            setWriteDiffPreviews({});
-            setUndoMessage(null);
-            setAutoScroll(true);
-            setShowScrollButton(false);
-        });
-    }, [hasApi, sessionId]);
+        window.api.sessions
+            .get(sessionId)
+            .then((session) => {
+                if (!session) return;
+                setMessages(session.messages);
+                if (session.model) setModel(session.model);
+                setParams(session.params ?? {});
+                setSessionSystemPrompt(session.systemPrompt ?? null);
+                setAgentMode(session.agentMode ?? false);
+                closeWorkspaceIfChanged(session.agentWorkspace ?? null);
+                setAgentWorkspace(session.agentWorkspace ?? null);
+                setPendingToolCalls([]);
+                setAgentStepCount(0);
+                setVerificationAttempt(0);
+                setPlanSteps(session.planSteps ?? []);
+                setContextSummary(session.contextSummary ?? null);
+                setContextSummaryThroughIndex(session.contextSummaryThroughIndex ?? 0);
+                setRenderLimit(RENDER_WINDOW_SIZE);
+                setAutoApprovedTools(new Set());
+                setWriteDiffPreviews({});
+                setUndoMessage(null);
+                setAutoScroll(true);
+                setShowScrollButton(false);
+            })
+            .catch((err) => {
+                // Left uncaught, this silently leaves whatever was already
+                // on screen (a previous session's messages, or the initial
+                // empty-chat state) — indistinguishable from a genuine new
+                // conversation. A clinician deep-linked to an existing
+                // chat that failed to load (encryption locked, a corrupted
+                // session file) needs to see that it failed, not a chat
+                // pane that looks empty-but-fine.
+                toast.error(`Couldn't load this chat: ${(err as Error).message}`);
+            });
+    }, [hasApi, sessionId, toast]);
 
     useEffect(() => {
         // Intentional: seeds the model once models/settings finish loading, without
         // clobbering a value the user (or the loaded session) already set.
         // eslint-disable-next-line react-hooks/set-state-in-effect
-        setModel((current) => current || settings?.defaultModel || (models[0] ? formatModelRef("ollama", models[0].name) : ""));
-    }, [models, settings]);
+        setModel((current) => current || settings?.defaultModel || (llamaCppModels[0] ? formatModelRef("llamacpp", llamaCppModels[0].name) : ""));
+    }, [llamaCppModels, settings]);
 
     useEffect(() => {
         if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -732,7 +784,7 @@ export default function Chat() {
     }, [isStreaming, activeRequestId]);
 
     function handleModelChange(value: string | null) {
-        if (!value) return;
+        if (!value || generationActiveRef.current || pendingToolCalls.length > 0) return;
         const parsed = parseModelRef(value);
         if (parsed && parsed.modelId === CUSTOM_SENTINEL) {
             setPendingCustomProvider(parsed.provider);
@@ -740,6 +792,7 @@ export default function Chat() {
             return;
         }
         setModel(value);
+        if (sessionId) window.api.sessions.update(sessionId, { model: value });
     }
 
     function updateParam(partial: Partial<ChatOptions>) {
@@ -812,8 +865,10 @@ export default function Chat() {
 
     function confirmCustomModel() {
         const id = customModelInput.trim();
-        if (pendingCustomProvider && id) {
-            setModel(formatModelRef(pendingCustomProvider, id));
+        if (!generationActiveRef.current && pendingToolCalls.length === 0 && pendingCustomProvider && id) {
+            const value = formatModelRef(pendingCustomProvider, id);
+            setModel(value);
+            if (sessionId) window.api.sessions.update(sessionId, { model: value });
         }
         setPendingCustomProvider(null);
         setCustomModelInput("");
@@ -923,9 +978,18 @@ export default function Chat() {
         const totalChars = result.files.reduce((sum, f) => sum + f.content.length, 0);
         if (totalChars > RAG_THRESHOLD_CHARS) {
             setIndexingFolder(true);
-            const indexResult = await window.api.rag.indexFolder({
-                folderPath: result.folderPath, folderName: result.folderName, files: result.files,
-            });
+            let indexResult;
+            try {
+                indexResult = await window.api.rag.indexFolder({
+                    folderPath: result.folderPath, folderName: result.folderName, files: result.files,
+                });
+            } catch {
+                // See the matching catch in handleSend's queryRagFolders call
+                // — rag-db.ts's content encryption is the most likely cause.
+                setIndexingFolder(false);
+                toast.error("Couldn't index this folder — if case data encryption is enabled, make sure it's unlocked in Patient Cases.");
+                return;
+            }
             setIndexingFolder(false);
             if (indexResult.embedded) {
                 setRagFolders((prev) => [
@@ -992,30 +1056,48 @@ export default function Chat() {
         };
     }
 
+    // JSON export is encrypted automatically (same passphrase already
+    // protecting this chat's storage) when case encryption is enabled — see
+    // data-transfer.ts. A locked or mismatched-passphrase state surfaces here
+    // as a rejected promise; the message on CaseDataLockedError /
+    // EncryptedExportUnreadableError is already written for a user to read
+    // directly; other stores' locked-state toasts follow the same pattern.
     async function handleExportChat() {
-        if (sessionId) await window.api.data.exportSession(sessionId);
+        if (!sessionId) return;
+        try {
+            await window.api.data.exportSession(sessionId);
+        } catch (err) {
+            toast.error((err as Error).message);
+        }
     }
 
+    // Markdown is a deliberately plaintext, human-readable format — it can't
+    // be encrypted without defeating the point of exporting it as Markdown at
+    // all. So instead of silently writing case-protected content in the
+    // clear, warn visibly and let the user decide when case encryption is on.
     async function handleExportChatMarkdown() {
-        if (sessionId) await window.api.data.exportSessionMarkdown(sessionId);
+        if (!sessionId) return;
+        try {
+            const status = await window.api.encryption.status();
+            if (status.enabled && !confirm("Case encryption is enabled, but Markdown export is always plain text. Export this chat as an unencrypted .md file?")) {
+                return;
+            }
+            await window.api.data.exportSessionMarkdown(sessionId);
+        } catch (err) {
+            toast.error((err as Error).message);
+        }
     }
 
     async function handleCopyChatMarkdown() {
         if (!sessionId) return;
-        const markdown = await window.api.data.getSessionMarkdown(sessionId);
-        if (markdown) {
-            await navigator.clipboard.writeText(markdown);
-            toast.success(t.copiedAsMarkdown);
-        }
-    }
-
-    async function startOllamaFromBanner() {
-        const result = await window.api.ollama.start();
-        setOllamaRunning(!result.error);
-        if (result.error === "not-installed") {
-            toast.error(t.toastOllamaNotInstalled);
-        } else if (result.error) {
-            toast.error(`${t.toastOllamaStartFailed}: ${result.error}`);
+        try {
+            const markdown = await window.api.data.getSessionMarkdown(sessionId);
+            if (markdown) {
+                await navigator.clipboard.writeText(markdown);
+                toast.success(t.copiedAsMarkdown);
+            }
+        } catch (err) {
+            toast.error((err as Error).message);
         }
     }
 
@@ -1079,10 +1161,15 @@ export default function Chat() {
     async function runCompletion(
         history: ChatMessage[],
         baseMessages: ChatMessage[],
-        opts: { isFirstMessage: boolean; titleSource: string; attempt?: number }
+        opts: { isFirstMessage: boolean; titleSource: string; modelRef: string; attempt?: number }
     ) {
-        const parsed = parseModelRef(model);
+        // Never re-read the mutable picker state here. handleSend snapshots
+        // the model before any asynchronous safety/RAG preflight, so the
+        // request, its UI attribution, and the saved session all agree even
+        // if another event changes the picker before generation begins.
+        const parsed = parseModelRef(opts.modelRef);
         if (!parsed || !sessionId) return;
+        generationActiveRef.current = true;
 
         const compactedHistory = await maybeCompactHistory(baseMessages);
         const requestHistory = compactedHistory ?? history;
@@ -1093,7 +1180,7 @@ export default function Chat() {
         // eslint-disable-next-line react-hooks/purity
         const streamStartedAt = Date.now();
 
-        setMessages([...baseMessages, { role: "assistant", content: "" }]);
+        setMessages([...baseMessages, { role: "assistant", content: "", model: opts.modelRef }]);
         setIsStreaming(true);
         // Called directly (not via a useEffect) so it still fires even if this
         // component unmounts mid-stream — e.g. the user navigates to Settings
@@ -1124,6 +1211,7 @@ export default function Chat() {
                 next[next.length - 1] = {
                     role: "assistant",
                     content: last.content + text,
+                    model: last.model ?? opts.modelRef,
                     usage: usage
                         ? {
                               promptTokens: usage.promptTokens ?? last.usage?.promptTokens,
@@ -1153,7 +1241,8 @@ export default function Chat() {
                 if (chunk.toolCalls) pendingToolCalls.push(...chunk.toolCalls);
                 scheduleFlush();
             },
-            agentMode && !!agentWorkspace
+            agentMode && !!agentWorkspace,
+            sessionId
         );
         setActiveRequestId(requestId);
         const result = await promise;
@@ -1176,12 +1265,18 @@ export default function Chat() {
         if (result.error) {
             setMessages((m) => {
                 const next = [...m];
-                next[next.length - 1] = { role: "assistant", content: `⚠️ ${result.error}` };
+                next[next.length - 1] = {
+                    role: "assistant",
+                    content: `⚠️ ${result.error}`,
+                    model: opts.modelRef,
+                    excludedFromContext: true,
+                };
                 return next;
             });
         }
 
         setIsStreaming(false);
+        generationActiveRef.current = false;
         window.api.app.setBusy(false);
         setMessages((finalMessages) => {
             const last = finalMessages[finalMessages.length - 1];
@@ -1220,7 +1315,7 @@ export default function Chat() {
             window.api.sessions
                 .update(sessionId, {
                     messages: finalMessages,
-                    model,
+                    model: opts.modelRef,
                     params,
                     ...(opts.isFirstMessage ? { title: deriveTitle(opts.titleSource) } : {}),
                 })
@@ -1299,7 +1394,9 @@ export default function Chat() {
         }
         setAgentStepCount((c) => c + 1);
         const history: ChatMessage[] = [...buildSystemMessages(), ...updatedMessages];
-        runCompletion(history, updatedMessages, { isFirstMessage: false, titleSource: "" });
+        const turnModelRef =
+            [...updatedMessages].reverse().find((message) => message.role === "assistant" && message.model)?.model ?? model;
+        runCompletion(history, updatedMessages, { isFirstMessage: false, titleSource: "", modelRef: turnModelRef });
     }
 
     function alwaysAllowTool(call: ToolCall) {
@@ -1519,7 +1616,8 @@ export default function Chat() {
 
     async function handleSend() {
         const text = input.trim();
-        const parsed = parseModelRef(model);
+        const requestModelRef = model;
+        const parsed = parseModelRef(requestModelRef);
         const hasAnything =
             text || attachments.length > 0 || ragFolders.length > 0 || imageAttachments.length > 0;
         if (!hasAnything || !parsed || isStreaming || !sessionId || pendingToolCalls.length > 0) {
@@ -1559,7 +1657,22 @@ export default function Chat() {
             }
         }
 
-        const { content: ragContent, citations } = await queryRagFolders(text);
+        // rag-db.ts encrypts indexed folder content at rest under the same
+        // passphrase as Patient Cases/chat sessions (see case-encryption.ts)
+        // — the most likely cause of a query failure here is that it's
+        // locked. Aborting the send rather than silently dropping the RAG
+        // context the user attached: a message sent without content they
+        // explicitly attached would look successful while quietly
+        // answering a different question than the one asked.
+        const ragResult = await queryRagFolders(text).catch(() => null);
+        if (ragResult === null) {
+            // queryRagFolders() only ever calls the (rejectable) IPC query
+            // at all when ragFolders is non-empty — null here always means a
+            // real failure, never "nothing attached".
+            toast.error("Couldn't read attached folder content — if case data encryption is enabled, make sure it's unlocked in Patient Cases.");
+            return;
+        }
+        const { content: ragContent, citations } = ragResult;
         const withCase = caseContextBlock ? `${caseContextBlock}\n\n${text}` : text;
         let content = buildMessageContent(withCase, attachments, ragContent);
         const titleSource =
@@ -1568,7 +1681,7 @@ export default function Chat() {
 
         // A remote provider means this content leaves the device — show
         // exactly what's included and require explicit confirmation, rather
-        // than sending silently. Local providers (Ollama/llama.cpp/etc.) skip
+        // than sending silently. Local providers (llama.cpp/mlx/vllm/rocm/etc.) skip
         // this since nothing leaves the device either way.
         const isRemoteProvider = !LOCAL_PROVIDERS.includes(parsed.provider);
 
@@ -1621,17 +1734,18 @@ export default function Chat() {
         setVerificationAttempt(0);
         setPlanSteps([]);
         window.api.sessions.update(sessionId, { planSteps: [] });
-        await runCompletion(history, baseMessages, { isFirstMessage, titleSource });
+        await runCompletion(history, baseMessages, { isFirstMessage, titleSource, modelRef: requestModelRef });
     }
 
     async function handleRegenerate() {
         if (isStreaming || messages.length === 0 || pendingToolCalls.length > 0) return;
+        const requestModelRef = model;
         const lastIsAssistant = messages[messages.length - 1].role === "assistant";
         const baseMessages = lastIsAssistant ? messages.slice(0, -1) : messages;
         if (baseMessages.length === 0 || baseMessages[baseMessages.length - 1].role !== "user") return;
 
         const history: ChatMessage[] = [...buildSystemMessages(), ...baseMessages];
-        await runCompletion(history, baseMessages, { isFirstMessage: false, titleSource: "" });
+        await runCompletion(history, baseMessages, { isFirstMessage: false, titleSource: "", modelRef: requestModelRef });
     }
 
     function handleEditUserMessage(index: number) {
@@ -1760,6 +1874,22 @@ export default function Chat() {
     }
 
     const parsedModel = useMemo(() => parseModelRef(model), [model]);
+    // Bounds the manual GPU-layer-count input below to this model's real
+    // number of transformer layers — without this the field had no upper
+    // limit at all and a value far beyond what any model actually has would
+    // only ever surface as an opaque failure deep in the load path. null
+    // while unknown (no llama.cpp model selected, or the lookup hasn't
+    // resolved/failed) — the input falls back to a generous fixed ceiling
+    // in that case rather than blocking entry entirely.
+    const [modelTotalLayers, setModelTotalLayers] = useState<number | null>(null);
+    useEffect(() => {
+        if (parsedModel?.provider !== "llamacpp") { setModelTotalLayers(null); return; }
+        let cancelled = false;
+        window.api.llamacpp.getModelTotalLayers(parsedModel.modelId)
+            .then((total) => { if (!cancelled) setModelTotalLayers(total); })
+            .catch(() => { if (!cancelled) setModelTotalLayers(null); });
+        return () => { cancelled = true; };
+    }, [parsedModel]);
     const { individualAttachments, folderGroups } = useMemo(() => {
         const individual = attachments.filter((file) => !file.folder);
         const counts = new Map<string, number>();
@@ -1776,7 +1906,7 @@ export default function Chat() {
     const hiddenMessageCount = visibleStartIndex;
     const sessionCost = useMemo(
         () =>
-            parsedModel && parsedModel.provider !== "ollama" && parsedModel.provider !== "llamacpp"
+            parsedModel && parsedModel.provider !== "llamacpp"
                 ? messages.reduce((sum, message) => {
                       if (message.role !== "assistant" || !message.usage) return sum;
                       return sum + (estimateCost(parsedModel.modelId, message.usage.promptTokens, message.usage.completionTokens) ?? 0);
@@ -1797,14 +1927,7 @@ export default function Chat() {
     // membership rules the old inline <Select> used, just shaped as plain
     // data instead of JSX so the dialog can search/filter across all of it.
     const modelGroups = useMemo<ModelPickerGroup[]>(() => {
-        const groups: ModelPickerGroup[] = [
-            {
-                key: "ollama",
-                label: PROVIDER_LABELS.ollama,
-                scope: "local",
-                items: models.map((m) => ({ ref: formatModelRef("ollama", m.name), name: m.name, sizeBytes: m.size })),
-            },
-        ];
+        const groups: ModelPickerGroup[] = [];
         if (llamaCppModels.length > 0) {
             groups.push({
                 key: "llamacpp",
@@ -1884,7 +2007,7 @@ export default function Chat() {
             });
         }
         return groups;
-    }, [models, llamaCppModels, settings]);
+    }, [llamaCppModels, settings]);
 
     const currentModelLabel = useMemo(() => {
         for (const group of modelGroups) {
@@ -1918,6 +2041,8 @@ export default function Chat() {
                     size="sm"
                     variant="outline"
                     onClick={() => setShowModelPicker(true)}
+                    disabled={isStreaming || pendingToolCalls.length > 0}
+                    title={isStreaming ? "Wait for the current response before changing models" : undefined}
                     className="max-w-56 justify-start gap-1.5"
                 >
                     <span className="truncate">{currentModelLabel}</span>
@@ -1939,8 +2064,8 @@ export default function Chat() {
                     providerLabel={(provider) => PROVIDER_LABELS[provider]}
                 />
 
-                {models.length === 0 && (
-                    <span className="text-xs text-muted-foreground">{t.noOllamaModelsInstalled}</span>
+                {llamaCppModels.length === 0 && (
+                    <span className="text-xs text-muted-foreground">{t.noLocalModelsInstalled}</span>
                 )}
 
                 <div className="mx-0.5 h-5 w-px shrink-0 bg-border" aria-hidden="true" />
@@ -2222,7 +2347,7 @@ export default function Chat() {
                             <div className="flex flex-col gap-1">
                                 <label className="text-xs text-muted-foreground">
                                     Context length
-                                    {parsedModel?.provider !== "ollama" && parsedModel?.provider !== "llamacpp" ? " (local GGUF only)" : ""}
+                                    {parsedModel?.provider !== "llamacpp" ? " (local GGUF only)" : ""}
                                 </label>
                                 <Input
                                     type="number"
@@ -2230,26 +2355,29 @@ export default function Chat() {
                                     step={512}
                                     value={params.contextLength ?? currentProject?.params?.contextLength ?? settings?.contextLength ?? ""}
                                     onChange={(e) => updateParam({ contextLength: Number(e.target.value) })}
-                                    disabled={parsedModel?.provider !== "ollama" && parsedModel?.provider !== "llamacpp"}
+                                    disabled={parsedModel?.provider !== "llamacpp"}
                                     className="h-8 text-xs"
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
                                 <label className="text-xs text-muted-foreground">
                                     {t.gpuLayers}
-                                    {parsedModel?.provider !== "ollama" && parsedModel?.provider !== "llamacpp" ? " (local runtimes only)" : ""}
+                                    {parsedModel?.provider !== "llamacpp" ? " (local runtimes only)" : ""}
                                 </label>
                                 <Input
                                     type="number"
                                     min={0}
+                                    max={modelTotalLayers ?? GPU_LAYERS_FALLBACK_MAX}
                                     step={1}
                                     placeholder={t.gpuLayersAuto}
-                                    title={t.gpuLayersHelp}
+                                    title={modelTotalLayers != null ? `${t.gpuLayersHelp} (${modelTotalLayers} in this model)` : t.gpuLayersHelp}
                                     value={params.gpuLayers ?? currentProject?.params?.gpuLayers ?? settings?.gpuLayers ?? ""}
-                                    onChange={(e) =>
-                                        updateParam({ gpuLayers: e.target.value === "" ? undefined : Number(e.target.value), gpuLayerMode: e.target.value === "" ? "auto" : Number(e.target.value) === 0 ? "cpu" : "manual" })
-                                    }
-                                    disabled={parsedModel?.provider !== "ollama" && parsedModel?.provider !== "llamacpp"}
+                                    onChange={(e) => {
+                                        if (e.target.value === "") { updateParam({ gpuLayers: undefined, gpuLayerMode: "auto" }); return; }
+                                        const clamped = Math.max(0, Math.min(Math.trunc(Number(e.target.value)), modelTotalLayers ?? GPU_LAYERS_FALLBACK_MAX));
+                                        updateParam({ gpuLayers: clamped, gpuLayerMode: clamped === 0 ? "cpu" : "manual" });
+                                    }}
+                                    disabled={parsedModel?.provider !== "llamacpp"}
                                     className="h-8 text-xs"
                                 />
                             </div>
@@ -2309,24 +2437,6 @@ export default function Chat() {
                                     className="h-8 text-xs"
                                 />
                             </div>
-                            <div className="flex flex-col gap-1">
-                                <label className="text-xs text-muted-foreground">
-                                    {t.repeatPenalty}
-                                    {parsedModel?.provider !== "ollama" ? " (Ollama only)" : ""}
-                                </label>
-                                <Input
-                                    type="number"
-                                    min={0}
-                                    step={0.05}
-                                    title={t.repeatPenaltyHelp}
-                                    value={params.repeatPenalty ?? currentProject?.params?.repeatPenalty ?? settings?.repeatPenalty ?? ""}
-                                    onChange={(e) =>
-                                        updateParam({ repeatPenalty: e.target.value === "" ? undefined : Number(e.target.value) })
-                                    }
-                                    disabled={parsedModel?.provider !== "ollama"}
-                                    className="h-8 text-xs"
-                                />
-                            </div>
                         </div>
                         <div className="mt-3 flex flex-col gap-1">
                             <label className="text-xs text-muted-foreground">{t.stopSequences}</label>
@@ -2347,16 +2457,6 @@ export default function Chat() {
                     </PopoverContent>
                 </Popover>
             </div>
-
-            {parsedModel?.provider === "ollama" && ollamaRunning === false && (
-                <div className="flex items-center gap-2 border-b border-border bg-destructive/5 px-4 py-2 text-xs">
-                    <AlertTriangle className="size-3.5 shrink-0 text-destructive" />
-                    <span className="flex-1">{t.ollamaOfflineBanner}</span>
-                    <Button size="sm" variant="outline" onClick={startOllamaFromBanner}>
-                        {t.start}
-                    </Button>
-                </div>
-            )}
 
             {emergencyFlags && emergencyFlags.length > 0 && (
                 <div className="border-b border-destructive bg-destructive/10 px-4 py-3" role="alert" aria-live="assertive">

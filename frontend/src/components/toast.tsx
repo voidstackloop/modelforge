@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- the provider and its
    hook are one inseparable unit; splitting them into separate files would be
    pure ceremony for a component this small. */
-import { createContext, useCallback, useContext, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import { CheckCircle2, AlertCircle, Info, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -61,9 +61,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
 export function useToast() {
     const push = useContext(ToastContext);
-    return {
-        success: (message: string) => push?.("success", message),
-        error: (message: string) => push?.("error", message),
-        info: (message: string) => push?.("info", message),
-    };
+    return useMemo(
+        () => ({
+            success: (message: string) => push?.("success", message),
+            error: (message: string) => push?.("error", message),
+            info: (message: string) => push?.("info", message),
+        }),
+        [push]
+    );
 }

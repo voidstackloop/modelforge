@@ -1,6 +1,5 @@
 import { ipcMain, IpcMainInvokeEvent } from "electron";
 import { logger } from "../logger";
-import * as ollama from "../ollama-manager";
 import * as systemSpecs from "../system-specs";
 import * as settingsStore from "../settings-store";
 import * as llamacpp from "../llamacpp-manager";
@@ -37,14 +36,8 @@ export function registerSystemIpc(): void {
         return systemSpecs.assessGgufFiles(specs, inputs, settings.contextLength);
     });
     ipcMain.handle("system:getActivity", async () => {
-        const ollamaRunning = await ollama.isRunning();
-        const ollamaLoadedModels = ollamaRunning
-            ? await ollama.listRunningModels().catch(() => [])
-            : [];
         const mem = process.memoryUsage();
         return {
-            ollamaRunning,
-            ollamaLoadedModels,
             llamacppLoadedModels: llamacpp.listLoadedModels(),
             localBackendServers: localServers.getRunningBackends(),
             mcpServers: mcpClient.getServerStatuses(),

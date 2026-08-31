@@ -6,7 +6,7 @@ import type * as localServers from "./local-server-manager";
 import type { EnergyMonitorSettings } from "./energy-types";
 import type { ProviderId } from "./providers/types";
 
-export const PROVIDER_SECRET_KEYS: Record<Exclude<ProviderId, "ollama" | "llamacpp" | "custom" | "mlx" | "rocm" | "vllm">, string> = {
+export const PROVIDER_SECRET_KEYS: Record<Exclude<ProviderId, "llamacpp" | "custom" | "mlx" | "rocm" | "vllm">, string> = {
     openai: "openai_api_key",
     anthropic: "anthropic_api_key",
     gemini: "gemini_api_key",

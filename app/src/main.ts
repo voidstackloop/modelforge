@@ -1,7 +1,6 @@
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, shell } from "electron";
-import * as ollama from "./ollama-manager";
 import { logger } from "./logger";
 import * as settingsStore from "./settings-store";
 import * as agentTools from "./agent-tools";
@@ -9,18 +8,20 @@ import * as terminalManager from "./terminal-manager";
 import * as mcpClient from "./mcp-client";
 import * as downloadQueue from "./download-queue";
 import * as llamacpp from "./llamacpp-manager";
+import * as llamacppBackendHealth from "./llamacpp-backend-health";
+import * as electronShellHealth from "./electron-shell-health";
 import * as scheduler from "./scheduler";
+import * as backupScheduler from "./backup-scheduler";
 import * as localServers from "./local-server-manager";
 import * as powerMonitor from "./power-monitor";
-import { getSpecs } from "./system-specs";
-import { assertVendorHomogeneity, resolveGpuSelection, selectAutomaticGpuCohort } from "./gpu-selection";
 import { setGpuMonitoringPaused } from "./gpu-telemetry";
+import { shutdownInferenceResourceScheduler } from "./inference-resource-scheduler";
 import { setupMenu } from "./menu";
 import { setupAutoUpdater, checkForUpdatesManually } from "./updater";
 import type { ProviderId } from "./providers/types";
 import { getMainWindow, setMainWindow, getIsBusy, setIsBusy, getForceClose, setForceClose } from "./app-state";
 import { completePrompt } from "./chat-dispatch";
-import { registerOllamaIpc } from "./ipc/ollama-handlers";
+import { registerLocalRuntimeIpc } from "./ipc/local-runtime-handlers";
 import { registerChatIpc } from "./ipc/chat-handlers";
 import { registerSystemIpc } from "./ipc/system-handlers";
 import { registerDownloadsIpc } from "./ipc/downloads-handlers";
@@ -34,12 +35,27 @@ import { registerAgentIpc } from "./ipc/agent-handlers";
 import { registerTerminalIpc } from "./ipc/terminal-handlers";
 import { registerMcpIpc } from "./ipc/mcp-handlers";
 import { registerGpuIpc } from "./ipc/gpu-handlers";
+import { registerResourceIpc } from "./ipc/resource-handlers";
+import { registerComputeAgentIpc } from "./ipc/compute-agent-handlers";
+import { mainComputeAgent } from "./compute-agent";
 import { registerPatientCasesIpc } from "./ipc/patient-cases-handlers";
 import { registerAuditIpc } from "./ipc/audit-handlers";
 import { registerEvidenceIpc } from "./ipc/evidence-handlers";
 import { registerMedicalSafetyIpc } from "./ipc/medical-safety-handlers";
 import { registerEncryptionIpc } from "./ipc/encryption-handlers";
 import { registerModelRegistryIpc } from "./ipc/model-registry-handlers";
+import { registerPolicyIpc } from "./ipc/policy-handlers";
+import { registerBackupIpc } from "./ipc/backup-handlers";
+import { registerSharedBackendIpc } from "./ipc/shared-backend-handlers";
+import { installOhifProtocols, registerOhifSchemes } from "./ohif-viewer";
+import { installIpcSenderValidation } from "./ipc/trusted-sender";
+import { installContentSecurityPolicy } from "./csp";
+import { selectMedicationSafetyProvider } from "./medical-safety";
+import { registerPatientCasesBackend, selectPatientCasesBackend } from "./patient-cases-store";
+import { createSharedPatientCasesBackend } from "./shared-patient-cases-backend";
+import { wrapWithOfflineCache } from "./case-offline-cache";
+import { registerSessionsBackend, selectSessionsBackend } from "./sessions-store";
+import { createSharedSessionsBackend } from "./shared-sessions-backend";
 
 // Without these, an unexpected error anywhere in the main process (a bad file
 // parse, a network hiccup, a third-party library throwing) would crash the
@@ -51,11 +67,67 @@ process.on("unhandledRejection", (reason) => {
     logger.error(`Unhandled rejection in main process: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`);
 });
 
-// Chromium's GPU process crashes on some virtualized/software-rendered setups
-// (WSLg, some VMs, remote desktops). Set DISABLE_GPU=1 to work around the
-// fatal "GPU process isn't usable" shutdown on those hosts.
-if (process.env.DISABLE_GPU === "1") {
+// Two OS processes of this app pointed at the same userData directory (a
+// double launch, a stray shortcut, a dev build and a packaged build sharing
+// a profile) would otherwise both hold this store in memory independently
+// and write to the same on-disk files — audit-log.json/.sqlite3 among
+// them — with no coordination between them. Every store in this codebase
+// (audit-log-store.ts's backend-switch bookkeeping in particular — see
+// syncOnBackendTransition()) assumes it's the only process touching its
+// files; requestSingleInstanceLock() is what actually keeps that true,
+// rather than each store having to defend against cross-process races on
+// its own. The second process to launch loses the race, quits immediately,
+// and its "second-instance" event on the *first* process focuses the
+// existing window instead of silently doing nothing.
+//
+// Uses app.exit() rather than app.quit(): quit() only *starts* the normal
+// window-closing shutdown sequence, which Electron's own docs warn has
+// undefined behavior when called before 'ready' — observed in practice here
+// as the losing process sailing straight through into app.whenReady() (and
+// its llama.cpp/etc. startup side effects) before quit() eventually
+// caught up. exit() terminates synchronously, before any of that can run.
+if (!app.requestSingleInstanceLock()) {
+    app.exit(0);
+} else {
+    app.on("second-instance", () => {
+        const win = getMainWindow();
+        if (win) {
+            if (win.isMinimized()) win.restore();
+            win.focus();
+        }
+    });
+}
+
+// GPU acceleration and the OS sandbox both stay ON by default here, on
+// every machine — see electron-shell-health.ts for the full rationale.
+// resolveStartupShellSafety() only turns either off automatically when THIS
+// machine's own history shows a prior full-protection launch crashed the
+// whole process before the window ever opened (Chromium's GPU process or
+// sandboxed renderer hitting a broken virtualized/software-rendered driver
+// stack — common on WSL/WSLg, some VMs, remote desktops, some CI
+// containers — dies with an uncatchable SIGILL/SIGTRAP before any
+// application log line is even printed, so there's no way to detect this
+// ahead of time short of actually trying). DISABLE_GPU=1 / DISABLE_SANDBOX=1
+// remain available as an explicit manual override for debugging.
+const shellSafety = electronShellHealth.resolveStartupShellSafety();
+electronShellHealth.markShellAttemptStarting(shellSafety);
+
+if (process.env.DISABLE_GPU === "1" || !shellSafety.gpuAccelerationEnabled) {
     app.disableHardwareAcceleration();
+}
+
+// Chromium's Linux sandbox needs its `chrome-sandbox` helper binary to be
+// owned by root with the setuid bit set (mode 4755) — `npm install` can
+// never set that up itself (it would need a manual, one-time `sudo chown
+// root:root .../chrome-sandbox && sudo chmod 4755 .../chrome-sandbox`, an
+// action this project doesn't take on a developer's behalf). Without it,
+// Electron doesn't fail gracefully — it crashes the whole process the
+// moment the sandboxed renderer process tries to start. Dev-only in spirit:
+// a packaged Linux build should fix chrome-sandbox's permissions (or run
+// inside a container that already grants the equivalent capability) rather
+// than ship with the sandbox off by default.
+if (process.env.DISABLE_SANDBOX === "1" || !shellSafety.sandboxEnabled) {
+    app.commandLine.appendSwitch("no-sandbox");
 }
 
 function createWindow(): void {
@@ -89,6 +161,10 @@ function createWindow(): void {
     mainWindow.once("ready-to-show", () => {
         mainWindow?.maximize();
         mainWindow?.show();
+        // Reaching this event at all means the renderer (and therefore the
+        // GPU/sandbox subsystems configured at startup) came up without
+        // crashing the process — see electron-shell-health.ts.
+        electronShellHealth.markShellAttemptConfirmed(shellSafety);
     });
 
     // GPU telemetry polling (nvidia-smi/rocm-smi) is only useful while
@@ -169,7 +245,11 @@ function createWindow(): void {
 }
 
 function registerIpcHandlers(): void {
-    registerOllamaIpc();
+    // Installed before any handler module registers a single channel — see
+    // trusted-sender.ts's own doc comment for why this one call covers
+    // every register*Ipc() below instead of touching each individually.
+    installIpcSenderValidation();
+    registerLocalRuntimeIpc();
     registerChatIpc();
     registerSystemIpc();
     registerDownloadsIpc();
@@ -183,12 +263,17 @@ function registerIpcHandlers(): void {
     registerTerminalIpc();
     registerMcpIpc();
     registerGpuIpc();
+    registerResourceIpc();
+    registerComputeAgentIpc();
     registerPatientCasesIpc();
     registerAuditIpc();
     registerEvidenceIpc();
     registerMedicalSafetyIpc();
     registerEncryptionIpc();
     registerModelRegistryIpc();
+    registerPolicyIpc();
+    registerBackupIpc();
+    registerSharedBackendIpc();
 }
 
 // Best-effort: connect every enabled MCP server on launch so its tools are
@@ -207,33 +292,48 @@ async function connectEnabledMcpServers(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+    installOhifProtocols();
     registerIpcHandlers();
+    // Packaged mode only — see csp.ts's own doc comment for why dev mode
+    // (the Vite dev server, HMR's 'unsafe-eval'/WebSocket needs) is
+    // deliberately out of scope. Registered before createWindow() below so
+    // the session-level header hook is in place before that window's first
+    // loadURL() request.
+    if (app.isPackaged) installContentSecurityPolicy();
     setupMenu(() => getMainWindow(), () => checkForUpdatesManually(() => getMainWindow()), settingsStore.getSettings().keybindings);
     createWindow();
-    ollama.setHost(settingsStore.getSettings().ollamaHost);
-    ollama.setModelsDir(settingsStore.getSettings().modelsDir);
-    // Best-effort: a stale/missing saved selection just falls back to no
-    // filtering (Ollama sees every device, its existing default behavior)
-    // rather than blocking app startup — the Runtime Manager surfaces
-    // staleness explicitly when the user actually opens it.
-    try {
-        const ollamaGpuConfig = settingsStore.getSettings().runtimeGpuConfigs?.ollama;
-        if (ollamaGpuConfig?.selection) {
-            const specs = await getSpecs();
-            const resolution = resolveGpuSelection(ollamaGpuConfig.selection, specs.gpus);
-            if (!resolution.stale) {
-                const automatic = ollamaGpuConfig.selection.mode === "auto" || ollamaGpuConfig.selection.mode === "all";
-                const selected = automatic
-                    ? selectAutomaticGpuCohort(resolution.gpus, ["nvidia", "amd", "intel", "apple", "unknown"])
-                    : resolution.gpus;
-                assertVendorHomogeneity(selected, "Ollama");
-                ollama.setGpuSelection(selected);
-            }
+    {
+        const configuredMedicationSafetyProviderId = settingsStore.getSettings().medicationSafetyProviderId;
+        if (configuredMedicationSafetyProviderId && !selectMedicationSafetyProvider(configuredMedicationSafetyProviderId)) {
+            logger.error(`Configured medication safety provider "${configuredMedicationSafetyProviderId}" is not registered — staying on the built-in demonstration list.`);
         }
-    } catch (err) {
-        logger.error(`Failed to resolve Ollama GPU selection on startup: ${(err as Error).message}`);
     }
-    await ollama.start();
+    // Registered unconditionally (like every other PatientCasesBackend
+    // would be) — registering doesn't select it; isAvailable() reports
+    // false until Settings has both a shared-backend config and a
+    // connected+organization-selected session, so it's safe to have in the
+    // registry even for an install that never uses enterprise mode.
+    // Wrapped with the encrypted offline cache/outbox (P1 item 5,
+    // case-offline-cache.ts) — transparent to every caller above the
+    // PatientCasesBackend interface.
+    registerPatientCasesBackend(wrapWithOfflineCache(createSharedPatientCasesBackend()));
+    {
+        const configuredPatientCasesBackendId = settingsStore.getSettings().patientCasesBackendId;
+        if (configuredPatientCasesBackendId && !selectPatientCasesBackend(configuredPatientCasesBackendId)) {
+            logger.error(`Configured patient cases backend "${configuredPatientCasesBackendId}" is not registered — staying on the local backend.`);
+        }
+    }
+    // Same registration pattern as patient cases above (P1 item 7: shared
+    // chat sessions) — registered unconditionally, selected only if
+    // Settings already asked for it. Not wrapped with wrapWithOfflineCache:
+    // a disclosed gap, see shared-sessions-backend.ts's own doc comment.
+    registerSessionsBackend(createSharedSessionsBackend());
+    {
+        const configuredSessionsBackendId = settingsStore.getSettings().sessionsBackendId;
+        if (configuredSessionsBackendId && !selectSessionsBackend(configuredSessionsBackendId)) {
+            logger.error(`Configured sessions backend "${configuredSessionsBackendId}" is not registered — staying on the local backend.`);
+        }
+    }
     const llamaSettings = settingsStore.getSettings();
     llamacpp.setModelCacheLimit(llamaSettings.llamaCppMaxCachedModels ?? 2);
     await llamacpp.setLlamaCppRuntimeConfig({
@@ -242,7 +342,19 @@ app.whenReady().then(async () => {
         ramReserveBytes: llamaSettings.llamaCppRamReserveGB === undefined ? undefined : llamaSettings.llamaCppRamReserveGB * 1024 ** 3,
         numa: llamaSettings.llamaCppNumaPolicy ?? "auto",
     });
-    await llamacpp.setGpuBackend(llamaSettings.llamaCppGpuBackend ?? "auto");
+    {
+        const configuredGpuBackend = llamaSettings.llamaCppGpuBackend ?? "auto";
+        const startupGpuBackend = llamacppBackendHealth.resolveStartupGpuBackend(configuredGpuBackend);
+        if (startupGpuBackend !== configuredGpuBackend) {
+            logger.error(
+                `llama.cpp GPU backend "${configuredGpuBackend}" never confirmed a successful initialization last run — ` +
+                    "the app most likely crashed while using it. Falling back to CPU for this launch and updating Settings " +
+                    "to match; re-select a GPU backend in Settings to try it again."
+            );
+            settingsStore.saveSettings({ llamaCppGpuBackend: "cpu" });
+        }
+        await llamacpp.setGpuBackend(startupGpuBackend);
+    }
     setupAutoUpdater(() => getMainWindow());
     downloadQueue.init(() => getMainWindow());
     downloadQueue.configure({
@@ -252,6 +364,11 @@ app.whenReady().then(async () => {
     void downloadQueue.resumeInterruptedJobs();
     void connectEnabledMcpServers();
     scheduler.init((provider, model, prompt) => completePrompt(provider as ProviderId, model, prompt));
+    backupScheduler.init();
+    {
+        const computeSettings = settingsStore.getSettings();
+        if (computeSettings.computeAgentEnabled && computeSettings.computeNodeId) mainComputeAgent.start();
+    }
 
     app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -259,7 +376,6 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-    ollama.stop();
     localServers.stopAll();
     agentTools.killAllBackgroundCommands();
     terminalManager.closeAll();
@@ -270,10 +386,12 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
     downloadQueue.flush();
-    ollama.stop();
+    shutdownInferenceResourceScheduler();
     localServers.stopAll();
     agentTools.killAllBackgroundCommands();
     terminalManager.closeAll();
     void llamacpp.dispose();
+    void mainComputeAgent.stop();
     powerMonitor.stopAll();
 });
+registerOhifSchemes();

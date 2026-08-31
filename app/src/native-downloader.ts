@@ -52,6 +52,7 @@ interface NativeAddon {
         filename: string,
         destPath: string,
         token: string | undefined | null,
+        expectedSha256: string | undefined | null,
         onProgress: (err: Error | null, progress: NativeDownloadProgress) => void
     ): Promise<void>;
     DownloadManager: new () => NativeDownloadManager;
@@ -79,9 +80,10 @@ export function downloadGgufFileNative(
     filename: string,
     destPath: string,
     token: string | undefined | null,
+    expectedSha256: string | undefined | null,
     onProgress: (err: Error | null, progress: NativeDownloadProgress) => void
 ): Promise<void> {
-    return getNativeAddon().downloadGgufFile(modelId, filename, destPath, token, onProgress);
+    return getNativeAddon().downloadGgufFile(modelId, filename, destPath, token, expectedSha256, onProgress);
 }
 
 // One instance for the app's lifetime — its global concurrency semaphore

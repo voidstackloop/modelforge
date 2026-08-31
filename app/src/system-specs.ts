@@ -110,6 +110,16 @@ export interface ModelCatalogEntry {
     // Mixture-of-experts models need extra expert-memory accounting the ML
     // model doesn't get from leaderboard metadata alone.
     isMoe: boolean;
+    // The model's real (non-Ollama-tag) name, e.g. "Llama-3.2-1B-Instruct" —
+    // used to search Hugging Face for a real GGUF quantization when the
+    // recommended runtime isn't Ollama (docs/LOCAL_INFERENCE_HARDENING_PLAN.md
+    // §2.3). Deliberately a search query, not a hardcoded exact repo/file
+    // path: this catalog's `name` field is an Ollama tag with no llama.cpp
+    // equivalent, and guessing a specific GGUF repo/filename that might have
+    // been renamed or removed since this catalog was last verified would risk
+    // a silently wrong or broken download — a live search against a real,
+    // well-known model name can't go stale in that way.
+    huggingFaceSearchQuery: string;
 }
 
 export interface RecommendedModel extends ModelCatalogEntry {
@@ -126,7 +136,7 @@ export interface RecommendedModel extends ModelCatalogEntry {
     estimatedTokensPerSecond: number;
     measuredTokensPerSecond?: number;
     reason: string;
-    recommendedRuntime: "ollama" | "llamacpp" | "vllm" | "mlx";
+    recommendedRuntime: "llamacpp" | "vllm" | "mlx";
 }
 
 export type RecommendationOutcome = "Runs fully on GPU" | "Runs with partial offload" | "CPU-only but usable" | "Requires tensor parallelism" | "Likely out of memory";
@@ -134,7 +144,7 @@ export const QUANTIZATION_BITS = { Q2_K: 2.625, Q3_K_M: 3.5, Q4_K_M: 4.75, Q5_K_
 // What "best" should optimize for — plugged into pickBest()'s utility score
 // instead of the old "largest model that fits" rule.
 export type RecommendationGoal = "quality" | "speed" | "memory" | "energy" | "agent" | "balanced";
-export interface RecommendationOptions { quantization?: keyof typeof QUANTIZATION_BITS; contextLength?: number; runtime?: "automatic" | "ollama" | "llamacpp" | "vllm" | "mlx"; goal?: RecommendationGoal }
+export interface RecommendationOptions { quantization?: keyof typeof QUANTIZATION_BITS; contextLength?: number; runtime?: "automatic" | "llamacpp" | "vllm" | "mlx"; goal?: RecommendationGoal }
 export interface BenchmarkObservation { model: string; tokensPerSecond: number; promptTokensPerSecond?: number; timeToFirstTokenMs?: number }
 
 export interface ModelRecommendations {
@@ -172,10 +182,11 @@ export interface GgufAssessment {
     reason: string;
 }
 
-// Model tags are Ollama library names as of this app's last update — Ollama's
-// lineup changes often, so verify a tag still exists (`ollama pull <name>`)
-// if a pull ever fails; the search box above also lets you pull any exact
-// tag directly regardless of what's curated here.
+// `name` values here are legacy Ollama library tags, kept only as stable
+// internal identifiers/lookup keys (observationFor, PARAMETER_OVERRIDES) —
+// Ollama itself is removed, so `huggingFaceSearchQuery` (not `name`) is what
+// Settings.tsx actually uses to help a user find and download one of these
+// recommendations for llama.cpp; see that field's own doc comment.
 // qualityScore provenance: 9 of these 13 are the official-repo "Average ⬆️"
 // figure from ml/hardware-recommender/data/raw/open_llm_leaderboard.parquet
 // (IFEval/BBH/MATH/GPQA/MUSR/MMLU-PRO average — same metric the ML model's
@@ -189,29 +200,33 @@ export interface GgufAssessment {
 // four are still estimates (interpolated against same-family/size peers),
 // flagged individually below.
 export const MODEL_CATALOG: ModelCatalogEntry[] = [
-    { name: "llama3.2:1b", label: "Llama 3.2 1B", minRAMGB: 2, description: "Fastest option, good for quick replies on low-end hardware.", supportsTools: false, qualityScore: 14.4, isMoe: false },
-    { name: "llama3.2:3b", label: "Llama 3.2 3B", minRAMGB: 4, description: "Good balance of speed and quality for everyday chat.", supportsTools: true, qualityScore: 24.2, isMoe: false },
+    { name: "llama3.2:1b", label: "Llama 3.2 1B", minRAMGB: 2, description: "Fastest option, good for quick replies on low-end hardware.", supportsTools: false, qualityScore: 14.4, isMoe: false, huggingFaceSearchQuery: "Llama-3.2-1B-Instruct GGUF" },
+    { name: "llama3.2:3b", label: "Llama 3.2 3B", minRAMGB: 4, description: "Good balance of speed and quality for everyday chat.", supportsTools: true, qualityScore: 24.2, isMoe: false, huggingFaceSearchQuery: "Llama-3.2-3B-Instruct GGUF" },
     // Estimate — Qwen3 postdates the bundled leaderboard snapshot; placed
     // above llama3.2:3b's and below llama3.1:8b's real scores per Qwen3's
     // reported same-size-class gains over Qwen2.5/Llama3.2.
-    { name: "qwen3:4b", label: "Qwen3 4B", minRAMGB: 5, description: "Reliable tool-calling in a small footprint — a good Agent mode pick on modest hardware.", supportsTools: true, qualityScore: 28, isMoe: false },
-    { name: "phi3.5", label: "Phi-3.5 Mini 3.8B", minRAMGB: 5, description: "Strong reasoning for its size, runs well on modest hardware.", supportsTools: false, qualityScore: 28.2, isMoe: false },
-    { name: "llama3.1:8b", label: "Llama 3.1 8B", minRAMGB: 8, description: "Meta's flagship mid-size model — great all-rounder with solid tool support.", supportsTools: true, qualityScore: 23.8, isMoe: false },
+    { name: "qwen3:4b", label: "Qwen3 4B", minRAMGB: 5, description: "Reliable tool-calling in a small footprint — a good Agent mode pick on modest hardware.", supportsTools: true, qualityScore: 28, isMoe: false, huggingFaceSearchQuery: "Qwen3-4B GGUF" },
+    { name: "phi3.5", label: "Phi-3.5 Mini 3.8B", minRAMGB: 5, description: "Strong reasoning for its size, runs well on modest hardware.", supportsTools: false, qualityScore: 28.2, isMoe: false, huggingFaceSearchQuery: "Phi-3.5-mini-instruct GGUF" },
+    { name: "llama3.1:8b", label: "Llama 3.1 8B", minRAMGB: 8, description: "Meta's flagship mid-size model — great all-rounder with solid tool support.", supportsTools: true, qualityScore: 23.8, isMoe: false, huggingFaceSearchQuery: "Llama-3.1-8B-Instruct GGUF" },
     // Estimate — same caveat as qwen3:4b; placed above qwen2.5-coder:14b's
     // general-purpose score per Qwen3-8B's reported reasoning/IFEval gains.
-    { name: "qwen3:8b", label: "Qwen3 8B", minRAMGB: 8, description: "Among the most reliable open models for tool/function calling at this size — recommended for Agent mode.", supportsTools: true, qualityScore: 33, isMoe: false },
-    { name: "mistral-nemo", label: "Mistral Nemo 12B", minRAMGB: 10, description: "Solid general-purpose model with dependable tool calling.", supportsTools: true, qualityScore: 24.7, isMoe: false },
-    { name: "gemma2:9b", label: "Gemma 2 9B", minRAMGB: 10, description: "Google's efficient high-quality model for general chat.", supportsTools: false, qualityScore: 32.1, isMoe: false },
-    { name: "qwen2.5-coder:14b", label: "Qwen 2.5 Coder 14B", minRAMGB: 16, description: "Strong coding ability with tool calling — a good Agent mode pick for dev workflows.", supportsTools: true, qualityScore: 32.1, isMoe: false },
+    { name: "qwen3:8b", label: "Qwen3 8B", minRAMGB: 8, description: "Among the most reliable open models for tool/function calling at this size — recommended for Agent mode.", supportsTools: true, qualityScore: 33, isMoe: false, huggingFaceSearchQuery: "Qwen3-8B GGUF" },
+    { name: "mistral-nemo", label: "Mistral Nemo 12B", minRAMGB: 10, description: "Solid general-purpose model with dependable tool calling.", supportsTools: true, qualityScore: 24.7, isMoe: false, huggingFaceSearchQuery: "Mistral-Nemo-Instruct-2407 GGUF" },
+    { name: "gemma2:9b", label: "Gemma 2 9B", minRAMGB: 10, description: "Google's efficient high-quality model for general chat.", supportsTools: false, qualityScore: 32.1, isMoe: false, huggingFaceSearchQuery: "gemma-2-9b-it GGUF" },
+    { name: "qwen2.5-coder:14b", label: "Qwen 2.5 Coder 14B", minRAMGB: 16, description: "Strong coding ability with tool calling — a good Agent mode pick for dev workflows.", supportsTools: true, qualityScore: 32.1, isMoe: false, huggingFaceSearchQuery: "Qwen2.5-Coder-14B-Instruct GGUF" },
     // Estimate — a 24B Mistral-family fine-tune postdating the snapshot;
     // placed near qwen2.5-coder:14b/command-r-plus given its larger size.
-    { name: "devstral-small", label: "Devstral Small 24B", minRAMGB: 24, description: "Trained specifically for agentic coding — built for exactly this app's Agent mode.", supportsTools: true, qualityScore: 34, isMoe: false },
+    // Search query omits the release-date suffix (e.g. "-2505") deliberately —
+    // unlike the other entries here, the exact current version tag isn't
+    // something this pass could verify, and a real search still surfaces
+    // whichever version(s) exist under the stable "Devstral-Small" name.
+    { name: "devstral-small", label: "Devstral Small 24B", minRAMGB: 24, description: "Trained specifically for agentic coding — built for exactly this app's Agent mode.", supportsTools: true, qualityScore: 34, isMoe: false, huggingFaceSearchQuery: "Devstral-Small GGUF" },
     // Estimate — same caveat as qwen3:4b/8b; placed near llama3.1:70b given
     // Qwen3-30B-A3B's reported reasoning benchmarks despite its small active
     // parameter count.
-    { name: "qwen3:30b-a3b", label: "Qwen3 30B-A3B", minRAMGB: 24, description: "Mixture-of-experts model with strong tool-calling reliability at a manageable memory footprint.", supportsTools: true, qualityScore: 40, isMoe: true },
-    { name: "command-r-plus", label: "Command R+", minRAMGB: 64, description: "Enterprise-grade tool use and retrieval, needs a workstation-class machine.", supportsTools: true, qualityScore: 33.6, isMoe: false },
-    { name: "llama3.1:70b", label: "Llama 3.1 70B", minRAMGB: 48, description: "Near top-tier quality, requires a workstation-class PC.", supportsTools: true, qualityScore: 43.4, isMoe: false },
+    { name: "qwen3:30b-a3b", label: "Qwen3 30B-A3B", minRAMGB: 24, description: "Mixture-of-experts model with strong tool-calling reliability at a manageable memory footprint.", supportsTools: true, qualityScore: 40, isMoe: true, huggingFaceSearchQuery: "Qwen3-30B-A3B GGUF" },
+    { name: "command-r-plus", label: "Command R+", minRAMGB: 64, description: "Enterprise-grade tool use and retrieval, needs a workstation-class machine.", supportsTools: true, qualityScore: 33.6, isMoe: false, huggingFaceSearchQuery: "c4ai-command-r-plus-08-2024 GGUF" },
+    { name: "llama3.1:70b", label: "Llama 3.1 70B", minRAMGB: 48, description: "Near top-tier quality, requires a workstation-class PC.", supportsTools: true, qualityScore: 43.4, isMoe: false, huggingFaceSearchQuery: "Llama-3.1-70B-Instruct GGUF" },
 ];
 
 export type GpuVendor = "nvidia" | "amd" | "intel" | "apple" | "unknown";
@@ -220,7 +235,8 @@ export type GpuVendor = "nvidia" | "amd" | "intel" | "apple" | "unknown";
 // paths give us (the Windows WMI path and macOS system_profiler report names,
 // not vendor IDs). Drives which llama.cpp backend gets recommended: CUDA is
 // NVIDIA-only, Metal is Apple-only, and AMD/Intel accelerate via Vulkan
-// (node-llama-cpp ships no ROCm/SYCL prebuilds — native ROCm means Ollama).
+// (node-llama-cpp ships no ROCm/SYCL prebuilds — native ROCm goes through
+// this app's own dedicated `rocm` local-server backend instead).
 export function classifyGpuVendor(name: string): GpuVendor {
     if (/nvidia|geforce|\brtx\b|\bgtx\b|quadro|tesla/i.test(name)) return "nvidia";
     if (/\bamd\b|radeon|\brx\s?\d{3,4}\b|vega|firepro|instinct/i.test(name)) return "amd";
@@ -229,12 +245,17 @@ export function classifyGpuVendor(name: string): GpuVendor {
     return "unknown";
 }
 
-// The five backends the app can actually load a model with.
-export type ConcreteRuntime = "ollama" | "llamacpp" | "vllm" | "mlx" | "transformers";
+// The four backends the app can actually load a model with (Ollama removed —
+// docs/LOCAL_INFERENCE_HARDENING_PLAN.md).
+export type ConcreteRuntime = "llamacpp" | "vllm" | "mlx" | "transformers";
 
 // A model's on-disk/distribution format, inferred from a filename or HF repo
 // id — this is what "Automatic" branches on, alongside detected hardware.
-export type ModelFormat = "gguf" | "safetensors" | "mlx" | "ollama" | "unknown";
+// "ollama" was removed from this union along with Ollama itself — nothing in
+// detectModelFormat() below ever produced it as a real detection outcome even
+// before that (it was only ever passed in as a hardcoded literal by
+// recommendModels()'s own curated-catalog fallback, now fixed directly there).
+export type ModelFormat = "gguf" | "safetensors" | "mlx" | "unknown";
 
 // Infers format from a filename or Hugging Face repo id. GGUF and
 // safetensors are identified by file extension; MLX has no extension of its
@@ -254,19 +275,26 @@ export function detectModelFormat(identifier: string): ModelFormat {
 //   GGUF                              -> llama.cpp (runs on any vendor, or CPU-only)
 //   Safetensors + NVIDIA/AMD (ROCm)   -> vLLM
 //   MLX-format model + Apple Silicon  -> MLX
-//   Ollama-library model              -> Ollama (MLX on Apple Silicon, which
-//                                        has the edge over llama.cpp there)
 //   Anything else (safetensors with no supported GPU, MLX format off Apple
 //   Silicon, an unrecognized format) -> Transformers, the universal fallback
 //   for architectures the other backends can't load.
 export function resolveAutomaticRuntime(format: ModelFormat, specs: Pick<SystemSpecs, "platform" | "arch" | "gpus">): ConcreteRuntime {
     const isAppleSilicon = specs.platform === "darwin" && specs.arch === "arm64";
     const hasVllmGpu = specs.gpus.some((gpu) => gpu.vendor === "nvidia" || gpu.vendor === "amd");
-    if (format === "ollama") return isAppleSilicon ? "mlx" : "ollama";
     if (format === "gguf") return "llamacpp";
     if (format === "mlx" && isAppleSilicon) return "mlx";
     if (format === "safetensors" && hasVllmGpu) return "vllm";
     return "transformers";
+}
+
+// Whether this machine should prefer MLX (its own dedicated backend, with a
+// real edge over llama.cpp on Apple Silicon specifically) over llama.cpp as
+// the *default* local runtime when nothing else pins a specific format or
+// backend — used by recommendModels()'s curated-catalog fallback below,
+// which has no real model file to run detectModelFormat() against at all
+// (its entries are bare names, not files or repo ids).
+function prefersAppleSiliconMlx(specs: Pick<SystemSpecs, "platform" | "arch">): boolean {
+    return specs.platform === "darwin" && specs.arch === "arm64";
 }
 
 function execFileP(cmd: string, args: string[]): Promise<string | null> {
@@ -666,7 +694,7 @@ function observationFor(model: string, history: BenchmarkObservation[]): Benchma
 }
 
 // GGUF filenames use a wider set of quantization labels than the curated
-// Ollama catalog. These effective bit widths are intentionally approximate:
+// catalog's simple `quantization` field. These effective bit widths are intentionally approximate:
 // the actual file size remains the source of truth for memory fitting, while
 // the bit width lets us infer parameter count for KV-cache and speed estimates.
 const GGUF_QUANTIZATION_BITS: Record<string, number> = {
@@ -683,8 +711,8 @@ export function detectGgufQuantization(filename: string): { label: string; bits:
     const labels = Object.keys(GGUF_QUANTIZATION_BITS).sort((a, b) => b.length - a.length);
     const label = labels.find((candidate) => new RegExp(`(?:^|[-_.])${candidate}(?=[-_.]|$)`).test(upper));
     if (label) return { label, bits: GGUF_QUANTIZATION_BITS[label] };
-    // Preserve newer community labels (for example UD-Q4_K_XL) so Ollama can
-    // receive the exact tag even before this table learns its precise bpw.
+    // Preserve newer community labels (for example UD-Q4_K_XL) even before
+    // this table learns their precise bpw, rather than discarding them.
     const community = upper.match(/(?:^|[-_.])((?:UD-)?(?:IQ|Q|TQ)\d(?:_[A-Z0-9]+)+)(?=[-.]|$)/)?.[1];
     if (community) {
         const nominalBits = Number(community.match(/(?:IQ|Q|TQ)(\d)/)?.[1] ?? 4);
@@ -813,10 +841,14 @@ function pickBest<T extends RecommendedModel>(models: T[], goal: RecommendationG
 export function recommendModels(specs: SystemSpecs, options: RecommendationOptions = {}, history: BenchmarkObservation[] = []): ModelRecommendations {
     const quantization = options.quantization ?? "Q4_K_M"; const bits = QUANTIZATION_BITS[quantization];
     const contextLength = Math.max(2_048, Math.min(131_072, options.contextLength ?? 8_192));
-    // "automatic" (the default) resolves via resolveAutomaticRuntime, which for
-    // this Ollama-library catalog only ever yields "mlx" or "ollama" — hence
-    // the narrowing cast.
-    const selectedRuntime = options.runtime && options.runtime !== "automatic" ? options.runtime : (resolveAutomaticRuntime("ollama", specs) as "ollama" | "mlx");
+    // "automatic" (the default) picks MLX on Apple Silicon (a real, deliberate
+    // edge over llama.cpp there) or llama.cpp everywhere else — this curated
+    // catalog has no real model file/repo id to run resolveAutomaticRuntime's
+    // actual format detection against (its entries are bare names), so it
+    // can't use that function directly the way a real download does. Passing
+    // an explicit runtime (system-handlers.ts already does this from
+    // settings.preferredRuntime) bypasses this entirely.
+    const selectedRuntime = options.runtime && options.runtime !== "automatic" ? options.runtime : (prefersAppleSiliconMlx(specs) ? "mlx" : "llamacpp");
     const usableRAMGB = +Math.max(0, Math.min(specs.totalRAMGB * 0.72, specs.freeRAMGB > 2 ? specs.freeRAMGB - 2 : specs.totalRAMGB * 0.55)).toFixed(1);
     const knownGpuMemory = specs.gpus.map((gpu) => gpu.vramGB).filter((value): value is number => value !== null);
     const largestUsableGpuGB = +(Math.max(0, specs.largestGpuVramGB ?? (knownGpuMemory.length ? Math.max(...knownGpuMemory) : 0)) * 0.88).toFixed(1);

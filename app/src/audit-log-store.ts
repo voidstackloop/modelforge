@@ -9,6 +9,7 @@ import { sha256HexNative, appendJsonArrayElementNative, isNativeDatastoreAvailab
 import {
     isNativeSqliteStoreAvailable,
     openAuditStore as openSqliteAuditStore,
+    closeAuditStore as closeSqliteAuditStore,
     migrateAuditLogFromJson,
     getLastAuditEventHash,
     listAuditEventsJson,
@@ -24,7 +25,7 @@ export interface AuditEvent {
     id: string;
     timestamp: string;
     actionCategory: AuditActionCategory;
-    targetType?: "patient-case" | "session" | "export" | "settings";
+    targetType?: "patient-case" | "session" | "export" | "settings" | "backup" | "model";
     targetId?: string;
     /**
      * Short, non-clinical detail only — e.g. "openai" (a provider id) or a
@@ -93,8 +94,17 @@ function writeAll(events: AuditEvent[]): void {
 // extra DELETE on every single insert, not because a single trim is
 // expensive here.
 
+// Defaults to the fixed userData folder, same as every other store in this
+// app — but Settings → Audit & Privacy lets a user point this at a directory
+// of their own choosing instead (e.g. a synced drive, a separate disk), read
+// live on every call so a change takes effect immediately without a
+// restart, matching auditLogBackend's own live-read pattern above. Only the
+// *directory* is configurable; the filename itself stays fixed so the
+// `-wal`/`-shm` WAL sidecar files SQLite creates alongside the main database
+// file are always found next to it.
 function sqliteDbPath(): string {
-    return path.join(app.getPath("userData"), "audit-log.sqlite3");
+    const dir = getSettings().auditLogSqliteDir;
+    return path.join(dir && dir.trim().length > 0 ? dir : app.getPath("userData"), "audit-log.sqlite3");
 }
 
 function sqliteBackendActive(): boolean {
@@ -107,20 +117,8 @@ function sqliteBackendActive(): boolean {
     return getSettings().auditLogBackend === "sqlite" && isNativeSqliteStoreAvailable();
 }
 
-// Migration only needs to happen once per process — after that, every new
-// event is written directly to SQLite and the JSON file is frozen (not
-// deleted; it stays as a rollback path). Re-running the migration is always
-// safe (it only inserts ids not already present), so this flag is purely a
-// performance guard against redoing it on every single call, not a
-// correctness requirement.
-let sqliteMigrated = false;
-
 function ensureSqliteBackendReady(dbPath: string): void {
     openSqliteAuditStore(dbPath);
-    if (sqliteMigrated) return;
-    const existingJson = readAll();
-    if (existingJson.length > 0) migrateAuditLogFromJson(dbPath, JSON.stringify(existingJson));
-    sqliteMigrated = true;
 }
 
 function readAllFromSqlite(dbPath: string): AuditEvent[] {
@@ -129,11 +127,95 @@ function readAllFromSqlite(dbPath: string): AuditEvent[] {
     return result.success ? result.data : [];
 }
 
+// Which backend — and, when it's SQLite, which *resolved path* — was
+// actually in effect as of the last recordEvent()/readAllActive() call. Not
+// just "json" | "sqlite": a custom SQLite directory (Settings → Audit &
+// Privacy) can change while the backend stays "sqlite", and that's exactly
+// as much a transition as switching backends entirely — the previously
+// active path's events must not be silently stranded there. Encoded as a
+// single string (`"json"` or `` `sqlite:${dbPath}` ``) so syncOnBackendTransition
+// below can detect *any* change — backend or path — with one equality check.
+// `null` means "not yet observed" (fresh process), which is deliberately
+// *not* treated as a transition into "json" — that would trigger a pointless
+// SQLite read on every app start for installs that have never touched the
+// SQLite backend at all.
+let lastActiveKey: string | null = null;
+
+function activeStoreKey(): string {
+    return sqliteBackendActive() ? `sqlite:${sqliteDbPath()}` : "json";
+}
+
+function mergeSqliteEventsIntoJson(dbPath: string): void {
+    let sqliteEvents: AuditEvent[];
+    try {
+        ensureSqliteBackendReady(dbPath);
+        sqliteEvents = readAllFromSqlite(dbPath);
+    } catch {
+        // No SQLite store on disk yet (never opted in) or unreadable —
+        // nothing to merge, and readAll() below is already the correct
+        // JSON-only result in that case.
+        return;
+    }
+    if (sqliteEvents.length === 0) return;
+    const existing = readAll();
+    const existingIds = new Set(existing.map((e) => e.id));
+    const missing = sqliteEvents.filter((e) => !existingIds.has(e.id));
+    if (missing.length === 0) return;
+    // SQLite's own insertion order is chain order (see get_last_audit_event_hash
+    // in lib/src/store/audit.rs), and the two backends never both receive
+    // writes concurrently — recordEvent() dispatches to exactly one backend
+    // at a time — so appending in that order after whatever JSON already has
+    // reconstructs the true combined chain order.
+    writeAll([...existing, ...missing]);
+    cache = null;
+}
+
+// Runs whenever the active store key (backend, and — for SQLite — resolved
+// path) differs from what it was on the previous call, catching up whichever
+// direction the change went:
+//   -> sqlite (from json, or from a *different* sqlite path): migrate any
+//     JSON-only events into the newly-active path, so its chain doesn't
+//     silently miss events recorded before this switch.
+//   sqlite -> (json, or a *different* sqlite path): first merge the
+//     previously-active path's SQLite-only events back into the JSON file —
+//     JSON is this store's one location every event is guaranteed to reach
+//     eventually, so leaving a path (for any reason) always banks its
+//     unique events there before moving on. This is also what keeps
+//     switching back to JSON (Settings → Audit & Privacy claims this is
+//     always safe) from making those events disappear from view.
+// Bounded to run once per actual change rather than once per process
+// (the old `sqliteMigrated` boolean's bug: a second switch back to SQLite
+// later in the same session silently stopped migrating anything) or on
+// every single call (which would reintroduce an O(n)-per-write cost).
+//
+// Deliberate scope limit: this only ever reconciles against JSON, never
+// directly between two SQLite paths. Changing the custom SQLite directory
+// while events exist only in the *old* path (never having been on JSON)
+// banks them to JSON on the way out, same as any other departure — but nothing
+// here copies files between two SQLite locations. A user switching to a
+// brand new empty directory should not expect their previous custom
+// location's file to have moved on its own.
+function syncOnBackendTransition(): void {
+    const key = activeStoreKey();
+    if (key === lastActiveKey) return;
+    if (lastActiveKey?.startsWith("sqlite:")) {
+        mergeSqliteEventsIntoJson(lastActiveKey.slice("sqlite:".length));
+    }
+    if (key.startsWith("sqlite:")) {
+        const dbPath = key.slice("sqlite:".length);
+        ensureSqliteBackendReady(dbPath);
+        const existingJson = readAll();
+        if (existingJson.length > 0) migrateAuditLogFromJson(dbPath, JSON.stringify(existingJson));
+    }
+    lastActiveKey = key;
+}
+
 // The single choke point every reader (verifyChainIntegrity, listEvents,
 // the JSON fast-path's own migration-seed read) goes through — dispatches
 // to whichever backend is actually active so none of those callers need
 // their own backend-selection logic.
 function readAllActive(): AuditEvent[] {
+    syncOnBackendTransition();
     if (sqliteBackendActive()) {
         const dbPath = sqliteDbPath();
         ensureSqliteBackendReady(dbPath);
@@ -304,6 +386,7 @@ function reseedCache(p: string): AuditCache {
 }
 
 export function recordEvent(actionCategory: AuditActionCategory, fields: RecordEventFields = {}): AuditEvent {
+    syncOnBackendTransition();
     if (sqliteBackendActive()) {
         return recordEventSqlite(sqliteDbPath(), actionCategory, fields);
     }
@@ -455,6 +538,15 @@ export function clearAll(): void {
     // now, so switching backends afterward doesn't resurrect old events.
     writeAll([]);
     cache = null;
+    // Must happen before the files are deleted below — the native addon
+    // caches an open connection per db_path (see
+    // store::audit::cached_connection in lib/), and deleting the file out
+    // from under a still-cached connection doesn't stop it from reading/
+    // writing the now-unlinked inode: the "cleared" data would otherwise
+    // silently survive, reachable through that stale connection, and a
+    // later reopen of the same path would reuse it instead of seeing a
+    // fresh, empty file.
+    closeSqliteAuditStore(sqliteDbPath());
     for (const suffix of ["", "-wal", "-shm"]) {
         try {
             fs.rmSync(`${sqliteDbPath()}${suffix}`, { force: true });
@@ -463,5 +555,9 @@ export function clearAll(): void {
             // backend ever used) is already the desired end state.
         }
     }
-    sqliteMigrated = false;
+    // The SQLite file was just deleted above, so there is nothing left to
+    // migrate/merge from on the next call regardless of which store is
+    // active — reset rather than leave `lastActiveKey` pointing at a path
+    // whose on-disk store no longer exists.
+    lastActiveKey = null;
 }

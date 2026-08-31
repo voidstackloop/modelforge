@@ -53,11 +53,11 @@ export async function runTask(id: string): Promise<void> {
 
     try {
         const text = await runPrompt(parsed.provider, parsed.modelId, task.prompt);
-        const session = sessionsStore.getSession(task.targetSessionId);
+        const session = await sessionsStore.getSession(task.targetSessionId);
         const userMessage: ChatMessage = { role: "user", content: task.prompt };
         const assistantMessage: ChatMessage = { role: "assistant", content: text };
         if (session) {
-            sessionsStore.updateSession(task.targetSessionId, {
+            await sessionsStore.updateSession(task.targetSessionId, {
                 messages: [...session.messages, userMessage, assistantMessage],
             });
         }

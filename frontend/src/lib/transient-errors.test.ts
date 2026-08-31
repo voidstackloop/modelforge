@@ -3,7 +3,7 @@ import { isTransientError } from "./transient-errors";
 
 describe("isTransientError", () => {
     it("treats network-level failures as transient", () => {
-        expect(isTransientError("Can't reach Ollama at http://127.0.0.1:11434 — is it running? (fetch failed)")).toBe(true);
+        expect(isTransientError("Can't reach the local vLLM server at http://127.0.0.1:8000 — is it running? (fetch failed)")).toBe(true);
         expect(isTransientError("request to https://api.openai.com failed, reason: ECONNRESET")).toBe(true);
         expect(isTransientError("The request timed out after 30s")).toBe(true);
     });

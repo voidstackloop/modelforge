@@ -1,3 +1,5 @@
+import { logger } from "./logger";
+
 // Deterministic, non-model safety checks for the clinical workspace.
 //
 // These run outside any LLM call on purpose: a model can be prompted to
@@ -94,6 +96,42 @@ function normalize(s: string): string {
     return s.trim().toLowerCase();
 }
 
+// What kind of engine produced a result — always provider-declared, never
+// inferred from its output. "demonstration" means exactly what the built-in
+// provider is: a mechanism demo, not medical coverage. A future licensed
+// provider would declare "clinically-authoritative" instead; nothing in this
+// file may promote a provider to that status on its own.
+export type MedicationSafetyCoverage = "demonstration" | "clinically-authoritative";
+
+// The full state of a medication-safety check, replacing a bare warnings
+// array so "no warnings" and "no evidence of a problem" can never be
+// conflated with "verified safe" or "check didn't actually run":
+//   - `status` is the provider's own coverage (demonstration/
+//     clinically-authoritative) when a check actually ran, or "unavailable"/
+//     "failed" when it didn't — four distinct values, never collapsed into
+//     "no warnings".
+//   - `applicable` is a separate axis: false means there was nothing to
+//     check (no allergies or medications recorded at all), which is not the
+//     same claim as "checked and found nothing".
+//   - `warnings` is only ever non-empty when `status` reflects a check that
+//     actually completed.
+export interface MedicationSafetyResult {
+    /** Stable machine identifier of the provider that produced this result — matches MedicationSafetyProvider.name. */
+    providerName: string;
+    /** Human-readable label for display, e.g. "Built-in demonstration list". */
+    providerLabel: string;
+    status: MedicationSafetyCoverage | "unavailable" | "failed";
+    /** ISO-8601 timestamp of when this check was evaluated. */
+    evaluatedAt: string;
+    /** False when no allergies or medications were supplied — there was nothing to check, as distinct from a check that ran and found nothing. */
+    applicable: boolean;
+    warnings: MedicationConflictWarning[];
+    /** Static caveat/provenance text for this provider, always shown alongside its results regardless of outcome — e.g. why zero warnings isn't evidence of safety. */
+    limitations: string;
+    /** Present only when status is "failed" — a fixed, safe-to-display/log message. Never the provider's raw error, which could otherwise echo back the allergy/medication text it was just given. */
+    error?: string;
+}
+
 /**
  * Behind-interface seam for medication/allergy conflict checking. The
  * built-in provider below is a tiny, non-authoritative seed list that
@@ -107,11 +145,31 @@ function normalize(s: string): string {
 export interface MedicationSafetyProvider {
     /** Short identifier surfaced in warnings/UI so it's never ambiguous which engine produced a result, e.g. "modelforge-builtin-seed-list" vs a real vendor name. */
     readonly name: string;
+    /** Human-readable label for display — distinct from `name` so the UI never has to guess how to present a machine identifier. */
+    readonly label: string;
+    /** What kind of engine this is. Fixed per provider; see MedicationSafetyCoverage. */
+    readonly coverage: MedicationSafetyCoverage;
+    /** Static caveat/provenance text shown alongside every result from this provider, regardless of outcome. */
+    readonly limitations: string;
+    /**
+     * Optional: lets a provider report itself as not currently usable (e.g.
+     * a remote provider with no configured credentials or an unreachable
+     * endpoint) without needing to throw. Checked before `checkConflicts` is
+     * ever called — an unavailable provider must not be asked to run.
+     */
+    isAvailable?(): boolean;
     checkConflicts(allergies: string[], medications: string[]): MedicationConflictWarning[];
 }
 
 export const builtInMedicationSafetyProvider: MedicationSafetyProvider = {
     name: "modelforge-builtin-seed-list",
+    label: "Built-in demonstration list",
+    coverage: "demonstration",
+    limitations:
+        "A small, non-exhaustive set of well-known interaction pairs and allergy-class synonyms, included only to " +
+        "demonstrate the warning mechanism — not a licensed drug-interaction database (e.g. First Databank, " +
+        "Lexicomp, Multum). Zero warnings from this list is not evidence that the recorded medications and " +
+        "allergies are safe together; independently verify with a pharmacist or clinical reference.",
     checkConflicts(allergies: string[], medications: string[]): MedicationConflictWarning[] {
         const warnings: MedicationConflictWarning[] = [];
         const normAllergies = allergies.map(normalize).filter(Boolean);
@@ -155,7 +213,7 @@ export const builtInMedicationSafetyProvider: MedicationSafetyProvider = {
 
 let activeMedicationSafetyProvider: MedicationSafetyProvider = builtInMedicationSafetyProvider;
 
-/** Swaps the active provider (e.g. to a licensed-database-backed one). Not persisted across restarts on purpose — wire persistence at the call site once a real second provider exists, rather than guessing its config shape now. */
+/** Swaps the active provider directly — used by tests and by whoever wires up a real second provider at the point it's registered. For the persisted, Settings-driven path, see `selectMedicationSafetyProvider` below instead. */
 export function setMedicationSafetyProvider(provider: MedicationSafetyProvider): void {
     activeMedicationSafetyProvider = provider;
 }
@@ -164,17 +222,109 @@ export function getMedicationSafetyProvider(): MedicationSafetyProvider {
     return activeMedicationSafetyProvider;
 }
 
+// --- Provider registry (configuration boundary for a future provider) ------
+//
+// A named catalog a real licensed-database provider can register itself
+// into (e.g. a future module calling `registerMedicationSafetyProvider(...)`
+// at startup), independent of whether anything currently selects it.
+// Settings persists only a *name* (AppSettings.medicationSafetyProviderId,
+// see settings-store.ts) — never a provider object, credentials, or
+// endpoint — so on-disk config never contains anything provider-specific
+// enough to need its own migration if a real provider's shape changes
+// later; any actual credential a real provider needs belongs in the
+// existing generic secrets-store, keyed by that provider's own name, not in
+// a field this file invents ahead of time. Only the built-in demonstration
+// provider is registered today — this file deliberately never registers a
+// second one on its own, since doing so would mean fabricating a vendor
+// integration this codebase has no license or clinical validation for.
+const medicationSafetyProviderRegistry = new Map<string, MedicationSafetyProvider>([
+    [builtInMedicationSafetyProvider.name, builtInMedicationSafetyProvider],
+]);
+
+/** Adds (or replaces) a provider in the registry, keyed by its `name`. Registering alone never changes which provider is active — see `selectMedicationSafetyProvider`. */
+export function registerMedicationSafetyProvider(provider: MedicationSafetyProvider): void {
+    medicationSafetyProviderRegistry.set(provider.name, provider);
+}
+
+/** Every currently-registered provider's public identity — what a Settings UI lists to choose from. Never includes credentials or connection details, since the provider interface itself carries none. */
+export function listMedicationSafetyProviders(): { name: string; label: string; coverage: MedicationSafetyCoverage }[] {
+    return [...medicationSafetyProviderRegistry.values()].map(({ name, label, coverage }) => ({ name, label, coverage }));
+}
+
+/**
+ * Makes the named registered provider active — the persisted, Settings-driven
+ * selection path (AppSettings.medicationSafetyProviderId), as opposed to
+ * `setMedicationSafetyProvider`'s direct one-off swap (tests, ad hoc use).
+ * Fails safe: an unregistered name (a stale setting from a build that shipped
+ * a provider this one doesn't, a typo) leaves whichever provider was already
+ * active untouched and returns `false` rather than throwing or silently
+ * falling through to some default — callers (main.ts at startup,
+ * settings:save) are expected to log that case, not treat it as fatal.
+ */
+export function selectMedicationSafetyProvider(name: string): boolean {
+    const provider = medicationSafetyProviderRegistry.get(name);
+    if (!provider) return false;
+    activeMedicationSafetyProvider = provider;
+    return true;
+}
+
+function hasContent(list: string[]): boolean {
+    return list.some((s) => normalize(s).length > 0);
+}
+
 /**
  * Deterministic, best-effort conflict check against a case's recorded
  * allergies and current medication list, delegated to whichever provider is
  * currently active (built-in seed list by default). Every warning must be
  * clinician-reviewed, never auto-acted on, regardless of provider.
+ *
+ * Always returns a full MedicationSafetyResult rather than a bare warnings
+ * array — see its own doc comment for why "no warnings" alone is never
+ * enough to tell "nothing to check" apart from "checked, found nothing" or
+ * "the check itself didn't run".
  */
-export function checkMedicationConflicts(
-    allergies: string[],
-    medications: string[]
-): MedicationConflictWarning[] {
-    return activeMedicationSafetyProvider.checkConflicts(allergies, medications);
+export function checkMedicationConflicts(allergies: string[], medications: string[]): MedicationSafetyResult {
+    const provider = activeMedicationSafetyProvider;
+    const base = {
+        providerName: provider.name,
+        providerLabel: provider.label,
+        evaluatedAt: new Date().toISOString(),
+        limitations: provider.limitations,
+    };
+
+    const applicable = hasContent(allergies) || hasContent(medications);
+    if (!applicable) {
+        // Nothing recorded to check against — deliberately skips even
+        // isAvailable()/checkConflicts() so an unavailable or misconfigured
+        // provider can never masquerade as "ran and found nothing" when
+        // there was nothing to evaluate in the first place.
+        return { ...base, applicable, status: provider.coverage, warnings: [] };
+    }
+
+    if (provider.isAvailable && !provider.isAvailable()) {
+        return { ...base, applicable, status: "unavailable", warnings: [] };
+    }
+
+    try {
+        const warnings = provider.checkConflicts(allergies, medications);
+        return { ...base, applicable, status: provider.coverage, warnings };
+    } catch (err) {
+        // Never surface the provider's raw error message to the caller (and
+        // from there, the renderer/IPC boundary): a buggy or malicious
+        // provider could echo back the very allergy/medication text it was
+        // just given inside an error message, which would leak clinical
+        // content through a field this app treats as safe to display and
+        // log. Only the provider's own identity is logged — never its input
+        // or its raw error.
+        logger.error(`Medication safety provider "${provider.name}" threw during checkConflicts().`);
+        return {
+            ...base,
+            applicable,
+            status: "failed",
+            warnings: [],
+            error: "The medication safety check failed to complete. Treat this as unverified, not as a clean result.",
+        };
+    }
 }
 
 // --- Best-effort text redaction ---------------------------------------------

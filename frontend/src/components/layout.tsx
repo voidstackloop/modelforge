@@ -37,7 +37,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { SectionHeader } from "@/components/ds";
+import { InlineNotice, SectionHeader } from "@/components/ds";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { CommandPalette } from "@/components/command-palette";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
@@ -597,7 +597,7 @@ function ProjectGroup({
 }
 
 export default function Layout() {
-    const { sessions, projects, hasApi, sessionsLocked, createSession, deleteSession, createProject, refresh } = useSessions();
+    const { sessions, projects, hasApi, sessionsLocked, sessionsLoadError, createSession, deleteSession, createProject, refresh } = useSessions();
     useCaseAutoLock();
     const { t } = useI18n();
     const navigate = useNavigate();
@@ -773,6 +773,30 @@ export default function Layout() {
         return (
             <TooltipProvider>
                 <CaseLockScreen onUnlocked={refresh} />
+            </TooltipProvider>
+        );
+    }
+
+    // A load failure that isn't encryption being locked (see
+    // sessions-context.tsx's refresh() — it re-checks status before ever
+    // setting this) must not show the same unlock prompt: no passphrase
+    // fixes a corrupted local store or a disk I/O error.
+    if (sessionsLoadError) {
+        return (
+            <TooltipProvider>
+                <div className="flex h-svh items-center justify-center bg-background p-8">
+                    <InlineNotice
+                        variant="destructive"
+                        title="Couldn't load your chats and projects"
+                        action={
+                            <Button variant="outline" size="sm" onClick={() => void refresh()} className="shrink-0">
+                                Retry
+                            </Button>
+                        }
+                    >
+                        {sessionsLoadError}
+                    </InlineNotice>
+                </div>
             </TooltipProvider>
         );
     }

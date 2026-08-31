@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Share2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState, InlineNotice } from "@/components/ds";
@@ -52,14 +53,25 @@ export default function KnowledgeGraph() {
     const hasApi = typeof window !== "undefined" && !!window.api;
     const [cases, setCases] = useState<PatientCase[]>([]);
     const [selectedId, setSelectedId] = useState<string | null>(null);
+    // Distinct from an empty `cases` array: a failed load must not render
+    // as "no cases to visualize yet" — that message reads as an invitation
+    // to create one, and a clinician acting on it would produce a
+    // duplicate of a case that already exists but simply failed to load.
+    const [loadError, setLoadError] = useState<string | null>(null);
 
-    useEffect(() => {
+    function loadCases() {
         if (!hasApi) return;
-        window.api.patientCases.list().then((list) => {
-            setCases(list);
-            if (list.length > 0) setSelectedId((prev) => prev ?? list[0].id);
-        });
-    }, [hasApi]);
+        window.api.patientCases
+            .list()
+            .then((list) => {
+                setLoadError(null);
+                setCases(list);
+                if (list.length > 0) setSelectedId((prev) => prev ?? list[0].id);
+            })
+            .catch((err) => setLoadError((err as Error).message));
+    }
+
+    useEffect(loadCases, [hasApi]);
 
     const selectedCase = cases.find((c) => c.id === selectedId) ?? null;
     const graph = useMemo(() => (selectedCase ? buildGraph(selectedCase) : null), [selectedCase]);
@@ -97,7 +109,19 @@ export default function KnowledgeGraph() {
                         tools appear in Clinical Assistant like any other tool, gated by the same approval flow.
                     </InlineNotice>
 
-                    {cases.length === 0 ? (
+                    {loadError ? (
+                        <InlineNotice
+                            variant="destructive"
+                            title="Couldn't load patient cases"
+                            action={
+                                <Button variant="outline" size="sm" onClick={loadCases} className="shrink-0">
+                                    Retry
+                                </Button>
+                            }
+                        >
+                            {loadError}
+                        </InlineNotice>
+                    ) : cases.length === 0 ? (
                         <EmptyState icon={<Share2 className="size-5" />} title="No cases to visualize yet" description="Create a patient case with some structured fields first." />
                     ) : (
                         <>

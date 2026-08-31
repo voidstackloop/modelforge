@@ -20,7 +20,7 @@ describe("downloadGgufFile (native adapter)", () => {
         nativeMock.mockReset();
     });
 
-    it("calls the native addon with modelId/filename/destPath and no token when none is given", async () => {
+    it("calls the native addon with modelId/filename/destPath and no token/checksum when neither is given", async () => {
         nativeMock.mockResolvedValue(undefined);
 
         await downloadGgufFile("org/model", "model.gguf", "/tmp/model.gguf", () => {});
@@ -29,6 +29,7 @@ describe("downloadGgufFile (native adapter)", () => {
             "org/model",
             "model.gguf",
             "/tmp/model.gguf",
+            undefined,
             undefined,
             expect.any(Function)
         );
@@ -50,9 +51,34 @@ describe("downloadGgufFile (native adapter)", () => {
         expect(nativeMock.mock.calls[0][3]).toBe("secret-token");
     });
 
+    it("passes an expectedSha256 through unchanged when given", async () => {
+        nativeMock.mockResolvedValue(undefined);
+
+        await downloadGgufFile("org/model", "model.gguf", "/tmp/model.gguf", () => {}, "secret-token", "abc123");
+
+        expect(nativeMock.mock.calls[0][4]).toBe("abc123");
+    });
+
+    it("passes a null expectedSha256 through as undefined", async () => {
+        nativeMock.mockResolvedValue(undefined);
+
+        await downloadGgufFile("org/model", "model.gguf", "/tmp/model.gguf", () => {}, undefined, null);
+
+        expect(nativeMock.mock.calls[0][4]).toBeUndefined();
+    });
+
+    it("propagates a checksum-mismatch rejection unchanged, so the caller sees verification_failed like any other native error", async () => {
+        const verificationError = new Error('Checksum mismatch for "model.gguf": expected abc, got def.');
+        nativeMock.mockRejectedValue(verificationError);
+
+        await expect(
+            downloadGgufFile("org/model", "model.gguf", "/tmp/model.gguf", () => {}, undefined, "abc")
+        ).rejects.toBe(verificationError);
+    });
+
     it("adapts native progress events, mapping a missing totalBytes to null", async () => {
         const progress: { receivedBytes: number; totalBytes: number | null }[] = [];
-        nativeMock.mockImplementation(async (_modelId, _filename, _dest, _token, onProgress) => {
+        nativeMock.mockImplementation(async (_modelId, _filename, _dest, _token, _sha256, onProgress) => {
             onProgress(null, { receivedBytes: 5, totalBytes: undefined });
             onProgress(null, { receivedBytes: 10, totalBytes: 10 });
         });

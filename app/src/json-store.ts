@@ -43,6 +43,19 @@ function backUpAndFallBack<T>(filePath: string, reason: string, fallback: T): T 
 // means it ran and hit a genuine I/O failure other than "missing", which is
 // left to fall through to the `fs` attempt below so the exact same error
 // gets logged with the exact same wording as before this addon existed.
+//
+// Deliberately uncached: an mtime+size fingerprint isn't fine-grained enough
+// to be safe for every reader of this module — policy-store.ts's
+// policyFilePath() is intentionally rewritten by something outside this
+// process (an admin's deployment tooling), and its whole job is detecting
+// tampering. A rewrite with the same byte length (a corrupted signature, or
+// a new expiry with the same-length date string) can land inside one
+// filesystem mtime tick, which would make a stat-based cache serve the
+// previous, still-trusted content as if it were the new one — silently
+// defeating the tamper check it exists for. Caught by policy-store.test.ts's
+// "falls back to the last-known-good cached policy when a later read is
+// invalid" case during development of a stat-based cache here; removed
+// rather than special-cased per caller.
 function readFileRaw(filePath: string): string | null {
     try {
         const native = readJsonFileNative(filePath);

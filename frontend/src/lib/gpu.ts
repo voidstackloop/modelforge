@@ -4,8 +4,9 @@ import type { LlamaCppGpuBackend } from "@/types/electron";
 // the backends node-llama-cpp actually reports as loadable on this machine.
 // CUDA is NVIDIA-only and Metal is Apple-only; AMD and Intel GPUs are served
 // by Vulkan, since node-llama-cpp ships no ROCm or SYCL prebuilt binaries —
-// AMD users who want native ROCm should run those models through Ollama,
-// which supports it directly.
+// AMD users who want native ROCm can use this app's own dedicated `rocm`
+// local-server backend instead (local-server-manager.ts), separate from this
+// llama.cpp-specific recommendation.
 export function recommendGpuBackend(vendors: string[], available: string[]): LlamaCppGpuBackend {
     if (vendors.includes("nvidia") && available.includes("cuda")) return "cuda";
     if (vendors.includes("apple") && available.includes("metal")) return "metal";

@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test, expect } from "@playwright/test";
 import { launchApp, stubOpenDialog, type LaunchedApp } from "../fixtures/electron-app";
-import { startFakeOllama, type FakeOllamaServer } from "../fixtures/fake-ollama";
+import { FAKE_LLAMACPP_ENV, controlFakeLlamaCpp, type FakeLlamaCppController } from "../fixtures/fake-llamacpp";
 
 // Agent mode's Allow/Deny card (docs/AGENT_MODE.md's tool-approval model) is
 // the most security-relevant UI surface in the app: every tool call the
@@ -17,21 +17,24 @@ import { startFakeOllama, type FakeOllamaServer } from "../fixtures/fake-ollama"
 // and follow-up assertions around it.
 test.setTimeout(90_000);
 
-let fakeOllama: FakeOllamaServer;
+let modelsDir: string;
 let instance: LaunchedApp;
 let workspaceDir: string;
+let fakeLlamaCpp: FakeLlamaCppController;
 
-test.beforeAll(async () => {
-    fakeOllama = await startFakeOllama();
-});
-
-test.afterAll(async () => {
-    await fakeOllama.close();
-});
+const FAKE_MODEL_NAME = "fake-embedding-model.gguf";
+const FAKE_MODEL_REF = `llamacpp:${FAKE_MODEL_NAME}`;
 
 test.beforeEach(async () => {
+    modelsDir = fs.mkdtempSync(path.join(os.tmpdir(), "modelforge-e2e-approval-models-"));
+    fs.writeFileSync(path.join(modelsDir, FAKE_MODEL_NAME), Buffer.concat([Buffer.from("GGUF", "ascii"), Buffer.from([3, 0, 0, 0])]));
+
     workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "modelforge-e2e-workspace-"));
-    instance = await launchApp({ settings: { onboardingComplete: true, ollamaHost: fakeOllama.url } });
+    instance = await launchApp({
+        settings: { onboardingComplete: true, llamaCppModelsDir: modelsDir, defaultModel: FAKE_MODEL_REF },
+        env: FAKE_LLAMACPP_ENV,
+    });
+    fakeLlamaCpp = controlFakeLlamaCpp(instance.app);
     await stubOpenDialog(instance.app, workspaceDir);
 
     // Both agent-tool-approval tests have failed on CI (never locally) with
@@ -44,6 +47,7 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => {
     await instance.close();
+    fs.rmSync(modelsDir, { recursive: true, force: true });
     fs.rmSync(workspaceDir, { recursive: true, force: true });
 });
 
@@ -60,13 +64,11 @@ async function enableAgentModeAndSendToolCallingMessage(instance_: LaunchedApp):
     // agentWorkspace effect) — sending the chat message immediately risks
     // its single-chunk tool-call response's webContents.send() landing in
     // the same event-loop tick as one of those, which Electron can coalesce
-    // away silently (this is the same class of bug worked around in
-    // fake-ollama.ts's DEFAULT_DELAY_MS, just triggered by a different
-    // neighbor now that agent mode is in play). Letting things settle first
-    // is cheaper and more direct than only padding the response delay.
+    // away silently. Letting things settle first is cheaper and more direct
+    // than only padding the response delay.
     await window.waitForTimeout(300);
 
-    fakeOllama.setNextChatTurn({
+    await fakeLlamaCpp.setNextChatTurn({
         toolCall: { name: "run_command", arguments: { command: "echo hello-from-agent" } },
         // Wider than the fixture's own default — this response is a single
         // chunk carrying the *entire* tool call, so if Electron drops it,
@@ -81,11 +83,11 @@ async function enableAgentModeAndSendToolCallingMessage(instance_: LaunchedApp):
     await expect(sendButton).toBeEnabled({ timeout: 20_000 });
     await sendButton.click();
 
-    // Narrows "the request never reached the fake server" from "it reached
+    // Narrows "the request never reached the fake module" from "it reached
     // it but the response never rendered" — cheap, and the only thing that
     // can actually tell those two apart from the CI log alone.
     await instance_.window.waitForTimeout(500);
-    console.log(`[diagnostic] fakeOllama chat request count after send: ${fakeOllama.getChatRequestCount()}`);
+    console.log(`[diagnostic] fakeLlamaCpp chat request count after send: ${await fakeLlamaCpp.getChatRequestCount()}`);
 }
 
 test("Deny stops the tool from running and the card clears", async () => {
@@ -98,7 +100,7 @@ test("Deny stops the tool from running and the card clears", async () => {
     // Generous on top of the config's own CI-aware expect timeout: this
     // specific wait spans agent-workspace setup (a real IPC round trip plus
     // agentTools.detectProjectScripts()) and a full chat request/response
-    // round trip through the fake Ollama server — the longest chain of
+    // round trip through the fake llama.cpp module — the longest chain of
     // async work in this suite, and the one most exposed to a slower/shared
     // CI runner.
     await expect(window.getByRole("button", { name: "Allow" })).toBeVisible({ timeout: 30_000 });
@@ -107,7 +109,7 @@ test("Deny stops the tool from running and the card clears", async () => {
     await expect(window.getByRole("button", { name: "Deny" })).toBeHidden();
     // The agent loop still completes (with the model told it was denied) —
     // the whole turn doesn't hang after a denial.
-    await expect(window.getByText("Hello from the fake model.")).toBeVisible({ timeout: 20_000 });
+    await expect(window.getByText("Hello from the fake llama.cpp backend.")).toBeVisible({ timeout: 20_000 });
 
     // Nothing the denied command would have produced actually happened.
     expect(fs.readdirSync(workspaceDir)).toEqual([]);
@@ -120,7 +122,7 @@ test("Allow runs the tool for real and the card clears", async () => {
     // Generous on top of the config's own CI-aware expect timeout: this
     // specific wait spans agent-workspace setup (a real IPC round trip plus
     // agentTools.detectProjectScripts()) and a full chat request/response
-    // round trip through the fake Ollama server — the longest chain of
+    // round trip through the fake llama.cpp module — the longest chain of
     // async work in this suite, and the one most exposed to a slower/shared
     // CI runner.
     await expect(window.getByRole("button", { name: "Allow" })).toBeVisible({ timeout: 30_000 });
@@ -130,5 +132,5 @@ test("Allow runs the tool for real and the card clears", async () => {
     // The tool result card (not the earlier pending-call summary line, which
     // also still mentions the command) — proof the command actually ran.
     await expect(window.locator("pre", { hasText: "hello-from-agent" })).toBeVisible({ timeout: 20_000 });
-    await expect(window.getByText("Hello from the fake model.")).toBeVisible({ timeout: 20_000 });
+    await expect(window.getByText("Hello from the fake llama.cpp backend.")).toBeVisible({ timeout: 20_000 });
 });

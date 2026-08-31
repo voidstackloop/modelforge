@@ -3,13 +3,18 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { app } from "electron";
 import { readJson, writeJson } from "./json-store";
+import { logger } from "./logger";
 
-// Optional, passphrase-based encryption at rest for patient-cases.json —
-// the one store in this app that holds real clinical detail (allergies,
-// medications, conditions, notes). Everything else (chat sessions, evidence
-// sources, audit log) stays out of scope for this module; the audit log in
-// particular is deliberately designed to carry no clinical content at all
-// (see audit-log-store.ts), so encrypting it wouldn't add protection.
+// Optional, passphrase-based encryption at rest, gating every store in this
+// app that can hold real clinical detail: patient-cases.json (allergies,
+// medications, conditions, notes — sessions-store.ts and rag-db.ts share
+// this exact same enabled/unlocked/key state and encrypt/decrypt calls, so
+// enabling it here covers chat sessions and RAG-indexed document content
+// too, not just patient cases). Evidence sources and the audit log stay out
+// of scope: Evidence Library entries are add-by-URL public reference
+// material, not patient-specific; the audit log is deliberately designed to
+// carry no clinical content at all (see audit-log-store.ts), so encrypting
+// it wouldn't add protection.
 //
 // Threat model this actually addresses: the case data file being read by
 // someone/something with filesystem access but not the passphrase (a stolen
@@ -111,11 +116,43 @@ export function unlock(passphrase: string): boolean {
     return true;
 }
 
+// Stores gated on this module (sessions-store.ts, patient-cases-store.ts)
+// keep an in-process read cache of their decrypted contents (see each
+// store's own doc comment) — a decrypted array must not keep sitting in
+// memory once the passphrase has been "forgotten," so each store registers
+// a hook here to drop its cache synchronously as part of lock() itself.
+// Registering here — rather than requiring every caller of lock() to
+// remember to clear both stores' caches — keeps the guarantee structural:
+// it holds no matter who calls lock() (the encryption:lock IPC handler, a
+// test calling it directly, a future caller not yet written), not just the
+// one call site that happens to remember. This module still can't import
+// those stores directly (see the CaseDataLockedError re-export note above —
+// circular dependency), so the stores register themselves instead of being
+// called into.
+type BeforeLockHook = () => void;
+const beforeLockHooks: BeforeLockHook[] = [];
+
+/** Registers a callback that runs synchronously, before the in-memory key is
+ * cleared, every time lock() runs. A hook that throws is logged and skipped
+ * — it must never prevent lock() from actually clearing the key, since
+ * failing to lock on request is a worse outcome than one store's cache
+ * clear failing. */
+export function onBeforeLock(hook: BeforeLockHook): void {
+    beforeLockHooks.push(hook);
+}
+
 /** Clears the in-memory key only — case data on disk is untouched and
  * becomes unreadable again until the correct passphrase is entered. This is
  * what an inactivity timeout calls; it is not the same as disabling
  * encryption. */
 export function lock(): void {
+    for (const hook of beforeLockHooks) {
+        try {
+            hook();
+        } catch (err) {
+            logger.error(`case-encryption: onBeforeLock hook failed: ${(err as Error).message}`);
+        }
+    }
     sessionKey = null;
 }
 
@@ -150,15 +187,25 @@ export interface EncryptedPayload {
     authTagHex: string;
 }
 
+// 16 bytes (128 bits) — already Node's own GCM default, made explicit here
+// (both sides, for symmetry) rather than relying on that default implicitly.
+// A caller passing a *shorter* tag would otherwise still be accepted up to
+// whatever the runtime's default happens to be; pinning it here means a
+// truncated/malformed authTagHex fails setAuthTag() immediately instead of
+// depending on an unstated runtime default.
+const GCM_AUTH_TAG_LENGTH_BYTES = 16;
+
 export function encrypt(plaintext: string, key: Buffer): EncryptedPayload {
     const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv, { authTagLength: GCM_AUTH_TAG_LENGTH_BYTES });
     const ciphertext = Buffer.concat([cipher.update(plaintext, "utf-8"), cipher.final()]);
     return { ivHex: iv.toString("hex"), ciphertextHex: ciphertext.toString("hex"), authTagHex: cipher.getAuthTag().toString("hex") };
 }
 
 export function decrypt(payload: EncryptedPayload, key: Buffer): string {
-    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(payload.ivHex, "hex"));
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(payload.ivHex, "hex"), {
+        authTagLength: GCM_AUTH_TAG_LENGTH_BYTES,
+    });
     decipher.setAuthTag(Buffer.from(payload.authTagHex, "hex"));
     const plaintext = Buffer.concat([decipher.update(Buffer.from(payload.ciphertextHex, "hex")), decipher.final()]);
     return plaintext.toString("utf-8");

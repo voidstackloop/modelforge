@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
 import * as mcpClient from "./mcp-client";
+import { mainResourceOrchestrator } from "./resource-orchestrator";
 
 // Real JSON-Schema (AJV) validation of tool arguments is unit-tested against
 // the validator module directly in mcp-schema-validation.test.ts. What's
@@ -65,6 +66,23 @@ describe("mcp-client (stdio, official SDK transport)", () => {
         const { tools } = await mcpClient.connectServer(stubConfig("stub-5"));
         expect(tools.length).toBe(5);
         expect(mcpClient.getServerStatuses()["stub-5"].connected).toBe(true);
+    });
+
+    it("item 1 ('MCP/local tool processes ... Per-process limits'): a connected stdio server holds a resource-orchestrator lease for its lifetime, released on disconnect", async () => {
+        await mcpClient.connectServer(stubConfig("stub-resource"));
+        const active = mainResourceOrchestrator.getTelemetry().activeLeases;
+        expect(active.some((lease) => lease.workloadKind === "mcp-tool")).toBe(true);
+
+        mcpClient.disconnectServer("stub-resource");
+        const afterDisconnect = mainResourceOrchestrator.getTelemetry().activeLeases;
+        expect(afterDisconnect.some((lease) => lease.workloadKind === "mcp-tool")).toBe(false);
+    });
+
+    it("reconnecting the same server id never leaks the old lease — exactly one mcp-tool lease is held per live connection", async () => {
+        await mcpClient.connectServer(stubConfig("stub-release-on-reconnect"));
+        await mcpClient.connectServer(stubConfig("stub-release-on-reconnect")); // same id — replaces the old connection
+        const mcpLeases = mainResourceOrchestrator.getTelemetry().activeLeases.filter((lease) => lease.workloadKind === "mcp-tool");
+        expect(mcpLeases).toHaveLength(1);
     });
 
     it("delivers progress notifications from a long-running tool call", async () => {

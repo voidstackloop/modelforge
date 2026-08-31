@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, BarChart3, Leaf, Zap } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { MetricCard, EmptyState } from "@/components/ds";
+import { InlineNotice, MetricCard, EmptyState } from "@/components/ds";
 import { useI18n } from "@/lib/i18n";
 import { PROVIDER_LABELS } from "@/lib/providers";
 import { formatCost } from "@/lib/pricing";
@@ -31,14 +32,31 @@ export default function UsageDashboard() {
     const hasApi = typeof window !== "undefined" && !!window.api;
     const [sessions, setSessions] = useState<ChatSession[]>([]);
     const [energy, setEnergy] = useState<EnergyDashboard | null>(null);
+    // Distinct from a genuinely empty `sessions` array: sessions share the
+    // case-encryption gate (sessions-store.ts), so a failed load (locked,
+    // or otherwise) must not render as "no usage data yet" — a clinician
+    // with months of history would have no way to tell the difference.
+    const [sessionsLoadError, setSessionsLoadError] = useState<string | null>(null);
+
+    function loadSessions() {
+        if (!hasApi) return;
+        window.api.sessions
+            .list()
+            .then((list) => {
+                setSessionsLoadError(null);
+                setSessions(list);
+            })
+            .catch((err) => setSessionsLoadError((err as Error).message));
+    }
 
     useEffect(() => {
+        loadSessions();
         if (!hasApi) return;
-        window.api.sessions.list().then(setSessions);
         const refreshEnergy = () => window.api.energy.getDashboard().then(setEnergy);
         refreshEnergy();
         const timer = window.setInterval(refreshEnergy, 2000);
         return () => window.clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [hasApi]);
 
     const usages = useMemo(
@@ -170,7 +188,19 @@ export default function UsageDashboard() {
                         </>
                     )}
 
-                    {usages.length === 0 ? (
+                    {sessionsLoadError ? (
+                        <InlineNotice
+                            variant="destructive"
+                            title="Couldn't load usage data"
+                            action={
+                                <Button variant="outline" size="sm" onClick={loadSessions} className="shrink-0">
+                                    Retry
+                                </Button>
+                            }
+                        >
+                            {sessionsLoadError}
+                        </InlineNotice>
+                    ) : usages.length === 0 ? (
                         <EmptyState icon={<BarChart3 className="size-5" />} title={t.usageNoData} />
                     ) : (
                         <>

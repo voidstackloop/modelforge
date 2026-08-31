@@ -26,7 +26,7 @@ async function hfFetchJson<T>(url: string, token?: string | null): Promise<T> {
 
 // Hugging Face's search endpoint already supports filtering by library/tag —
 // "gguf" narrows results to repos that have at least one GGUF file, which is
-// what matters for both the Ollama and llama.cpp backends this app supports.
+// what matters for the llama.cpp backend this app supports.
 export async function searchGgufModels(query: string, limit = 20, token?: string | null): Promise<HfModelSummary[]> {
     const trimmed = query.trim();
     if (!trimmed) return [];
@@ -59,10 +59,17 @@ export async function downloadGgufFile(
     filename: string,
     destPath: string,
     onProgress: (progress: DownloadProgress) => void,
-    token?: string | null
+    token?: string | null,
+    // Verified the same way the job-based DownloadManager already verifies
+    // each shard (lib/src/download/job.rs) — the Rust side deletes the
+    // finished file and rejects the returned promise on a mismatch, rather
+    // than accepting a byte-count-complete-but-corrupted file. `undefined`
+    // (the default) skips verification entirely, unchanged from before this
+    // parameter existed — no current caller has a checksum to supply yet.
+    expectedSha256?: string | null
 ): Promise<void> {
     const { downloadGgufFileNative } = await import("./native-downloader");
-    await downloadGgufFileNative(modelId, filename, destPath, token ?? undefined, (err, progress) => {
+    await downloadGgufFileNative(modelId, filename, destPath, token ?? undefined, expectedSha256 ?? undefined, (err, progress) => {
         if (err) return; // fatal errors surface via the returned promise's rejection instead
         onProgress({ receivedBytes: progress.receivedBytes, totalBytes: progress.totalBytes ?? null });
     });

@@ -11,6 +11,13 @@ interface SessionsContextValue {
      * that same encryption gate (see sessions-store.ts), so `sessions` is
      * empty and stale, not "genuinely no chats yet", whenever this is true. */
     sessionsLocked: boolean;
+    /** Set when sessions/projects failed to load for a reason that is NOT
+     * encryption being locked (confirmed by re-checking status — see
+     * refresh() below) — a corrupted local store, a disk I/O error,
+     * anything else. Distinct from `sessionsLocked` on purpose: no
+     * passphrase fixes this, so the app shell must not show the same
+     * unlock prompt for it. */
+    sessionsLoadError: string | null;
     refresh: () => Promise<void>;
     createSession: (model: string | null, projectId?: string | null) => Promise<ChatSession>;
     deleteSession: (id: string) => Promise<void>;
@@ -27,6 +34,7 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
     const [projects, setProjects] = useState<Project[]>([]);
     const [loading, setLoading] = useState(true);
     const [sessionsLocked, setSessionsLocked] = useState(false);
+    const [sessionsLoadError, setSessionsLoadError] = useState<string | null>(null);
     const hasApi = typeof window !== "undefined" && !!window.api;
 
     const refresh = useCallback(async () => {
@@ -41,6 +49,7 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
             setProjects(await window.api.projects.list());
             setSessions([]);
             setSessionsLocked(true);
+            setSessionsLoadError(null);
             setLoading(false);
             return;
         }
@@ -49,13 +58,25 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
             setSessions(sessionList);
             setProjects(projectList);
             setSessionsLocked(false);
-        } catch {
+            setSessionsLoadError(null);
+        } catch (err) {
             // A lock could still race in between the status check above and
-            // this call (e.g. auto-lock firing mid-refresh) — treat any
-            // failure to list sessions the same as a known-locked state
-            // rather than surfacing a raw error.
-            setSessions([]);
-            setSessionsLocked(true);
+            // this call (e.g. auto-lock firing mid-refresh) — re-check
+            // status rather than assuming that's what happened, so a
+            // genuinely different failure (a corrupted local store, a disk
+            // I/O error) surfaces as itself instead of a passphrase prompt
+            // that can't fix it. Locking out the *entire app shell* (see
+            // layout.tsx's consumption of sessionsLocked) makes getting
+            // this distinction right worth the extra IPC round trip.
+            const recheck = await window.api.encryption.status();
+            if (recheck.enabled && !recheck.unlocked) {
+                setSessions([]);
+                setSessionsLocked(true);
+                setSessionsLoadError(null);
+            } else {
+                setSessionsLocked(false);
+                setSessionsLoadError((err as Error).message);
+            }
         }
         setLoading(false);
     }, [hasApi]);
@@ -134,6 +155,7 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
                 loading,
                 hasApi,
                 sessionsLocked,
+                sessionsLoadError,
                 refresh,
                 createSession,
                 deleteSession,

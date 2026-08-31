@@ -37,7 +37,7 @@ describe("summarizeSession", () => {
     it("returns null cost for a model with no known pricing", () => {
         const usage = summarizeSession(
             makeSession({
-                model: "ollama:llama3.2",
+                model: "llamacpp:llama3.2",
                 messages: [{ role: "assistant", content: "hi", usage: { promptTokens: 10, completionTokens: 5 } }],
             })
         );

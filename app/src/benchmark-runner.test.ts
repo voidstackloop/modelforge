@@ -27,7 +27,7 @@ describe("benchmark helpers", () => {
             onToken({ done: true, usage: { promptTokens: 20, completionTokens: 4 } });
         };
         const result = await runBenchmark(execute, {
-            provider: "ollama",
+            provider: "llamacpp",
             model: "test",
             maxContextLength: 4096,
             compareCpuGpu: true,

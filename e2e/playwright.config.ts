@@ -11,9 +11,9 @@ import * as path from "node:path";
 export default defineConfig({
     testDir: "./tests",
     outputDir: "./test-results",
-    // Each test launches its own Electron process (plus a fake Ollama HTTP
-    // server); running many of those concurrently on a CI runner is more
-    // likely to produce flaky timeouts than to save wall-clock time.
+    // Each test launches its own Electron process; running many of those
+    // concurrently on a CI runner is more likely to produce flaky timeouts
+    // than to save wall-clock time.
     workers: 1,
     fullyParallel: false,
     retries: process.env.CI ? 1 : 0,

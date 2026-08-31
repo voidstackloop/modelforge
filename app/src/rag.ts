@@ -1,18 +1,49 @@
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { randomUUID } from "node:crypto";
-import * as ollama from "./ollama-manager";
+import * as llamacpp from "./llamacpp-manager";
 import * as media from "./media";
 import { approximateTokens } from "./benchmark-runner";
 import { findPdfFiles, type AttachedFile } from "./file-reader";
 import * as ragDb from "./rag-db";
 import type { ChunkRow } from "./rag-db";
+import { mainResourceOrchestrator } from "./resource-orchestrator";
+import { getLlamaCppModelsDir } from "./app-state";
 
 export const DEFAULT_EMBEDDING_MODEL = "nomic-embed-text";
 const EMBED_BATCH_SIZE = 8;
 const TARGET_TOKENS = 400;
 const OVERLAP_TOKENS = 60;
 const HEADING_RE = /^#{1,6}\s+(.*)/;
+
+// A ragEmbeddingModel/collection.embedding_model value is either a bare
+// Ollama tag (unprefixed — every value ever stored before this backend
+// existed, so this stays the implicit default with zero migration needed)
+// or "llamacpp:<relative-path-under-the-llama.cpp-models-dir>", matching
+// frontend/src/lib/providers.ts's formatModelRef("provider", "model") — the
+// same single-colon convention already used for the chat model picker.
+// Collision note: this only misparses if an Ollama tag were literally named
+// "llamacpp" with a tag suffix, which doesn't exist in practice.
+const LLAMACPP_EMBEDDING_PREFIX = "llamacpp:";
+
+export function parseEmbeddingModelRef(ref: string): { backend: "ollama" | "llamacpp"; model: string } {
+    if (ref.startsWith(LLAMACPP_EMBEDDING_PREFIX)) {
+        return { backend: "llamacpp", model: ref.slice(LLAMACPP_EMBEDDING_PREFIX.length) };
+    }
+    return { backend: "ollama", model: ref };
+}
+
+// docs/LOCAL_INFERENCE_HARDENING_PLAN.md §2/§3: embedding calls to llama.cpp
+// run in-process and genuinely contend for the same GPU/CPU budget as chat
+// generation, unlike Ollama embeddings (a separate daemon process this app's
+// own resource accounting has never needed to cover). Callers use this to
+// pick real admission requirements instead of the `accelerator: "none"`
+// that was only ever correct for the Ollama case.
+function embeddingLeaseRequirements(ref: string, cpuThreads: number) {
+    return parseEmbeddingModelRef(ref).backend === "llamacpp"
+        ? { cpuThreads, accelerator: "preferred" as const, allowCpuFallback: true, exclusiveAccelerator: true }
+        : { cpuThreads, accelerator: "none" as const };
+}
 
 export interface LineChunk {
     text: string;
@@ -72,20 +103,39 @@ export function chunkDocument(content: string): LineChunk[] {
     return chunks;
 }
 
-async function embed(text: string, model: string): Promise<number[] | null> {
-    try {
-        const res = await fetch(`${ollama.getHost()}/api/embeddings`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model, prompt: text }),
-            signal: AbortSignal.timeout(15000),
-        });
-        if (!res.ok) return null;
-        const data = await res.json();
-        return Array.isArray(data.embedding) ? data.embedding : null;
-    } catch {
-        return null;
+async function embed(text: string, modelRef: string): Promise<number[] | null> {
+    const { backend, model } = parseEmbeddingModelRef(modelRef);
+    if (backend === "llamacpp") {
+        // Same path-containment discipline as chat-dispatch.ts's llamacpp/rocm
+        // branches: `model` is a renderer-supplied relative path that must
+        // stay inside the configured models directory.
+        const root = path.resolve(getLlamaCppModelsDir());
+        const modelPath = path.resolve(root, model);
+        if (modelPath === root || !modelPath.startsWith(root + path.sep)) return null;
+        try {
+            return await llamacpp.embed(modelPath, text);
+        } catch {
+            return null;
+        }
     }
+    // Ollama is removed (docs/LOCAL_INFERENCE_HARDENING_PLAN.md) — an
+    // unprefixed ref (`backend === "ollama"`) can never be embedded again.
+    // This is reached for two real cases: (1) DEFAULT_EMBEDDING_MODEL itself
+    // is still the Ollama tag "nomic-embed-text" (no safe llama.cpp default
+    // exists to guess at — a fresh install has no GGUF embedding model on
+    // disk at all, so a wrong guess would fail just as loudly, less
+    // honestly), and (2) an existing collection created before this removal
+    // still has an Ollama tag as its stored `embedding_model`. Returning
+    // `null` here (rather than throwing) is deliberate: indexFolderTask's
+    // existing `embedFailure` handling turns this into a clear "Embedding
+    // model \"X\" is unavailable" message for new indexing attempts, and
+    // query()'s existing null-embedding fallback still returns a collection's
+    // already-embedded results (unranked) rather than nothing at all for
+    // pre-existing data — both paths already handle this correctly with no
+    // further change needed, this is just where the chain now ends instead
+    // of reaching a live Ollama server.
+    void model;
+    return null;
 }
 
 async function embedChunks(texts: string[], model: string): Promise<number[][] | null> {
@@ -142,7 +192,20 @@ export interface CollectionSummary {
 // only new/changed files get re-chunked and re-embedded. Files present in the
 // DB for this collection but absent from the current file list are removed
 // (stale-document cleanup on manual re-index; this is not live file watching).
+//
+// Item 1/19: "Embeddings/RAG indexing — Background, pauseable." Wrapped in a
+// background-compute lease so an active chat's own embedding query
+// (query(), below) — and any local-inference lease — always outranks it in
+// the admission queue; a large folder re-index never delays a live response.
 export async function indexFolder(input: IndexFolderInput): Promise<CollectionSummary> {
+    const embeddingModel = input.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
+    return mainResourceOrchestrator.withLease(
+        { workloadKind: "indexing", priority: "background-compute", requirements: embeddingLeaseRequirements(embeddingModel, 2) },
+        () => indexFolderTask({ ...input, embeddingModel })
+    );
+}
+
+async function indexFolderTask(input: IndexFolderInput): Promise<CollectionSummary> {
     const embeddingModel = input.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
     const existingCollection = ragDb.getCollectionByPath(input.folderPath);
     const collection = ragDb.upsertCollection({
@@ -248,7 +311,13 @@ export async function query(collectionId: string, queryText: string, topK = 8): 
     if (!collection) return [];
     const rows = ragDb.chunksForCollection(collectionId);
 
-    const queryEmbedding = await embed(queryText, collection.embedding_model);
+    // A single, fast embedding call made synchronously as part of answering
+    // a live chat message — user-interactive, not background-compute like
+    // indexFolder above, so it is never left waiting behind a large re-index.
+    const queryEmbedding = await mainResourceOrchestrator.withLease(
+        { workloadKind: "user-rag", priority: "user-interactive", requirements: embeddingLeaseRequirements(collection.embedding_model, 1) },
+        () => embed(queryText, collection.embedding_model)
+    );
     if (!queryEmbedding) {
         return rows.slice(0, topK).map((row) => toResult(row, 0));
     }

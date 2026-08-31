@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Activity, ArrowLeft, Check, Clipboard, Cpu, Download, ExternalLink, FileText, Gauge, HardDrive, MemoryStick, Play, RefreshCw, RotateCw, Search, Server, Square, Terminal, Thermometer, Trash2, TriangleAlert, Wrench, Zap } from "lucide-react";
+import { Activity, ArrowLeft, Check, Clipboard, Clock, Cpu, Download, ExternalLink, FileText, Gauge, HardDrive, MemoryStick, Play, RefreshCw, RotateCw, Search, Server, Square, Terminal, Thermometer, Trash2, TriangleAlert, Wrench, Zap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useI18n } from "@/lib/i18n";
 import { useToast } from "@/components/toast";
 import { parseGpuSelectionErrorMessage } from "@/lib/gpu";
-import type { GpuInfo, GpuSelection, GpuTelemetrySample, LocalGgufModel, LocalRuntimeStatus, PythonEnvironmentProgress, PythonEnvironmentStatus, RuntimeStartupConfig } from "@/types/electron";
+import type { GgufAssessment, GpuInfo, GpuSelection, GpuTelemetrySample, LocalGgufModel, LocalRuntimeStatus, PythonEnvironmentProgress, PythonEnvironmentStatus, ResourceTelemetry, RuntimeStartupConfig } from "@/types/electron";
 
 // A GPU-selection error crossing the main->renderer IPC boundary arrives as
 // a tagged, JSON-encoded message (see gpu-selection.ts's toIpcMessage() —
@@ -66,6 +66,12 @@ export default function RuntimeManager() {
   const [tensorParallelAvailable, setTensorParallelAvailable] = useState(false);
   const [gpus, setGpus] = useState<GpuInfo[]>([]);
   const [gpuTelemetry, setGpuTelemetry] = useState<GpuTelemetrySample[]>([]);
+  const [resourceTelemetry, setResourceTelemetry] = useState<ResourceTelemetry | null>(null);
+  const [resourceSettings, setResourceSettings] = useState<{ mode: "balanced" | "performance" | "efficient" | "manual"; maxRamMB?: number; maxVramMB?: number; cpuThreadCeiling?: number }>({ mode: "balanced" });
+  const [resourceSettingsSaving, setResourceSettingsSaving] = useState(false);
+  const [modelAssessments, setModelAssessments] = useState<GgufAssessment[]>([]);
+  const [loadedModelPaths, setLoadedModelPaths] = useState<Set<string>>(new Set());
+  const [modelAssessmentsLoading, setModelAssessmentsLoading] = useState(false);
   const [hardwareRefreshing, setHardwareRefreshing] = useState(false);
   const [models, setModels] = useState<Record<Backend, string>>({ rocm: "", mlx: "", vllm: "" }); const [ggufModels, setGgufModels] = useState<LocalGgufModel[]>([]);
   const [recentModels, setRecentModels] = useState<Record<"mlx" | "vllm", string[]>>({ mlx: [], vllm: [] });
@@ -87,8 +93,42 @@ export default function RuntimeManager() {
     } catch (reason) { toast.error((reason as Error).message); } finally { statusInFlight.current = false; }
   }, [hasApi, operations, toast]);
   const refreshEnvironments = useCallback(async () => { if (!hasApi) return; setEnvironmentLoading(true); try { setEnvironments(await window.api.pythonRuntimes.getStatuses()); } catch (reason) { toast.error((reason as Error).message); } finally { setEnvironmentLoading(false); } }, [hasApi, toast]);
-  const refreshModels = useCallback(async () => { if (!hasApi) return; const [gguf, settings, specs] = await Promise.all([window.api.llamacpp.listModels(), window.api.settings.get(), window.api.system.getSpecs()]); setGgufModels(gguf); setRecentModels({ mlx: settings.mlxModels ?? [], vllm: settings.vllmModels ?? [] }); setAccelerator(specs.gpus.map((gpu) => gpu.name).join(", ") || (tr ? "Yalnızca CPU" : "CPU only")); setTensorParallelAvailable(specs.tensorParallelSupported && specs.gpus.length > 1); setGpus(specs.gpus); }, [hasApi, tr]);
+  const refreshModels = useCallback(async () => { if (!hasApi) return; const [gguf, settings, specs] = await Promise.all([window.api.llamacpp.listModels(), window.api.settings.get(), window.api.system.getSpecs()]); setGgufModels(gguf); setRecentModels({ mlx: settings.mlxModels ?? [], vllm: settings.vllmModels ?? [] }); setAccelerator(specs.gpus.map((gpu) => gpu.name).join(", ") || (tr ? "Yalnızca CPU" : "CPU only")); setTensorParallelAvailable(specs.tensorParallelSupported && specs.gpus.length > 1); setGpus(specs.gpus); setResourceSettings({ mode: settings.resourceBudgetMode ?? "balanced", maxRamMB: settings.resourceMaxRamMB, maxVramMB: settings.resourceMaxVramMB, cpuThreadCeiling: settings.resourceCpuThreadCeiling }); }, [hasApi, tr]);
+  const saveResourceSettings = useCallback(async (next: typeof resourceSettings) => {
+    if (!hasApi) return;
+    setResourceSettingsSaving(true);
+    try {
+      await window.api.settings.save({ resourceBudgetMode: next.mode, resourceMaxRamMB: next.maxRamMB, resourceMaxVramMB: next.maxVramMB, resourceCpuThreadCeiling: next.cpuThreadCeiling });
+      setResourceSettings(next);
+      toast.success(tr ? "Kaynak ayarları kaydedildi." : "Resource settings saved.");
+    } catch (reason) {
+      toast.error((reason as Error).message);
+    } finally {
+      setResourceSettingsSaving(false);
+    }
+  }, [hasApi, tr, toast]);
   const refreshGpuTelemetry = useCallback(async () => { if (!hasApi || !window.api.gpu) return; try { setGpuTelemetry(await window.api.gpu.getTelemetry()); } catch { /* telemetry is best-effort */ } }, [hasApi]);
+  const refreshResourceTelemetry = useCallback(async () => { if (!hasApi || !window.api.resource) return; try { setResourceTelemetry(await window.api.resource.getTelemetry()); } catch { /* telemetry is best-effort */ } }, [hasApi]);
+  // Item 6/7's "Models" panel: per-installed-model compatibility, reusing
+  // the same assessGgufFiles() math that already gates admission
+  // server-side (model-fit-estimator.ts) — this view is read-only
+  // observation of that same estimate, not a second implementation of it.
+  const refreshModelAssessments = useCallback(async () => {
+    if (!hasApi || !window.api.system.assessGgufFiles) return;
+    setModelAssessmentsLoading(true);
+    try {
+      const [assessments, activity] = await Promise.all([
+        window.api.system.assessGgufFiles(ggufModels.map((model) => ({ modelId: model.path, filename: model.label, sizeBytes: model.sizeBytes }))),
+        window.api.system.getActivity(),
+      ]);
+      setModelAssessments(assessments);
+      setLoadedModelPaths(new Set(activity.llamacppLoadedModels));
+    } catch (reason) {
+      toast.error((reason as Error).message);
+    } finally {
+      setModelAssessmentsLoading(false);
+    }
+  }, [hasApi, ggufModels, toast]);
   const refreshGpuTopology = useCallback(async () => {
     if (!hasApi || !window.api.gpu) return;
     setHardwareRefreshing(true);
@@ -126,6 +166,28 @@ export default function RuntimeManager() {
       document.removeEventListener("visibilitychange", syncPolling);
     };
   }, [refreshGpuTelemetry]);
+  // Same UI-friendly-cadence-over-a-cheap-cache convention as GPU telemetry
+  // above — resource-orchestrator.ts's getTelemetry() is a synchronous,
+  // already-computed read, not a fresh probe, so 3s polling costs nothing.
+  useEffect(() => {
+    let timer: number | undefined;
+    const syncPolling = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+      if (document.visibilityState !== "visible") return;
+      void refreshResourceTelemetry();
+      timer = window.setInterval(() => void refreshResourceTelemetry(), 3_000);
+    };
+    syncPolling();
+    document.addEventListener("visibilitychange", syncPolling);
+    return () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", syncPolling);
+    };
+  }, [refreshResourceTelemetry]);
+  // Lazy: only assessed when the Models tab is actually opened, and
+  // re-assessed whenever the installed-model list changes while it's open.
+  useEffect(() => { if (tab === "models") void refreshModelAssessments(); }, [tab, refreshModelAssessments]);
   useEffect(() => { if (!hasApi) return; return window.api.downloads.onUpdate((jobs) => { const signature = jobs.filter((job) => job.state === "ready").map((job) => `${job.id}:${job.updatedAt}`).sort().join("|"); if (signature !== completedDownloadSignature.current) { completedDownloadSignature.current = signature; void refreshModels(); } }); }, [hasApi, refreshModels]);
   const visibleLogs = useMemo(() => (statuses.find((item) => item.backend === logBackend)?.logs ?? []).filter((line) => (logSource === "all" || line.includes(`[${logSource}]`)) && line.toLowerCase().includes(logSearch.toLowerCase())), [statuses, logBackend, logSearch, logSource]);
   useEffect(() => { if (follow) logEnd.current?.scrollIntoView({ block: "end" }); }, [visibleLogs, follow]);
@@ -159,14 +221,17 @@ export default function RuntimeManager() {
 
   return <main className="min-h-full bg-background p-4 md:p-6"><div className="mx-auto max-w-7xl space-y-5">
     <header className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><Button variant="ghost" size="icon" onClick={() => navigate(-1)} aria-label={tr ? "Geri" : "Back"}><ArrowLeft className="size-4" /></Button><div><h1 className="text-2xl font-semibold tracking-tight">{tr ? "Çalışma Zamanı Yöneticisi" : "Runtime Manager"}</h1><p className="text-sm text-muted-foreground">{tr ? "Yerel çıkarım süreçleri, ortamlar ve tanılama" : "Local inference processes, environments, and diagnostics"}</p></div></div><Button variant="outline" disabled={hardwareRefreshing} onClick={() => void Promise.all([refreshStatuses(), refreshEnvironments(), refreshModels(), refreshGpuTopology()])}><RefreshCw className={`mr-2 size-4 ${environmentLoading || hardwareRefreshing ? "animate-spin motion-reduce:animate-none" : ""}`} />{tr ? "Yenile" : "Refresh"}</Button></header>
-    <Tabs value={tab} onValueChange={(value) => setTab(String(value))}><TabsList variant="line" className="max-w-full overflow-x-auto"><TabsTrigger value="overview">{tr ? "Genel Bakış" : "Overview"}</TabsTrigger><TabsTrigger value="runtimes">{tr ? "Çalışma Zamanları" : "Runtimes"}</TabsTrigger><TabsTrigger value="environments">{tr ? "Ortamlar" : "Environments"}</TabsTrigger><TabsTrigger value="logs">{tr ? "Günlükler ve tanılama" : "Logs & diagnostics"}</TabsTrigger></TabsList>
+    <Tabs value={tab} onValueChange={(value) => setTab(String(value))}><TabsList variant="line" className="max-w-full overflow-x-auto"><TabsTrigger value="overview">{tr ? "Genel Bakış" : "Overview"}</TabsTrigger><TabsTrigger value="runtimes">{tr ? "Çalışma Zamanları" : "Runtimes"}</TabsTrigger><TabsTrigger value="workloads">{tr ? "İş yükleri" : "Workloads"}</TabsTrigger><TabsTrigger value="models">{tr ? "Modeller" : "Models"}</TabsTrigger><TabsTrigger value="environments">{tr ? "Ortamlar" : "Environments"}</TabsTrigger><TabsTrigger value="resource-settings">{tr ? "Kaynak ayarları" : "Resource settings"}</TabsTrigger><TabsTrigger value="logs">{tr ? "Günlükler ve tanılama" : "Logs & diagnostics"}</TabsTrigger></TabsList>
       <TabsContent value="overview" className="space-y-5 pt-4">
         <section className="grid overflow-hidden rounded-xl border bg-card sm:grid-cols-2 lg:grid-cols-4"><Metric label={tr ? "Çalışan" : "Running"} value={`${running.length} / ${statuses.length}`} detail={unhealthy.length ? `${unhealthy.length} ${tr ? "sağlıksız" : "unhealthy"}` : tr ? "Tümü sağlıklı" : "All healthy"} /><Metric label={tr ? "Etkin istekler" : "Active requests"} value={String(activeRequests)} detail={running.map((item) => item.model).filter(Boolean).join(", ") || "—"} /><Metric label="RAM / VRAM" value={`${memory(totalRam)} / ${memory(totalVram)}`} detail={accelerator} /><Metric label={tr ? "İşlem gerekli" : "Needs attention"} value={String(repairCount)} detail={`${tr ? "Son denetim" : "Last check"}: ${fmtTime(statuses.map((item) => item.lastHealthCheckAt).filter(Boolean).sort().at(-1) ?? null)}`} /></section>
         <section className="rounded-xl border bg-card"><div className="border-b px-4 py-3"><h2 className="font-medium">{tr ? "Çalışma zamanı özeti" : "Runtime summary"}</h2></div><div className="divide-y">{statuses.map((status) => <button key={status.backend} className="grid w-full gap-2 px-4 py-3 text-left hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[1.2fr_.8fr_1fr_auto] sm:items-center" onClick={() => { setTab("runtimes"); }}><span><span className="font-medium">{RUNTIMES[status.backend].name}</span><span className="block text-xs text-muted-foreground">{status.model || RUNTIMES[status.backend].purpose}</span></span><StatusBadge state={displayState(status)} /><span className="text-xs text-muted-foreground">{status.activeRequests} {tr ? "istek" : "requests"} · {memory(status.ramMB)} RAM</span><span className="text-xs text-muted-foreground">{fmtTime(status.lastHealthCheckAt)}</span></button>)}</div></section>
         {gpus.length > 0 && <GpuDevicesTable gpus={gpus} telemetry={gpuTelemetry} tr={tr} />}
       </TabsContent>
       <TabsContent value="runtimes" className="space-y-4 pt-4">{statuses.map((status) => <RuntimeCard key={status.backend} status={status} descriptor={RUNTIMES[status.backend]} model={models[status.backend]} setModel={(model) => setModels((value) => ({ ...value, [status.backend]: model }))} config={configs[status.backend]} setConfig={(config) => setConfigs((value) => ({ ...value, [status.backend]: config }))} ggufModels={ggufModels} recentModels={status.backend === "mlx" || status.backend === "vllm" ? recentModels[status.backend] : []} tensorParallelAvailable={tensorParallelAvailable} gpus={gpus} operation={operations[status.backend]} error={errors[status.backend]} tr={tr} onAction={operate} onLogs={() => { setLogBackend(status.backend); setTab("logs"); }} />)}</TabsContent>
+      <TabsContent value="workloads" className="space-y-4 pt-4"><WorkloadsPanel telemetry={resourceTelemetry} tr={tr} /></TabsContent>
+      <TabsContent value="models" className="space-y-4 pt-4"><ModelsPanel assessments={modelAssessments} loadedPaths={loadedModelPaths} loading={modelAssessmentsLoading} tr={tr} /></TabsContent>
       <TabsContent value="environments" className="space-y-3 pt-4"><div className="rounded-xl border bg-card"><div className="border-b px-4 py-3"><h2 className="font-medium">{tr ? "Yönetilen Python ortamları" : "Managed Python environments"}</h2><p className="text-xs text-muted-foreground">{tr ? "Hiçbir kurulum komutu açık onay olmadan çalıştırılmaz." : "No installation command runs without explicit approval."}</p></div><div className="divide-y">{environments.map((environment) => <EnvironmentRow key={environment.family} environment={environment} tr={tr} onPlan={() => setConfirmation({ kind: "environment", environment })} />)}</div></div></TabsContent>
+      <TabsContent value="resource-settings" className="space-y-4 pt-4"><ResourceSettingsPanel settings={resourceSettings} saving={resourceSettingsSaving} onSave={(next) => void saveResourceSettings(next)} tr={tr} /></TabsContent>
       <TabsContent value="logs" className="space-y-3 pt-4"><section className="overflow-hidden rounded-xl border bg-card"><div className="flex flex-wrap items-center gap-2 border-b p-3"><label className="sr-only" htmlFor="runtime-log-selector">Runtime</label><select id="runtime-log-selector" className="h-8 rounded-lg border bg-background px-2 text-sm" value={logBackend} onChange={(event) => setLogBackend(event.target.value as Backend)}>{Object.values(RUNTIMES).map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.name}</option>)}</select><select aria-label={tr ? "Günlük kaynağı" : "Log source"} className="h-8 rounded-lg border bg-background px-2 text-sm" value={logSource} onChange={(event) => setLogSource(event.target.value)}><option value="all">{tr ? "Tüm kaynaklar" : "All sources"}</option><option value="manager">Manager</option><option value="stdout">stdout</option><option value="stderr">stderr</option></select><div className="relative min-w-48 flex-1"><Search className="absolute left-2.5 top-2 size-4 text-muted-foreground" /><Input className="h-8 pl-8" value={logSearch} onChange={(event) => setLogSearch(event.target.value)} placeholder={tr ? "Günlüklerde ara" : "Search logs"} /></div><label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />{tr ? "Çıktıyı izle" : "Follow output"}</label><Button size="sm" variant="outline" onClick={() => { void navigator.clipboard.writeText(visibleLogs.join("\n")); toast.success(tr ? "Günlükler kopyalandı." : "Logs copied."); }}><Clipboard className="mr-1.5 size-3.5" />{tr ? "Kopyala" : "Copy"}</Button><Button size="sm" variant="outline" onClick={() => window.api.localBackends.exportLogs(logBackend)}><Download className="mr-1.5 size-3.5" />{tr ? "Dışa aktar" : "Export"}</Button><Button size="sm" variant="ghost" onClick={() => setConfirmation({ kind: "clear-logs", backend: logBackend })}><Trash2 className="mr-1.5 size-3.5" />{tr ? "Temizle" : "Clear"}</Button></div><div className="h-[min(60vh,34rem)] overflow-auto bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-200" role="log" aria-live="polite">{visibleLogs.length ? visibleLogs.map((line, index) => <div key={`${index}-${line.slice(0, 30)}`} className={line.includes("[stderr]") ? "text-amber-300" : ""}>{line}</div>) : <div className="flex h-full items-center justify-center text-zinc-500">{tr ? "Bu filtre için günlük yok." : "No logs match this filter."}</div>}<div ref={logEnd} /></div></section></TabsContent>
     </Tabs>
     {!hasApi && <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">{tr ? "Çalışma zamanı yönetimi masaüstü uygulamasında kullanılabilir." : "Runtime management is available in the desktop application."}</div>}
@@ -178,6 +243,190 @@ export default function RuntimeManager() {
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) { return <div className="min-w-0 border-b p-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-xl font-semibold">{value}</p><p className="mt-1 truncate text-xs text-muted-foreground" title={detail}>{detail}</p></div>; }
 function StatusBadge({ state }: { state: string }) { return <span className={`inline-flex w-fit rounded-md px-2 py-0.5 text-xs font-medium ${tone[state] ?? tone.stopped}`}>{state.replace("-", " ")}</span>; }
 function Detail({ icon, label, children }: { icon: ReactNode; label: string; children: ReactNode }) { return <div className="min-w-0"><dt className="flex items-center gap-1 text-[11px] text-muted-foreground">{icon}{label}</dt><dd className="mt-0.5 truncate text-sm" title={String(children)}>{children}</dd></div>; }
+
+// Workload kinds are a fixed enum (resource-contracts.ts) — a plain lookup
+// table for display labels, no dynamic string formatting to keep in sync.
+const WORKLOAD_LABELS: Record<string, { en: string; tr: string }> = {
+  "active-inference": { en: "Chat inference", tr: "Sohbet çıkarımı" },
+  "scheduled-inference": { en: "Scheduled task", tr: "Zamanlanmış görev" },
+  "model-load": { en: "Model load", tr: "Model yükleme" },
+  "user-ocr": { en: "OCR", tr: "OCR" },
+  "user-rag": { en: "Document search", tr: "Belge arama" },
+  "user-media": { en: "Media processing", tr: "Medya işleme" },
+  embedding: { en: "Embedding", tr: "Gömme" },
+  indexing: { en: "Folder indexing", tr: "Klasör dizinleme" },
+  download: { en: "Download", tr: "İndirme" },
+  backup: { en: "Backup", tr: "Yedekleme" },
+  maintenance: { en: "Maintenance", tr: "Bakım" },
+  "python-worker": { en: "Python worker", tr: "Python işçisi" },
+  "mcp-tool": { en: "MCP tool server", tr: "MCP araç sunucusu" },
+};
+function workloadLabel(kind: string, tr: boolean): string { return (tr ? WORKLOAD_LABELS[kind]?.tr : WORKLOAD_LABELS[kind]?.en) ?? kind; }
+
+const PRIORITY_TONE: Record<string, string> = {
+  "active-inference": "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  "user-interactive": "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  "explicit-model-load": "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  "scheduled-inference": "bg-violet-500/10 text-violet-700 dark:text-violet-400",
+  "background-compute": "bg-muted text-muted-foreground",
+  transfer: "bg-muted text-muted-foreground",
+  maintenance: "bg-muted text-muted-foreground",
+};
+
+function agoSeconds(sinceMs: number, nowMs: number): string { const s = Math.max(0, Math.round((nowMs - sinceMs) / 1000)); return s < 60 ? `${s}s` : `${Math.round(s / 60)}m`; }
+
+const PRESSURE_COPY: Record<string, { en: string; tr: string; tone: string }> = {
+  normal: { en: "System memory is healthy — no background work is being throttled.", tr: "Sistem belleği sağlıklı — hiçbir arka plan işi kısıtlanmıyor.", tone: "bg-success/10 text-success" },
+  warning: { en: "Sustained memory pressure — new background work (indexing, downloads, backups) is queued behind active chat until it clears.", tr: "Sürekli bellek baskısı — yeni arka plan işleri (dizinleme, indirme, yedekleme) etkin sohbetin arkasında bekletiliyor.", tone: "bg-warning/10 text-warning" },
+  critical: { en: "Critical memory pressure — new background work is being rejected outright to protect active chat and models. Interactive use is never affected.", tr: "Kritik bellek baskısı — etkin sohbeti ve modelleri korumak için yeni arka plan işleri doğrudan reddediliyor. Etkileşimli kullanım hiçbir zaman etkilenmez.", tone: "bg-destructive/10 text-destructive" },
+};
+
+// Item 7/18: a read-only view of the resource orchestrator's own admission
+// state — every heavyweight local operation (chat inference, RAG indexing,
+// OCR, media processing, Python workers, MCP tool servers, backups) shows
+// up here exactly as it was scheduled, nothing renderer-specific layered on
+// top. There is intentionally no control here to cancel/reprioritize a
+// lease directly — the renderer never gets to override admission, only
+// observe it (see ipc/resource-handlers.ts's own doc comment).
+function WorkloadsPanel({ telemetry, tr }: { telemetry: ResourceTelemetry | null; tr: boolean }) {
+  if (!telemetry) return <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">{tr ? "İş yükü telemetrisi bekleniyor…" : "Waiting for workload telemetry…"}</div>;
+  const now = telemetry.capturedAt;
+  const pressure = PRESSURE_COPY[telemetry.pressure] ?? PRESSURE_COPY.normal;
+  const capacity = telemetry.capacity;
+
+  return <>
+    <div className={`flex items-start gap-2 rounded-xl border p-3.5 text-xs ${pressure.tone}`}>
+      <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+      <span>{tr ? pressure.tr : pressure.en}</span>
+    </div>
+    <section className="grid overflow-hidden rounded-xl border bg-card sm:grid-cols-2 lg:grid-cols-4">
+      <Metric label={tr ? "Etkin iş yükleri" : "Active workloads"} value={String(telemetry.activeLeases.length)} detail={telemetry.activeLeases.length ? telemetry.activeLeases.map((lease) => workloadLabel(lease.workloadKind, tr)).join(", ") : (tr ? "Boşta" : "Idle")} />
+      <Metric label={tr ? "Kuyrukta" : "Queued"} value={String(telemetry.queuedRequests.length)} detail={telemetry.queuedRequests.length ? (tr ? "Sıra pozisyonuna göre sıralı" : "Ordered by queue position") : (tr ? "Bekleyen yok" : "Nothing waiting")} />
+      <Metric label={tr ? "CPU iş parçacıkları" : "CPU threads"} value={capacity ? `${capacity.availableCpuThreads} / ${capacity.cpuThreads}` : "—"} detail={tr ? "kullanılabilir / toplam" : "available / total"} />
+      <Metric label="RAM" value={capacity ? memory(capacity.availableRamMB) : "—"} detail={capacity ? `${tr ? "toplamın" : "of"} ${memory(capacity.totalRamMB)}` : "—"} />
+    </section>
+    <section className="overflow-hidden rounded-xl border bg-card">
+      <div className="border-b px-4 py-3"><h2 className="font-medium">{tr ? "Etkin iş yükleri" : "Active workloads"}</h2></div>
+      {telemetry.activeLeases.length === 0
+        ? <p className="p-4 text-sm text-muted-foreground">{tr ? "Şu anda çalışan bir şey yok." : "Nothing is running right now."}</p>
+        : <div className="divide-y">{telemetry.activeLeases.map((lease) => <div key={lease.leaseId} className="grid gap-2 px-4 py-3 sm:grid-cols-[1.3fr_.9fr_1fr_auto] sm:items-center">
+          <span><span className="font-medium">{workloadLabel(lease.workloadKind, tr)}</span>{lease.decision === "granted-degraded" && <span className="ml-2 rounded-md bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">{tr ? "düşürülmüş" : "degraded"}</span>}<span className="block text-[11px] text-muted-foreground">{lease.reasons.join(" ") || (tr ? "Normal yürütme" : "Running normally")}</span></span>
+          <span className={`inline-flex w-fit rounded-md px-2 py-0.5 text-xs font-medium ${PRIORITY_TONE[lease.priority] ?? "bg-muted text-muted-foreground"}`}>{lease.priority.replace(/-/g, " ")}</span>
+          <span className="text-xs text-muted-foreground">{lease.budget.cpuThreads} {tr ? "iş parçacığı" : "threads"}{lease.budget.ramMB > 0 ? ` · ${memory(lease.budget.ramMB)}` : ""}{lease.budget.exclusiveAccelerator ? ` · ${tr ? "GPU (özel)" : "GPU (exclusive)"}` : ""}</span>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground"><Clock className="size-3" />{agoSeconds(lease.grantedAt, now)}</span>
+        </div>)}</div>}
+    </section>
+    <section className="overflow-hidden rounded-xl border bg-card">
+      <div className="border-b px-4 py-3"><h2 className="font-medium">{tr ? "Kuyruktaki istekler" : "Queued requests"}</h2></div>
+      {telemetry.queuedRequests.length === 0
+        ? <p className="p-4 text-sm text-muted-foreground">{tr ? "Bekleyen bir şey yok." : "Nothing is waiting."}</p>
+        : <div className="divide-y">{telemetry.queuedRequests.map((request, index) => <div key={`${request.workloadKind}-${request.queuedAt}-${index}`} className="grid gap-2 px-4 py-2.5 sm:grid-cols-[auto_1.3fr_.9fr_auto] sm:items-center">
+          <span className="text-xs font-medium text-muted-foreground">#{index + 1}</span>
+          <span>{workloadLabel(request.workloadKind, tr)}</span>
+          <span className={`inline-flex w-fit rounded-md px-2 py-0.5 text-xs font-medium ${PRIORITY_TONE[request.priority] ?? "bg-muted text-muted-foreground"}`}>{request.priority.replace(/-/g, " ")}</span>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground"><Clock className="size-3" />{tr ? "beklemede" : "waiting"} {agoSeconds(request.queuedAt, now)}</span>
+        </div>)}</div>}
+    </section>
+  </>;
+}
+
+const OUTCOME_TONE: Record<string, string> = {
+  "Runs fully on GPU": "bg-success/10 text-success",
+  "Runs with partial offload": "bg-warning/10 text-warning",
+  "CPU-only but usable": "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  "Requires tensor parallelism": "bg-muted text-muted-foreground",
+  "Likely out of memory": "bg-destructive/10 text-destructive",
+  "Unknown size": "bg-muted text-muted-foreground",
+};
+const OUTCOME_LABEL: Record<string, { en: string; tr: string }> = {
+  "Runs fully on GPU": { en: "Comfortable", tr: "Rahat" },
+  "Runs with partial offload": { en: "Degraded (partial offload)", tr: "Düşürülmüş (kısmi aktarım)" },
+  "CPU-only but usable": { en: "CPU fallback", tr: "CPU'ya düşer" },
+  "Requires tensor parallelism": { en: "Cannot run safely", tr: "Güvenle çalışmaz" },
+  "Likely out of memory": { en: "Cannot run safely", tr: "Güvenle çalışmaz" },
+  "Unknown size": { en: "Unknown", tr: "Bilinmiyor" },
+};
+
+// Item 6/7's "Models" panel: "Compatibility score for each installed
+// model. Expected RAM/VRAM and speed. Recommended context/offload
+// configuration. Loaded/unloaded state. 'Why can't this run?'
+// explanation." Reuses assessGgufFiles() (system-specs.ts) — the exact
+// same math model-fit-estimator.ts wraps for actual admission decisions —
+// so this view can never disagree with what ingestion/loading will
+// actually do.
+function ModelsPanel({ assessments, loadedPaths, loading, tr }: { assessments: GgufAssessment[]; loadedPaths: Set<string>; loading: boolean; tr: boolean }) {
+  if (loading && assessments.length === 0) return <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">{tr ? "Modeller değerlendiriliyor…" : "Assessing models…"}</div>;
+  if (assessments.length === 0) return <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">{tr ? "Kurulu GGUF modeli yok." : "No installed GGUF models."}</div>;
+
+  return <section className="overflow-hidden rounded-xl border bg-card">
+    <div className="border-b px-4 py-3"><h2 className="font-medium">{tr ? "Model uyumluluğu" : "Model compatibility"}</h2><p className="mt-1 text-xs text-muted-foreground">{tr ? "Bu makine için, bu iş yükü yöneticisinin gerçek yükleme kararlarıyla aynı tahmin." : "The same estimate this workload manager's real load decisions use, for this machine."}</p></div>
+    <div className="divide-y">
+      {assessments.map((assessment) => {
+        const loaded = loadedPaths.has(assessment.modelId);
+        const tone = OUTCOME_TONE[assessment.outcome] ?? "bg-muted text-muted-foreground";
+        const label = OUTCOME_LABEL[assessment.outcome] ?? { en: assessment.outcome, tr: assessment.outcome };
+        return <div key={assessment.modelId} className="grid gap-2 px-4 py-3 sm:grid-cols-[1.3fr_auto_1fr_auto] sm:items-center">
+          <span className="min-w-0"><span className="block truncate font-medium" title={assessment.filename}>{assessment.filename}</span><span className="block text-[11px] text-muted-foreground">{assessment.quantization}{assessment.estimatedParametersB != null ? ` · ~${assessment.estimatedParametersB}B` : ""}</span></span>
+          <span className="flex flex-col items-start gap-1">
+            <span className={`inline-flex w-fit rounded-md px-2 py-0.5 text-xs font-medium ${tone}`}>{tr ? label.tr : label.en}</span>
+            {loaded && <span className="inline-flex w-fit rounded-md bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">{tr ? "yüklü" : "loaded"}</span>}
+          </span>
+          <span className="text-xs text-muted-foreground">{assessment.canAssess
+            ? <>{assessment.totalRequiredGB?.toFixed(1)} GB {tr ? "toplam" : "total"} · {assessment.expectedGpuOffloadPercent}% {tr ? "GPU aktarımı" : "GPU offload"} · ~{assessment.estimatedTokensPerSecond} tok/s</>
+            : (tr ? "Boyut bilinmiyor" : "Size unknown")}</span>
+          <span className="max-w-64 text-[11px] text-muted-foreground" title={assessment.reason}>{assessment.reason}</span>
+        </div>;
+      })}
+    </div>
+  </section>;
+}
+
+type ResourceBudgetMode = "balanced" | "performance" | "efficient" | "manual";
+type ResourceSettingsValue = { mode: ResourceBudgetMode; maxRamMB?: number; maxVramMB?: number; cpuThreadCeiling?: number };
+
+const BUDGET_MODE_COPY: Record<ResourceBudgetMode, { en: string; tr: string; detailEn: string; detailTr: string }> = {
+  balanced: { en: "Balanced", tr: "Dengeli", detailEn: "Recommended. Reserves headroom for the OS and other apps.", detailTr: "Önerilen. İşletim sistemi ve diğer uygulamalar için pay bırakır." },
+  performance: { en: "Performance", tr: "Performans", detailEn: "Minimal reserve — most memory and CPU go to ModelForge.", detailTr: "Minimum pay — bellek ve CPU'nun çoğu ModelForge'a ayrılır." },
+  efficient: { en: "Efficient", tr: "Verimli", detailEn: "Larger reserve — leaves more room for other work on this machine.", detailTr: "Daha büyük pay — bu makinedeki diğer işler için daha fazla yer bırakır." },
+  manual: { en: "Manual", tr: "Manuel", detailEn: "Set explicit RAM/VRAM/CPU ceilings yourself.", detailTr: "RAM/VRAM/CPU üst sınırlarını kendiniz belirleyin." },
+};
+
+// Item 4/7: "Default to a Balanced mode" plus the Settings section's
+// resource-mode control. Deliberately scoped to just the mode + manual
+// ceilings — per-model overrides, preferred-GPU/backend defaults, and
+// background-work limits (also listed under item 7's Settings section)
+// live elsewhere in this page (GPU placement is per-runtime-card,
+// preferredRuntime is in the app's own Settings page) rather than being
+// duplicated here.
+function ResourceSettingsPanel({ settings, saving, onSave, tr }: { settings: ResourceSettingsValue; saving: boolean; onSave(next: ResourceSettingsValue): void; tr: boolean }) {
+  const [draft, setDraft] = useState(settings);
+  useEffect(() => setDraft(settings), [settings]);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
+
+  return <section className="max-w-2xl space-y-4 overflow-hidden rounded-xl border bg-card p-4">
+    <div><h2 className="font-medium">{tr ? "Kaynak modu" : "Resource mode"}</h2><p className="mt-1 text-xs text-muted-foreground">{tr ? "Yerel çıkarım, dizinleme, OCR ve yedekleme gibi arka plan işleri arasında CPU/RAM nasıl paylaştırılır." : "How CPU/RAM is shared between local inference and background work like indexing, OCR, and backups."}</p></div>
+    <div className="grid gap-2 sm:grid-cols-2">
+      {(Object.keys(BUDGET_MODE_COPY) as ResourceBudgetMode[]).map((mode) => {
+        const copy = BUDGET_MODE_COPY[mode];
+        const selected = draft.mode === mode;
+        return <button type="button" key={mode} aria-pressed={selected} onClick={() => setDraft({ ...draft, mode })} className={`flex items-start gap-3 rounded-xl border p-3 text-left transition-colors ${selected ? "border-primary/40 bg-primary/8" : "bg-background hover:bg-muted/60"}`}>
+          <span className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md ${selected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>{selected && <Check className="size-3.5" />}</span>
+          <span className="min-w-0"><span className="block text-sm font-medium">{tr ? copy.tr : copy.en}</span><span className="mt-0.5 block text-[11px] text-muted-foreground">{tr ? copy.detailTr : copy.detailEn}</span></span>
+        </button>;
+      })}
+    </div>
+    {draft.mode === "manual" && <div className="grid gap-3 border-t pt-3 sm:grid-cols-3">
+      <NumberSetting label={tr ? "Maks. RAM (MB, boş = sınırsız)" : "Max RAM (MB, blank = unlimited)"} value={draft.maxRamMB ?? ""} min={512} onChange={(value) => setDraft({ ...draft, maxRamMB: value === "" ? undefined : Number(value) })} />
+      <NumberSetting label={tr ? "Maks. VRAM (MB, boş = sınırsız)" : "Max VRAM (MB, blank = unlimited)"} value={draft.maxVramMB ?? ""} min={256} onChange={(value) => setDraft({ ...draft, maxVramMB: value === "" ? undefined : Number(value) })} />
+      <NumberSetting label={tr ? "CPU iş parçacığı üst sınırı (boş = sınırsız)" : "CPU thread ceiling (blank = unlimited)"} value={draft.cpuThreadCeiling ?? ""} min={1} onChange={(value) => setDraft({ ...draft, cpuThreadCeiling: value === "" ? undefined : Number(value) })} />
+    </div>}
+    <p className="text-[11px] text-muted-foreground">{tr ? "Bu, ModelForge'un kendi işleri arasındaki paylaşımı yönetir; işletim sisteminin veya diğer uygulamaların üst sınırı değildir." : "This governs sharing between ModelForge's own workloads; it is not an OS-level or other-application limit."}</p>
+    <div className="flex justify-end gap-2 border-t pt-3">
+      <Button variant="outline" disabled={!dirty || saving} onClick={() => setDraft(settings)}>{tr ? "Sıfırla" : "Reset"}</Button>
+      <Button disabled={!dirty || saving} onClick={() => onSave(draft)}>{saving ? (tr ? "Kaydediliyor…" : "Saving…") : (tr ? "Kaydet" : "Save")}</Button>
+    </div>
+  </section>;
+}
 
 function RuntimeCard({ status, descriptor, model, setModel, config, setConfig, ggufModels, recentModels, tensorParallelAvailable, gpus, operation, error, tr, onAction, onLogs }: { status: LocalRuntimeStatus; descriptor: RuntimeDescriptor; model: string; setModel(value: string): void; config: RuntimeStartupConfig; setConfig(value: RuntimeStartupConfig): void; ggufModels: LocalGgufModel[]; recentModels: string[]; tensorParallelAvailable: boolean; gpus: GpuInfo[]; operation?: string; error?: string; tr: boolean; onAction(backend: Backend, action: "start" | "stop" | "restart"): void; onLogs(): void }) {
   const state = displayState(status); const busy = !!operation || !!status.operation; const primary = !status.compatible || status.startupError ? "error" : !status.installed ? "install" : status.state === "running" || status.state === "unhealthy" ? "stop" : "start";

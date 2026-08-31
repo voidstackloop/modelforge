@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-    Download,
     Trash2,
     Loader2,
     Search,
@@ -58,7 +57,7 @@ import {
 import type {
     AppSettings,
     ModelRecommendations,
-    OllamaModel,
+    RecommendedModel,
     SystemSpecs,
     PromptPreset,
     PromptVersion,
@@ -78,7 +77,6 @@ import type {
     BenchmarkResult,
     RagCollectionSummary,
 } from "@/types/electron";
-import { EXTRA_MODELS, EMBEDDING_MODELS } from "@/lib/model-catalog";
 import { recommendGpuBackend, gpuBackendNote } from "@/lib/gpu";
 import { useToast } from "@/components/toast";
 import {
@@ -89,7 +87,7 @@ import {
     notifyKeybindingsChanged,
     type KeybindingAction,
 } from "@/lib/keybindings";
-import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, formatModelRef, parseModelRef, CUSTOM_PROVIDER_PRESETS } from "@/lib/providers";
+import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, GPU_LAYERS_FALLBACK_MAX, formatModelRef, parseModelRef, CUSTOM_PROVIDER_PRESETS } from "@/lib/providers";
 import { MCP_SERVER_PRESETS, type McpServerPreset } from "@/lib/mcp-presets";
 import { useSessions } from "@/lib/sessions-context";
 import { useI18n } from "@/lib/i18n";
@@ -97,13 +95,13 @@ import type { Locale } from "@/lib/translations";
 import { useTheme, COLOR_THEMES, type ColorTheme } from "@/components/theme-provider";
 import { speakText } from "@/lib/tts";
 import { cn } from "@/lib/utils";
-import { ggufGroupFor, ggufGroupSize, groupGgufFiles, ollamaTagForGguf } from "@/lib/gguf";
+import { ggufGroupFor, ggufGroupSize, groupGgufFiles } from "@/lib/gguf";
 
 type SettingsTab = "general" | "models" | "accounts" | "integrations" | "chat" | "voice" | "automation" | "data";
 
 const SETTINGS_SEARCH_ITEMS: { tab: SettingsTab; label: string; keywords: string }[] = [
     { tab: "general", label: "Appearance, density & motion", keywords: "theme color compact comfortable animation reduced motion language server gpu cache" },
-    { tab: "models", label: "Models & hardware", keywords: "ollama hugging face download vram recommendation gguf" },
+    { tab: "models", label: "Models & hardware", keywords: "llama.cpp hugging face download vram recommendation gguf" },
     { tab: "accounts", label: "Connected accounts", keywords: "github hugging face account token profile repository" },
     { tab: "integrations", label: "Integrations & MCP", keywords: "api key custom gpu backend figma mcp openai claude gemini" },
     { tab: "chat", label: "Agent & tools", keywords: "prompt temperature context tokens agent steps tool calls sandbox verification" },
@@ -143,16 +141,6 @@ const RUNTIME_META = {
     vllm: { label: "vLLM", icon: Gauge, docs: "https://docs.vllm.ai/en/latest/getting_started/installation.html" },
 } as const;
 
-// Ollama pulls Hugging Face GGUF models via a "hf.co/user/repo[:quant]" model
-// name — accept a pasted full URL or the "huggingface.co/" host too, rather
-// than making the user hand-edit what they copied from their browser.
-function normalizeModelTag(input: string): string {
-    return input
-        .trim()
-        .replace(/^https?:\/\//i, "")
-        .replace(/^huggingface\.co\//i, "hf.co/");
-}
-
 // Fixed previews stay recognizable while another palette is active. The first
 // color is the surface, the second the primary accent, and the third a familiar
 // supporting color from the palette.
@@ -188,12 +176,11 @@ export default function Settings() {
         window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
         return () => window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
     }, []);
-    const [running, setRunning] = useState<boolean | null>(null);
     const [specs, setSpecs] = useState<SystemSpecs | null>(null);
     const [recommendations, setRecommendations] = useState<ModelRecommendations | null>(null);
     const [ragCollections, setRagCollections] = useState<RagCollectionSummary[]>([]);
-    const [installed, setInstalled] = useState<OllamaModel[]>([]);
-    const [pulling, setPulling] = useState<Record<string, number>>({});
+    const [ragCollectionsLocked, setRagCollectionsLocked] = useState(false);
+    const [ragCollectionsError, setRagCollectionsError] = useState<string | null>(null);
     const [settings, setSettings] = useState<AppSettings | null>(null);
     const [hasApi, setHasApi] = useState(true);
     const [search, setSearch] = useState("");
@@ -240,11 +227,8 @@ export default function Settings() {
     const [recordingAction, setRecordingAction] = useState<KeybindingAction | null>(null);
     const [keybindingConflict, setKeybindingConflict] = useState<string | null>(null);
     const [importMessage, setImportMessage] = useState<string | null>(null);
-    const [ollamaHostInput, setOllamaHostInput] = useState("");
     const [sandboxCapabilities, setSandboxCapabilities] = useState<SandboxCapabilities | null>(null);
     const [secretsEncrypted, setSecretsEncrypted] = useState<boolean | null>(null);
-    const [modelsDirStatus, setModelsDirStatus] = useState<string | null>(null);
-    const [changingModelsDir, setChangingModelsDir] = useState(false);
     const [newPresetName, setNewPresetName] = useState("");
     const [importPresetsMessage, setImportPresetsMessage] = useState<string | null>(null);
     const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
@@ -252,7 +236,6 @@ export default function Settings() {
     const [editDraftPrompt, setEditDraftPrompt] = useState("");
     const { refresh: refreshSessions } = useSessions();
     const toast = useToast();
-    const activePullCount = useRef(0);
     const loadedTabs = useRef(new Set<SettingsTab>());
     const hfSearchRequest = useRef(0);
     const hfFilesRequest = useRef(0);
@@ -300,11 +283,6 @@ export default function Settings() {
     const [taskDraftModel, setTaskDraftModel] = useState("");
     const [taskDraftInterval, setTaskDraftInterval] = useState(60);
 
-    async function refreshInstalled() {
-        const list = await window.api.ollama.listModels();
-        setInstalled(list);
-    }
-
     useEffect(() => {
         if (!window.api) {
             // Intentional: one-time environment check (browser dev preview has no
@@ -313,16 +291,36 @@ export default function Settings() {
             setHasApi(false);
             return;
         }
-        window.api.ollama.status().then(setRunning);
         window.api.system.getSpecs().then(setSpecs);
         window.api.system.getRecommendations().then(setRecommendations);
-        window.api.rag.listCollections().then(setRagCollections);
+        window.api.rag
+            .listCollections()
+            .then((collections) => {
+                setRagCollections(collections);
+                setRagCollectionsLocked(false);
+                setRagCollectionsError(null);
+            })
+            // rag-db.ts encrypts indexed content under the same passphrase
+            // as Patient Cases (case-encryption.ts), so the most likely
+            // cause of this rejecting is that it's currently locked — but
+            // re-check rather than assume, so a genuinely different
+            // failure (a corrupted index, disk I/O) shows as itself
+            // instead of a fix ("unlock in Patient Cases") that won't help.
+            .catch((err) => {
+                window.api!.encryption.status().then((status) => {
+                    if (status.enabled && !status.unlocked) {
+                        setRagCollectionsLocked(true);
+                        setRagCollectionsError(null);
+                    } else {
+                        setRagCollectionsLocked(false);
+                        setRagCollectionsError((err as Error).message);
+                    }
+                });
+            });
         window.api.settings.get().then((s) => {
             setSettings(s);
-            setOllamaHostInput(s.ollamaHost);
             setKeybindings({ ...DEFAULT_KEYBINDINGS, ...s.keybindings } as Record<KeybindingAction, string>);
         });
-        refreshInstalled();
         window.api.llamacpp.listModels().then(setLlamaCppModels);
         window.api.llamacpp.getAvailableGpuBackends().then(setLlamaCppGpuBackends);
         refreshRuntimeStatuses();
@@ -510,20 +508,33 @@ export default function Settings() {
         window.api.scheduledTasks.list().then(setScheduledTasks);
     }
 
+    // Encrypted automatically when case encryption is enabled — same
+    // passphrase already protecting sessions.json (see data-transfer.ts). A
+    // locked or wrong-passphrase state rejects with a message already
+    // written for the user to read directly, same as other locked-store
+    // toasts elsewhere in Settings.
     async function handleExportAll() {
-        const result = await window.api.data.exportAll();
-        if (result.success) toast.success(t.toastExportDone);
+        try {
+            const result = await window.api.data.exportAll();
+            if (result.success) toast.success(t.toastExportDone);
+        } catch (reason) {
+            toast.error((reason as Error).message);
+        }
     }
 
     async function handleImport() {
-        const result = await window.api.data.import();
-        setImportMessage(
-            result.imported > 0
-                ? `Imported ${result.imported} conversation${result.imported === 1 ? "" : "s"}.`
-                : "No conversations found in that file."
-        );
-        await refreshSessions();
-        setTimeout(() => setImportMessage(null), 4000);
+        try {
+            const result = await window.api.data.import();
+            setImportMessage(
+                result.imported > 0
+                    ? `Imported ${result.imported} conversation${result.imported === 1 ? "" : "s"}.`
+                    : "No conversations found in that file."
+            );
+            await refreshSessions();
+            setTimeout(() => setImportMessage(null), 4000);
+        } catch (reason) {
+            toast.error((reason as Error).message);
+        }
     }
 
     async function handleClearAll() {
@@ -597,7 +608,6 @@ export default function Settings() {
             `Modelforge ${d.appVersion}`,
             `Electron ${d.electron} / Chrome ${d.chrome} / Node ${d.node}`,
             `Platform: ${d.platform} (${d.arch})`,
-            `Ollama host: ${d.ollamaHost} — ${d.ollamaRunning ? "reachable" : "unreachable"}`,
             "",
             "--- recent log output ---",
             d.logTail || "(empty)",
@@ -785,91 +795,20 @@ export default function Settings() {
         toast.success(value ? t.toastApiKeySaved : t.toastApiKeyCleared);
     }
 
-    async function saveOllamaHost() {
-        const host = ollamaHostInput.trim() || "http://127.0.0.1:11434";
-        setOllamaHostInput(host);
-        await saveSettings({ ollamaHost: host });
-        window.api.ollama.status().then(setRunning);
-        refreshInstalled();
-    }
-
-    async function chooseModelsDir() {
-        const dir = await window.api.ollama.pickModelsDir();
-        if (!dir) return;
-        setChangingModelsDir(true);
-        setModelsDirStatus(null);
-        const result = await window.api.ollama.setModelsDir(dir);
-        if (result.error) {
-            setModelsDirStatus(result.error);
-        } else {
-            const updated = await window.api.settings.get();
-            setSettings(updated);
-            setModelsDirStatus(
-                result.external ? t.modelsDirExternalWarning : result.started || result.alreadyRunning ? t.modelsDirApplied : t.modelsDirFailed
-            );
-            window.api.ollama.status().then(setRunning);
-            refreshInstalled();
-        }
-        setChangingModelsDir(false);
-    }
-
-    async function resetModelsDir() {
-        setChangingModelsDir(true);
-        setModelsDirStatus(null);
-        const result = await window.api.ollama.setModelsDir(null);
-        setModelsDirStatus(
-            result.external ? t.modelsDirExternalWarning : result.started || result.alreadyRunning ? t.modelsDirApplied : t.modelsDirFailed
-        );
-        const updated = await window.api.settings.get();
-        setSettings(updated);
-        window.api.ollama.status().then(setRunning);
-        refreshInstalled();
-        setChangingModelsDir(false);
-    }
-
-    async function toggleServer() {
-        if (running) {
-            await window.api.ollama.stop();
-            setRunning(false);
-        } else {
-            const result = await window.api.ollama.start();
-            setRunning(!result.error);
-            if (result.error === "not-installed") {
-                toast.error(t.toastOllamaNotInstalled);
-            } else if (result.error) {
-                toast.error(`${t.toastOllamaStartFailed}: ${result.error}`);
-            }
-        }
-    }
-
-    async function pullModel(name: string) {
-        // Called imperatively (not via a useEffect) so it still fires even if
-        // this component unmounts mid-download — e.g. the user navigates to
-        // Chat while a large model is downloading. Counted rather than a flag
-        // so concurrent pulls don't clear busy while another is still running.
-        activePullCount.current++;
-        if (activePullCount.current === 1) window.api.app.setBusy(true);
-
-        setPulling((p) => ({ ...p, [name]: 0 }));
-        await window.api.ollama.pullModel(name, (chunk) => {
-            if (chunk.total && chunk.completed) {
-                setPulling((p) => ({ ...p, [name]: Math.round((chunk.completed! / chunk.total!) * 100) }));
-            }
-        });
-        setPulling((p) => {
-            const next = { ...p };
-            delete next[name];
-            return next;
-        });
-        refreshInstalled();
-
-        activePullCount.current--;
-        if (activePullCount.current === 0) window.api.app.setBusy(false);
-    }
-
-    async function deleteModel(name: string) {
-        await window.api.ollama.deleteModel(name);
-        refreshInstalled();
+    // docs/LOCAL_INFERENCE_HARDENING_PLAN.md §2.3: the curated MODEL_CATALOG's
+    // `name` field is always an Ollama tag with no working pull mechanism at
+    // all now that Ollama is removed (there never was one for the "vllm"/
+    // "mlx" recommendedRuntime cases either — a curated catalog entry has no
+    // real repo id for either of those). Every case routes to a real Hugging
+    // Face search for the model's actual name instead of guessing at (and
+    // potentially getting wrong) a specific repo/file — reuses the existing
+    // debounced search below rather than adding new search UI. Not a perfect
+    // fallback for "mlx" specifically (MLX models are safetensors under
+    // mlx-community/, not GGUF, so the search results skew towards GGUF
+    // quantizations) but still strictly better than a broken pull call.
+    function downloadRecommendedModel(m: RecommendedModel) {
+        setActiveTab("models");
+        setSearch(m.huggingFaceSearchQuery);
     }
 
     async function deleteRagCollection(id: string) {
@@ -1143,24 +1082,6 @@ export default function Settings() {
         setTimeout(() => setImportPresetsMessage(null), 4000);
     }
 
-    const searchResults = useMemo(() => {
-        const query = search.trim().toLowerCase();
-        if (!query) return [];
-
-        const fromRecommended = (recommendations?.models ?? []).map((m) => ({
-            name: m.name,
-            label: m.label,
-            description: m.description,
-        }));
-        const combined = [...fromRecommended, ...EXTRA_MODELS];
-        const seen = new Set<string>();
-        const deduped = combined.filter((m) => (seen.has(m.name) ? false : (seen.add(m.name), true)));
-
-        return deduped.filter(
-            (m) => m.name.toLowerCase().includes(query) || m.label.toLowerCase().includes(query)
-        );
-    }, [search, recommendations]);
-
     if (!hasApi) {
         return (
             <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
@@ -1168,12 +1089,6 @@ export default function Settings() {
             </div>
         );
     }
-
-    const installedNames = new Set(installed.map((m) => m.name));
-    const catalogNames = new Set(recommendations?.models.map((m) => m.name) ?? []);
-    const otherInstalled = installed.filter((m) => !catalogNames.has(m.name));
-
-    const exactMatchExists = searchResults.some((m) => m.name.toLowerCase() === search.trim().toLowerCase());
 
     return (
         <ScrollArea className="h-full">
@@ -1230,83 +1145,35 @@ export default function Settings() {
 
                     <TabsContent value="general" className="min-w-0 flex-1 flex flex-col gap-8">
                     <div>
-                        <SettingsSection title={t.ollamaServer}>
-                            <SettingsRow
-                                label={running === null ? t.checking : running ? t.running : t.stopped}
-                            >
-                                <Badge variant={running ? "default" : "secondary"}>
-                                    {running ? t.online : t.offline}
-                                </Badge>
-                                <Button size="sm" variant="outline" onClick={toggleServer}>
-                                    {running ? t.stop : t.start}
-                                </Button>
-                            </SettingsRow>
-                            <SettingsRow label={t.serverAddress} description={t.serverAddressHelp} stacked>
-                                <div className="flex gap-1.5">
-                                    <Input
-                                        value={ollamaHostInput}
-                                        onChange={(e) => setOllamaHostInput(e.target.value)}
-                                        placeholder="http://127.0.0.1:11434"
-                                        aria-label={t.serverAddress}
-                                        className="h-8 text-xs"
-                                    />
-                                    <Button size="sm" variant="outline" onClick={saveOllamaHost}>
-                                        {t.save}
-                                    </Button>
-                                </div>
-                            </SettingsRow>
-                            <SettingsRow label={t.modelsDir} description={t.modelsDirHint} stacked>
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <span className="truncate rounded border border-border bg-muted px-2 py-1 font-mono text-xs">
-                                        {settings?.modelsDir ?? t.modelsDirDefault}
-                                    </span>
-                                    <Button
-                                        size="sm"
-                                        variant="outline"
-                                        disabled={changingModelsDir}
-                                        onClick={chooseModelsDir}
-                                        className="gap-1.5"
-                                    >
-                                        {changingModelsDir ? (
-                                            <Loader2 className="size-3.5 animate-spin" />
-                                        ) : (
-                                            <FolderOpen className="size-3.5" />
-                                        )}
-                                        {t.chooseFolder}
-                                    </Button>
-                                    {settings?.modelsDir && (
-                                        <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            disabled={changingModelsDir}
-                                            onClick={resetModelsDir}
-                                            className="text-xs text-muted-foreground"
-                                        >
-                                            {t.resetToDefault}
-                                        </Button>
-                                    )}
-                                </div>
-                                {modelsDirStatus && <p className="text-xs text-muted-foreground">{modelsDirStatus}</p>}
-                            </SettingsRow>
-                            <SettingsRow label={t.ragEmbeddingModel} description={t.ragEmbeddingModelHint} stacked>
+                        <SettingsSection title={t.ragEmbeddingModel} description={t.ragEmbeddingModelHint}>
+                            <SettingsRow stacked>
                                 <Select
-                                    value={settings?.ragEmbeddingModel ?? "nomic-embed-text"}
+                                    value={settings?.ragEmbeddingModel ?? ""}
                                     onValueChange={(v) => v && saveSettings({ ragEmbeddingModel: v })}
                                 >
                                     <SelectTrigger size="sm" className="w-56">
-                                        <SelectValue />
+                                        <SelectValue placeholder={t.ragEmbeddingModel} />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        {EMBEDDING_MODELS.map((m) => (
-                                            <SelectItem key={m.name} value={m.name}>{m.label}</SelectItem>
-                                        ))}
+                                        {llamaCppModels.length > 0 ? (
+                                            <SelectGroup>
+                                                <SelectLabel>llama.cpp (local GGUF)</SelectLabel>
+                                                {llamaCppModels.map((m) => (
+                                                    <SelectItem key={m.name} value={formatModelRef("llamacpp", m.name)}>{m.label}</SelectItem>
+                                                ))}
+                                            </SelectGroup>
+                                        ) : null}
                                     </SelectContent>
                                 </Select>
                             </SettingsRow>
                         </SettingsSection>
 
                         <SettingsSection title={t.ragCollections} description={t.ragCollectionsHint} className="mt-8">
-                            {ragCollections.length === 0 ? (
+                            {ragCollectionsLocked ? (
+                                <p className="text-xs text-muted-foreground">Case data is locked — unlock it in Patient Cases to see indexed folders.</p>
+                            ) : ragCollectionsError ? (
+                                <p className="text-xs text-destructive">Couldn't load indexed folders: {ragCollectionsError}</p>
+                            ) : ragCollections.length === 0 ? (
                                 <p className="text-xs text-muted-foreground">{t.ragCollectionsEmpty}</p>
                             ) : (
                                 <div className="flex flex-col gap-2">
@@ -1808,7 +1675,6 @@ export default function Settings() {
                                     </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="automatic">{t.modelRuntimeAutomatic}</SelectItem>
-                                        <SelectItem value="ollama">{t.modelRuntimeOllama}</SelectItem>
                                         <SelectItem value="llamacpp">{t.modelRuntimeLlamaCpp}</SelectItem>
                                         <SelectItem value="vllm">{t.modelRuntimeVllm}</SelectItem>
                                         <SelectItem value="mlx">{t.modelRuntimeMlx}</SelectItem>
@@ -1817,14 +1683,61 @@ export default function Settings() {
                             </SettingsRow>
                         </SettingsSection>
 
-                        <SettingsSection title={t.ollamaModelsSection} className="mt-8">
+                        {recommendations && recommendations.models.length > 0 && (
+                            <SettingsSection title={t.recommendedModelsSection} className="mt-8">
+                                {recommendations.models.map((m) => {
+                                    const tone = OUTCOME_TONE[m.outcome] ?? "neutral";
+                                    const labelKey = OUTCOME_LABEL_KEY[m.outcome as keyof typeof OUTCOME_LABEL_KEY];
+                                    return (
+                                        <SettingsRow key={m.name} stacked>
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <div className="flex flex-wrap items-center gap-1.5">
+                                                        <span className="text-sm font-medium">{m.label}</span>
+                                                        <StatusBadge tone={tone}>{labelKey ? t[labelKey] : m.outcome}</StatusBadge>
+                                                        {m.recommended && <Badge>{t.recommendedForYourPc}</Badge>}
+                                                        {m.supportsTools && (
+                                                            <Badge variant="secondary" className="gap-1" title="Reliable tool/function calling — a good fit for Agent mode">
+                                                                <Wrench className="size-3" /> {t.toolCallingBadge}
+                                                            </Badge>
+                                                        )}
+                                                    </div>
+                                                    <p className="text-xs text-muted-foreground">{m.description}</p>
+                                                    <p className="text-xs text-muted-foreground">{m.reason}</p>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        {m.quantization} · {t.recommendedRuntime}: {m.recommendedRuntime} · ~{m.estimatedTokensPerSecond} tok/s
+                                                        {m.measuredTokensPerSecond !== undefined ? ` · ${t.measured} ${m.measuredTokensPerSecond} tok/s` : ""}
+                                                    </p>
+                                                    <details className="mt-1 text-xs text-muted-foreground">
+                                                        <summary className="cursor-pointer select-none hover:text-foreground">{t.advancedDetails}</summary>
+                                                        <p className="mt-1">
+                                                            {t.outcomeRaw}: {m.outcome} · {t.estimatedWeight} {m.estimatedWeightGB} GB · {t.estimatedKvCache} {m.estimatedKvCacheGB} GB · {t.runtimeOverhead} {m.runtimeOverheadGB} GB · {m.expectedGpuOffloadPercent}% {t.gpuOffload}
+                                                        </p>
+                                                    </details>
+                                                </div>
+                                                <Button
+                                                    size="icon"
+                                                    variant="outline"
+                                                    onClick={() => downloadRecommendedModel(m)}
+                                                    aria-label={`Search Hugging Face for ${m.name}`}
+                                                >
+                                                    <Search />
+                                                </Button>
+                                            </div>
+                                        </SettingsRow>
+                                    );
+                                })}
+                            </SettingsSection>
+                        )}
+
+                        <SettingsSection title={t.huggingFaceResults} description={t.huggingFaceResultsHint} className="mt-8">
                             <div className="p-3">
                                 <div className="relative">
                                     <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                                     <Input
                                         value={search}
                                         onChange={(e) => setSearch(e.target.value)}
-                                        placeholder="Search catalog, an exact tag (mixtral:8x7b), or a Hugging Face model (hf.co/user/repo)..."
+                                        placeholder="Search Hugging Face (a model name, or hf.co/user/repo)..."
                                         aria-label="Search models"
                                         className="pl-8"
                                     />
@@ -1833,132 +1746,8 @@ export default function Settings() {
                                     {t.huggingFaceHint}
                                 </p>
                             </div>
-
-                            {search.trim()
-                                ? searchResults.map((m) => {
-                                      const isInstalled = installedNames.has(m.name);
-                                      const progress = pulling[m.name];
-                                      return (
-                                          <SettingsRow key={m.name} label={m.label} description={m.description}>
-                                              {progress !== undefined && (
-                                                  <Progress value={progress} className="h-1.5 w-20" />
-                                              )}
-                                              {isInstalled ? (
-                                                  <Button
-                                                      size="icon"
-                                                      variant="ghost"
-                                                      onClick={() => deleteModel(m.name)}
-                                                      aria-label={`Delete ${m.name}`}
-                                                  >
-                                                      <Trash2 className="text-destructive" />
-                                                  </Button>
-                                              ) : progress !== undefined ? (
-                                                  <Button size="icon" variant="outline" disabled aria-label={`Downloading ${m.name}`}>
-                                                      <Loader2 className="animate-spin" />
-                                                  </Button>
-                                              ) : (
-                                                  <Button
-                                                      size="icon"
-                                                      variant="outline"
-                                                      onClick={() => pullModel(m.name)}
-                                                      aria-label={`Download ${m.name}`}
-                                                  >
-                                                      <Download />
-                                                  </Button>
-                                              )}
-                                          </SettingsRow>
-                                      );
-                                  })
-                                : recommendations?.models.map((m) => {
-                                      const isInstalled = installedNames.has(m.name);
-                                      const progress = pulling[m.name];
-                                      const tone = OUTCOME_TONE[m.outcome] ?? "neutral";
-                                      const labelKey = OUTCOME_LABEL_KEY[m.outcome as keyof typeof OUTCOME_LABEL_KEY];
-                                      return (
-                                          <SettingsRow key={m.name} stacked>
-                                              <div className="flex items-center justify-between gap-3">
-                                                  <div className="min-w-0">
-                                                      <div className="flex flex-wrap items-center gap-1.5">
-                                                          <span className="text-sm font-medium">{m.label}</span>
-                                                          <StatusBadge tone={tone}>{labelKey ? t[labelKey] : m.outcome}</StatusBadge>
-                                                          {m.recommended && <Badge>{t.recommendedForYourPc}</Badge>}
-                                                          {m.supportsTools && (
-                                                              <Badge variant="secondary" className="gap-1" title="Reliable tool/function calling — a good fit for Agent mode">
-                                                                  <Wrench className="size-3" /> {t.toolCallingBadge}
-                                                              </Badge>
-                                                          )}
-                                                      </div>
-                                                      <p className="text-xs text-muted-foreground">{m.description}</p>
-                                                      <p className="text-xs text-muted-foreground">{m.reason}</p>
-                                                      <p className="text-xs text-muted-foreground">
-                                                          {m.quantization} · {t.recommendedRuntime}: {m.recommendedRuntime} · ~{m.estimatedTokensPerSecond} tok/s
-                                                          {m.measuredTokensPerSecond !== undefined ? ` · ${t.measured} ${m.measuredTokensPerSecond} tok/s` : ""}
-                                                      </p>
-                                                      <details className="mt-1 text-xs text-muted-foreground">
-                                                          <summary className="cursor-pointer select-none hover:text-foreground">{t.advancedDetails}</summary>
-                                                          <p className="mt-1">
-                                                              {t.outcomeRaw}: {m.outcome} · {t.estimatedWeight} {m.estimatedWeightGB} GB · {t.estimatedKvCache} {m.estimatedKvCacheGB} GB · {t.runtimeOverhead} {m.runtimeOverheadGB} GB · {m.expectedGpuOffloadPercent}% {t.gpuOffload}
-                                                          </p>
-                                                      </details>
-                                                  </div>
-                                                  {isInstalled ? (
-                                                      <Button
-                                                          size="icon"
-                                                          variant="ghost"
-                                                          onClick={() => deleteModel(m.name)}
-                                                          aria-label={`Delete ${m.name}`}
-                                                      >
-                                                          <Trash2 className="text-destructive" />
-                                                      </Button>
-                                                  ) : progress !== undefined ? (
-                                                      <Button size="icon" variant="outline" disabled aria-label={`Downloading ${m.name}`}>
-                                                          <Loader2 className="animate-spin" />
-                                                      </Button>
-                                                  ) : (
-                                                      <Button
-                                                          size="icon"
-                                                          variant="outline"
-                                                          onClick={() => pullModel(m.name)}
-                                                          aria-label={`Download ${m.name}`}
-                                                      >
-                                                          <Download />
-                                                      </Button>
-                                                  )}
-                                              </div>
-                                              {progress !== undefined && <Progress value={progress} className="h-1.5" />}
-                                          </SettingsRow>
-                                      );
-                                  })}
-
-                            {search.trim() && !exactMatchExists && !installedNames.has(search.trim()) && (() => {
-                                const customTag = normalizeModelTag(search);
-                                const isHuggingFace = /^hf\.co\//i.test(customTag);
-                                return (
-                                    <SettingsRow
-                                        label={customTag}
-                                        description={isHuggingFace ? t.pullFromHuggingFace : t.pullExactTag}
-                                    >
-                                        {pulling[customTag] !== undefined ? (
-                                            <Button size="icon" variant="outline" disabled aria-label={`Downloading ${customTag}`}>
-                                                <Loader2 className="animate-spin" />
-                                            </Button>
-                                        ) : (
-                                            <Button
-                                                size="icon"
-                                                variant="outline"
-                                                onClick={() => pullModel(customTag)}
-                                                aria-label={`Download ${customTag}`}
-                                            >
-                                                <Download />
-                                            </Button>
-                                        )}
-                                    </SettingsRow>
-                                );
-                            })()}
-                        </SettingsSection>
-
-                        {search.trim() && (
-                            <SettingsSection title={t.huggingFaceResults} description={t.huggingFaceResultsHint} className="mt-8">
+                            {search.trim() && (
+                                <>
                                 {hfSearching && (
                                     <div className="flex items-center justify-center p-4">
                                         <Loader2 className="size-4 animate-spin text-muted-foreground" />
@@ -2000,8 +1789,6 @@ export default function Settings() {
                                                         const assessment = hfAssessments[f.path];
                                                         const shardCount = group.length;
                                                         const downloadSize = ggufGroupSize(group);
-                                                        const ggufTag = ollamaTagForGguf(r.id, f.path, assessment);
-                                                        const ollamaProgress = pulling[ggufTag];
                                                         const tone: StatusTone = !assessment || !assessment.canAssess ? "neutral" : OUTCOME_TONE[assessment.outcome] ?? "neutral";
                                                         const fitLabel = !assessment || !assessment.canAssess
                                                             ? (locale === "tr" ? "Boyut bekleniyor" : "Waiting for size")
@@ -2029,10 +1816,6 @@ export default function Settings() {
                                                                         </p>
                                                                     </div>
                                                                     <div className="flex shrink-0 flex-wrap gap-1.5">
-                                                                        <Button size="sm" variant="outline" disabled={ollamaProgress !== undefined} onClick={() => pullModel(ggufTag)} title={`${locale === "tr" ? "Ollama etiketi" : "Ollama tag"}: ${ggufTag}`}>
-                                                                            {ollamaProgress !== undefined ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <Download className="mr-1.5 size-3.5" />}
-                                                                            {t.pullWithOllama}
-                                                                        </Button>
                                                                         <Button size="sm" variant={assessment?.fits === false ? "outline" : "default"} disabled={progress !== undefined} onClick={() => downloadForLlamaCpp(r.id, f.path)}>
                                                                             {progress !== undefined ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <FileDown className="mr-1.5 size-3.5" />}
                                                                             {shardCount > 1 ? `${t.downloadForLlamaCpp} (${shardCount})` : t.downloadForLlamaCpp}
@@ -2057,7 +1840,6 @@ export default function Settings() {
                                                                     </div>
                                                                 )}
                                                                 {progress !== undefined && <Progress value={progress} className="mt-3 h-1.5" />}
-                                                                {ollamaProgress !== undefined && <Progress value={ollamaProgress} className="mt-3 h-1.5" />}
                                                             </div>
                                                         );
                                                     })
@@ -2066,25 +1848,9 @@ export default function Settings() {
                                         )}
                                     </div>
                                 ))}
-                            </SettingsSection>
-                        )}
-
-                        {otherInstalled.length > 0 && (
-                            <SettingsSection title={t.otherInstalledModels} className="mt-8">
-                                {otherInstalled.map((m) => (
-                                    <SettingsRow key={m.name} label={m.name} description={`${formatBytes(m.size)} · installed`}>
-                                        <Button
-                                            size="icon"
-                                            variant="ghost"
-                                            onClick={() => deleteModel(m.name)}
-                                            aria-label={`Delete ${m.name}`}
-                                        >
-                                            <Trash2 className="text-destructive" />
-                                        </Button>
-                                    </SettingsRow>
-                                ))}
-                            </SettingsSection>
-                        )}
+                                </>
+                            )}
+                        </SettingsSection>
                     </div>
                     </TabsContent>
 
@@ -2709,9 +2475,9 @@ export default function Settings() {
                                             </SelectTrigger>
                                             <SelectContent>
                                                 <SelectGroup>
-                                                    <SelectLabel>Ollama (local)</SelectLabel>
-                                                    {installed.map((m) => (
-                                                        <SelectItem key={m.name} value={formatModelRef("ollama", m.name)}>
+                                                    <SelectLabel>llama.cpp (local)</SelectLabel>
+                                                    {llamaCppModels.map((m) => (
+                                                        <SelectItem key={m.name} value={formatModelRef("llamacpp", m.name)}>
                                                             {m.name}
                                                         </SelectItem>
                                                     ))}
@@ -2796,9 +2562,9 @@ export default function Settings() {
                                             </SelectTrigger>
                                             <SelectContent>
                                                 <SelectGroup>
-                                                    <SelectLabel>Ollama (local)</SelectLabel>
-                                                    {installed.map((m) => (
-                                                        <SelectItem key={m.name} value={formatModelRef("ollama", m.name)}>
+                                                    <SelectLabel>llama.cpp (local)</SelectLabel>
+                                                    {llamaCppModels.map((m) => (
+                                                        <SelectItem key={m.name} value={formatModelRef("llamacpp", m.name)}>
                                                             {m.name}
                                                         </SelectItem>
                                                     ))}
@@ -2890,7 +2656,18 @@ export default function Settings() {
                                                         <SelectItem value="manual">Manual layer count</SelectItem>
                                                     </SelectContent>
                                                 </Select>
-                                                {settings.gpuLayerMode === "manual" && <Input id="setting-gpuLayers" type="number" min={0} step={1} title={t.gpuLayersHelp} value={settings.gpuLayers ?? 1} onChange={(e) => saveSettings({ gpuLayers: Number(e.target.value) })} />}
+                                                {settings.gpuLayerMode === "manual" && (
+                                                    <Input
+                                                        id="setting-gpuLayers"
+                                                        type="number"
+                                                        min={0}
+                                                        max={GPU_LAYERS_FALLBACK_MAX}
+                                                        step={1}
+                                                        title={t.gpuLayersHelp}
+                                                        value={settings.gpuLayers ?? 1}
+                                                        onChange={(e) => saveSettings({ gpuLayers: Math.max(0, Math.min(Math.trunc(Number(e.target.value)), GPU_LAYERS_FALLBACK_MAX)) })}
+                                                    />
+                                                )}
                                             </div>
                                             <div className="flex flex-col gap-1">
                                                 <label htmlFor="setting-frequencyPenalty" className="text-xs text-muted-foreground">{t.frequencyPenalty}</label>
@@ -3397,15 +3174,6 @@ export default function Settings() {
                         >
                             {activity && (
                                 <>
-                                    <SettingsRow label="Ollama">
-                                        <span className="text-sm text-muted-foreground">
-                                            {activity.ollamaRunning
-                                                ? activity.ollamaLoadedModels.length > 0
-                                                    ? activity.ollamaLoadedModels.map((m) => m.name).join(", ")
-                                                    : t.noModelsLoaded
-                                                : t.notRunning}
-                                        </span>
-                                    </SettingsRow>
                                     <SettingsRow label="llama.cpp">
                                         <span className="text-sm text-muted-foreground">
                                             {activity.llamacppLoadedModels.length > 0
@@ -3466,16 +3234,6 @@ export default function Settings() {
                                         <SelectValue placeholder="Select a local model" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        {installed.length > 0 && (
-                                            <SelectGroup>
-                                                <SelectLabel>Ollama</SelectLabel>
-                                                {installed.map((model) => (
-                                                    <SelectItem key={`bench-ollama-${model.name}`} value={formatModelRef("ollama", model.name)}>
-                                                        {model.name}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectGroup>
-                                        )}
                                         {llamaCppModels.length > 0 && (
                                             <SelectGroup>
                                                 <SelectLabel>llama.cpp / ROCm</SelectLabel>

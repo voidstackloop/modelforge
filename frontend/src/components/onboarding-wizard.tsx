@@ -2,13 +2,13 @@ import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Bot, Cpu, Cloud, Check } from "lucide-react";
+import { Cpu, Cloud, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
-type OnboardingProvider = "ollama" | "llamacpp" | "openai" | "anthropic" | "gemini";
+type OnboardingProvider = "llamacpp" | "openai" | "anthropic" | "gemini";
 
-const CLOUD_KEY_INFO: Record<Exclude<OnboardingProvider, "ollama" | "llamacpp">, { secretKey: string; placeholder: string }> = {
+const CLOUD_KEY_INFO: Record<Exclude<OnboardingProvider, "llamacpp">, { secretKey: string; placeholder: string }> = {
     openai: { secretKey: "openai_api_key", placeholder: "sk-..." },
     anthropic: { secretKey: "anthropic_api_key", placeholder: "sk-ant-..." },
     gemini: { secretKey: "gemini_api_key", placeholder: "AIza..." },
@@ -32,7 +32,7 @@ export function OnboardingWizard({ open, onDone }: { open: boolean; onDone: () =
     }
 
     async function saveKeyAndFinish() {
-        if (selected && selected !== "ollama" && selected !== "llamacpp" && keyInput.trim()) {
+        if (selected && selected !== "llamacpp" && keyInput.trim()) {
             await window.api.secrets.set(CLOUD_KEY_INFO[selected].secretKey, keyInput.trim());
             setSaved(true);
         }
@@ -40,14 +40,13 @@ export function OnboardingWizard({ open, onDone }: { open: boolean; onDone: () =
     }
 
     const options: { id: OnboardingProvider; label: string; description: string; icon: React.ReactNode }[] = [
-        { id: "ollama", label: t.onboardingOllama, description: t.onboardingOllamaDesc, icon: <Bot className="size-5" /> },
         { id: "llamacpp", label: t.onboardingLlamaCpp, description: t.onboardingLlamaCppDesc, icon: <Cpu className="size-5" /> },
         { id: "openai", label: "ChatGPT (OpenAI)", description: t.onboardingCloudDesc, icon: <Cloud className="size-5" /> },
         { id: "anthropic", label: "Claude (Anthropic)", description: t.onboardingCloudDesc, icon: <Cloud className="size-5" /> },
         { id: "gemini", label: "Gemini (Google)", description: t.onboardingCloudDesc, icon: <Cloud className="size-5" /> },
     ];
 
-    const isCloud = selected && selected !== "ollama" && selected !== "llamacpp";
+    const isCloud = selected && selected !== "llamacpp";
 
     return (
         <Dialog open={open} onOpenChange={(o) => !o && finish()}>

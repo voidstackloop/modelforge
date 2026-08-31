@@ -22,12 +22,19 @@ export function registerSessionsIpc(): void {
         sessionsStore.deleteSession(requireString(id, "session id"))
     );
     ipcMain.handle("sessions:clearAll", () => sessionsStore.clearAll());
+    // Same configuration-boundary pattern as patientCases:listBackends —
+    // exposes only a backend's public identity (name/label/scope), never
+    // connection details/credentials.
+    ipcMain.handle("sessions:listBackends", () => ({
+        active: sessionsStore.getSessionsBackend().name,
+        backends: sessionsStore.listSessionsBackends(),
+    }));
 
     ipcMain.handle("scheduledTasks:list", () => scheduledTasksStore.listTasks());
 
     ipcMain.handle(
         "scheduledTasks:create",
-        (
+        async (
             _event: IpcMainInvokeEvent,
             {
                 name,
@@ -41,8 +48,8 @@ export function registerSessionsIpc(): void {
             requireString(model, "task model");
             // Each task gets a dedicated chat session it appends results to —
             // created here so the task always has somewhere to write to.
-            const session = sessionsStore.createSession(model);
-            sessionsStore.updateSession(session.id, { title: name });
+            const session = await sessionsStore.createSession(model);
+            await sessionsStore.updateSession(session.id, { title: name });
             const task = scheduledTasksStore.createTask({
                 name,
                 prompt,

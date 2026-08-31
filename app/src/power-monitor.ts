@@ -62,7 +62,6 @@ export function sampleCpuUtilization(): number {
 }
 
 function runtimeForProvider(provider: ProviderId): EnergyRuntime {
-    if (provider === "ollama") return "ollama";
     if (provider === "vllm") return "vllm";
     if (provider === "mlx") return "mlx";
     if (provider === "llamacpp" || provider === "rocm") return "llamacpp";

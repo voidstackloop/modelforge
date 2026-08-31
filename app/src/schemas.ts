@@ -1,4 +1,22 @@
 import { z } from "zod";
+export {
+    attachmentRefSchema,
+    caseConsentSchema,
+    clinicalNoteReviewSchema,
+    clinicalNoteSchema,
+    labResultSchema,
+    patientCaseSchema,
+    patientCasesFileSchema,
+} from "@modelforge/contracts";
+import {
+    attachmentRefSchema,
+    caseConsentSchema,
+    clinicalNoteReviewSchema,
+    clinicalNoteSchema,
+    labResultSchema,
+    patientCaseSchema,
+    patientCasesFileSchema,
+} from "@modelforge/contracts";
 
 // Runtime validation for the two places TypeScript's types disappear at
 // runtime: IPC arguments coming from the renderer (main.ts) and JSON files
@@ -108,8 +126,6 @@ export const runtimeGpuConfigSchema = z.object({
 export const appSettingsSchema = z
     .object({
         defaultModel: z.string().nullable(),
-        ollamaHost: z.string(),
-        modelsDir: z.string(),
         temperature: z.number(),
         topP: z.number(),
         maxTokens: z.number(),
@@ -142,7 +158,7 @@ export const appSettingsSchema = z
         llamaCppModelsDir: z.string(),
         llamaCppGpuBackend: z.enum(["auto", "vulkan", "cuda", "metal", "cpu"]),
         ragEmbeddingModel: z.string(),
-        preferredRuntime: z.enum(["automatic", "ollama", "llamacpp", "vllm", "mlx"]),
+        preferredRuntime: z.enum(["automatic", "llamacpp", "vllm", "mlx"]),
         recommendationGoal: z.enum(["quality", "speed", "memory", "energy", "agent", "balanced"]),
         customProviders: z.array(customProviderConfigSchema),
         onboardingComplete: z.boolean(),
@@ -177,6 +193,21 @@ export const appSettingsSchema = z
         // Unset/"json" (the default) is completely unaffected by this
         // setting existing — see docs/RUST_MIGRATION_ASSESSMENT.md.
         auditLogBackend: z.enum(["json", "sqlite"]).optional(),
+        auditLogSqliteDir: z.string().optional(),
+        // Selects a registered MedicationSafetyProvider by name (see
+        // medical-safety.ts) — a plain string, not an enum, since the set of
+        // registered providers is a runtime registry, not a fixed list this
+        // schema could enumerate ahead of time.
+        medicationSafetyProviderId: z.string().optional(),
+        // Selects a registered PatientCasesBackend by name (see
+        // patient-cases-store.ts) — a plain string, not an enum, since the
+        // set of registered backends is a runtime registry, not a fixed
+        // list this schema could enumerate ahead of time.
+        patientCasesBackendId: z.string().optional(),
+        // Selects a registered SessionsBackend by name (see
+        // sessions-store.ts) — same runtime-registry reasoning as
+        // patientCasesBackendId above.
+        sessionsBackendId: z.string().optional(),
         energyMonitoringEnabled: z.boolean(),
         electricityPricePerKwh: z.number(),
         energyCurrency: z.string(),
@@ -196,9 +227,88 @@ export const appSettingsSchema = z
         // requires every enum member present, which would break a config
         // that only has some backends set).
         runtimeGpuConfigs: z.record(z.string().min(1), runtimeGpuConfigSchema),
+        // Item 4/7: the resource-orchestrator's own OS-reserve budget mode —
+        // distinct from llamaCppVramReserveGB/llamaCppRamReserveGB above,
+        // which only configure node-llama-cpp's internal context-sizing
+        // math for that one backend. This governs the cross-workload
+        // admission ceiling every workload kind shares (see
+        // resource-budget.ts). "manual" is the only mode where the Max*
+        // fields below are consulted at all.
+        resourceBudgetMode: z.enum(["balanced", "performance", "efficient", "manual"]),
+        resourceMaxRamMB: z.number(),
+        resourceMaxVramMB: z.number(),
+        resourceCpuThreadCeiling: z.number(),
+        resourceRuntimeProfile: z.enum(["interactive", "balanced", "throughput", "energy-efficient"]),
+        // Opt-in: makes this install act as a compute-control-plane fleet
+        // agent (see compute-agent.ts, docs/COMPUTE_CONTROL_PLANE.md) on top
+        // of an already-connected shared backend. Off by default — standalone
+        // operation never depends on this.
+        computeAgentEnabled: z.boolean().optional(),
+        // The node id an organization compute admin assigned to this
+        // install via POST /compute/nodes (compute-node-identity.ts's
+        // fingerprint is what they registered it under) — a plain string,
+        // not auto-discovered, since node registration is an admin action
+        // this app never performs on its own behalf.
+        computeNodeId: z.string().optional(),
     })
     .partial()
     .passthrough();
+
+// --- Central policy (policy-store.ts) ---------------------------------------
+//
+// A deliberately small, closed subset of AppSettings — not appSettingsSchema
+// itself — so a policy document can only ever govern the specific
+// institution-relevant fields listed here, never arbitrary settings (e.g. a
+// signed policy can lock down auditLogRetentionDays; it can't set someone's
+// theme). Keep this in sync with policy-store.ts's MANAGED_SETTING_KEYS,
+// which is the runtime source of truth this schema mirrors — see that file's
+// comment for why the two must match exactly.
+export const managedSettingsSchema = z
+    .object({
+        networkToolsEnabled: z.boolean(),
+        verificationEnabled: z.boolean(),
+        verificationMaxRetries: z.number(),
+        agentMaxSteps: z.number(),
+        caseAutoLockMinutes: z.number(),
+        redactBeforeRemoteSend: z.boolean(),
+        auditLogRetentionDays: z.number(),
+        auditLogBackend: z.enum(["json", "sqlite"]),
+        medicationSafetyProviderId: z.string(),
+        patientCasesBackendId: z.string(),
+        sessionsBackendId: z.string(),
+        llamaCppGpuBackend: z.enum(["auto", "vulkan", "cuda", "metal", "cpu"]),
+        llamaCppMaxCachedModels: z.number(),
+        llamaCppMaxThreads: z.number(),
+        llamaCppVramReserveGB: z.number(),
+        llamaCppRamReserveGB: z.number(),
+        llamaCppBatchSize: z.number(),
+        llamaCppFlashAttention: z.enum(["auto", "on", "off"]),
+        resourceBudgetMode: z.enum(["balanced", "performance", "efficient", "manual"]),
+        resourceMaxRamMB: z.number(),
+        resourceMaxVramMB: z.number(),
+        resourceCpuThreadCeiling: z.number(),
+        resourceRuntimeProfile: z.enum(["interactive", "balanced", "throughput", "energy-efficient"]),
+    })
+    .partial()
+    .strict(); // .strict(), unlike appSettingsSchema's .passthrough(): an
+    // unrecognized key in a *signed* policy document should fail verification
+    // loudly rather than being silently ignored — a typo'd field name in an
+    // institution's policy tooling should surface as an error, not silently
+    // govern nothing.
+
+export const policyPayloadSchema = z.object({
+    version: z.literal(1),
+    issuer: z.string().min(1),
+    issuedAt: z.string(),
+    expiresAt: z.string(),
+    settings: managedSettingsSchema,
+});
+
+export const signedPolicySchema = z.object({
+    payload: z.string(), // policyPayloadSchema, serialized — see policy-store.ts's canonicalPayloadString()
+    signatureHex: z.string(),
+    algorithm: z.literal("ed25519"),
+});
 
 // --- tools:execute -----------------------------------------------------
 
@@ -299,94 +409,28 @@ export const mcpToolArgsSchema = z.record(z.string(), z.unknown());
 // sent to a model implicitly; the include flags are read by the caller that
 // assembles a prompt, not enforced by this schema itself.
 
-const caseFieldSchema = <T extends z.ZodType>(valueSchema: T) =>
-    z.object({ value: valueSchema, includeInContext: z.boolean() });
+// Clinical schemas are re-exported from @modelforge/contracts above. The
+// app, server, and renderer now compile against one strict runtime contract.
 
-export const labResultSchema = z.object({
-    id: z.string(),
-    name: z.string(),
-    value: z.string(),
-    unit: z.string().optional(),
-    referenceRange: z.string().optional(),
-    observedAt: z.string().optional(),
+// --- Shared backend connection config (sharedBackend:setConfig) ------------
+//
+// Mirrors app/src/shared-backend-config-store.ts's SharedBackendConfig
+// interface exactly — see that file for what each field means and why this
+// lives in its own store rather than AppSettings or secrets.json.
+export const sharedBackendConfigSchema = z.object({
+    baseUrl: z.string().min(1),
+    issuer: z.string().min(1),
+    clientId: z.string().min(1),
+    audience: z.string().optional(),
+    organizationId: z.string().optional(),
 });
 
-// Sign-off on a model-inference note — records that a clinician reviewed the
-// model's output before it's treated as part of the clinical record, rather
-// than assuming presence-in-case implies review. Meaningless for
-// author: "clinician" notes (never set on those) since a clinician's own
-// text needs no separate reviewer.
-export const clinicalNoteReviewSchema = z.object({
-    reviewedBy: z.string(),
-    reviewedAt: z.string(),
-    outcome: z.enum(["accepted", "accepted-with-edits", "rejected"]),
-    comment: z.string().optional(),
-});
+// --- Medication conflict check (patientCases:checkConflicts) ---------------
 
-export const clinicalNoteSchema = z.object({
-    id: z.string(),
-    // Distinguishes clinician-authored free text from model output that was
-    // saved into the case — the right panel and export views must never
-    // blur this distinction.
-    author: z.enum(["clinician", "model-inference"]),
-    text: z.string(),
-    createdAt: z.string(),
-    review: clinicalNoteReviewSchema.optional(),
+export const medicationConflictCheckInputSchema = z.object({
+    allergies: z.array(z.string()),
+    medications: z.array(z.string()),
 });
-
-export const attachmentRefSchema = z.object({
-    id: z.string(),
-    name: z.string(),
-    mimeType: z.string().optional(),
-    addedAt: z.string(),
-});
-
-// Structured consent record — separate from the free-text `consentNote`
-// (kept below, unchanged, for backward compatibility with existing stored
-// cases) so consent has a queryable scope and a real grant/revoke lifecycle
-// instead of being buried in prose. This is a *recording* mechanism, not an
-// enforcement one: nothing in this app currently blocks an action based on
-// consent state (see docs/ENTERPRISE_READINESS_ASSESSMENT.md's Consent
-// entity, proposed as part of the target institutional data model) — that
-// gating is future scope once there's an identity system to attribute
-// actions to.
-export const caseConsentSchema = z.object({
-    id: z.string(),
-    scope: z.enum(["ai-assistance", "remote-model-use", "research"]),
-    grantedAt: z.string(),
-    revokedAt: z.string().optional(),
-    // How consent was obtained — free text (e.g. "verbal", "written form
-    // signed 2026-01-05") since this app has no structured consent-capture
-    // workflow of its own.
-    method: z.string(),
-});
-
-export const patientCaseSchema = z.object({
-    id: z.string(),
-    title: z.string(),
-    demographics: caseFieldSchema(z.object({ age: z.string().optional(), sex: z.string().optional(), notes: z.string().optional() })),
-    presentingComplaint: caseFieldSchema(z.string()),
-    symptomsTimeline: caseFieldSchema(z.string()),
-    vitalSigns: caseFieldSchema(z.string()),
-    conditions: caseFieldSchema(z.array(z.string())),
-    allergies: caseFieldSchema(z.array(z.string())),
-    medications: caseFieldSchema(z.array(z.string())),
-    labResults: caseFieldSchema(z.array(labResultSchema)),
-    imagingAndReports: caseFieldSchema(z.string()),
-    clinicalNotes: z.array(clinicalNoteSchema),
-    attachments: z.array(attachmentRefSchema),
-    // Provenance/consent metadata — who entered this case and under what
-    // consent basis, kept as plain text since this app has no clinician
-    // identity/auth system to attach a verified actor to.
-    consentNote: z.string().optional(),
-    // Optional so a case created before this field existed still validates.
-    consentRecords: z.array(caseConsentSchema).optional(),
-    enteredBy: z.string().optional(),
-    createdAt: z.string(),
-    updatedAt: z.string(),
-});
-
-export const patientCasesFileSchema = z.array(patientCaseSchema);
 
 // --- Audit log (audit-log.json) ---------------------------------------------
 //
@@ -407,8 +451,10 @@ export const auditEventSchema = z.object({
         "export",
         "data-deleted",
         "settings-changed",
+        "backup-created",
+        "backup-restored",
     ]),
-    targetType: z.enum(["patient-case", "session", "export", "settings"]).optional(),
+    targetType: z.enum(["patient-case", "session", "export", "settings", "backup", "model"]).optional(),
     targetId: z.string().optional(),
     detail: z.string().optional(),
     // mcp-tool-call fields — deliberately structured (server id/name, tool

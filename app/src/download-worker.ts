@@ -2,7 +2,8 @@ import * as accounts from "./accounts";
 import * as downloadQueue from "./download-queue";
 import { getJob, listJobs, updateJob, type DownloadErrorKind, type DownloadJob, type DownloadShard } from "./download-jobs-store";
 import { logger } from "./logger";
-import { getDownloadManager, type JobEvent, type JsDownloadJob } from "./native-downloader";
+import { getDownloadManager, getNativeDownloaderCapabilityReport, type JobEvent, type JsDownloadJob } from "./native-downloader";
+import * as telemetry from "./telemetry";
 
 const MAX_AUTO_RETRIES = 3;
 const MAX_BACKOFF_MS = 60_000;
@@ -27,6 +28,19 @@ function throttledBroadcast(): void {
 // own semaphore, this is purely a JS-side duplicate-start guard.
 const active = new Set<string>();
 const retryTimers = new Map<string, NodeJS.Timeout>();
+
+// Telemetry-only bookkeeping, kept separate from the persisted DownloadJob
+// (which download-jobs-store.ts owns) since none of this needs to survive a
+// restart — a job in flight when the app closes just gets a fresh start
+// timestamp and progress-sample clock on the next run.
+//
+// Sampling cadence for download_progress_sampled — deliberately much coarser
+// than BROADCAST_THROTTLE_MS above (that's for UI responsiveness; this is
+// for bounded telemetry volume over a download that can run for the better
+// part of an hour).
+const PROGRESS_SAMPLE_INTERVAL_MS = 5_000;
+const jobStartedAtMs = new Map<string, number>();
+const lastProgressSampleAtMs = new Map<string, number>();
 
 export function clearRetryTimer(jobId: string): void {
     const timer = retryTimers.get(jobId);
@@ -60,7 +74,30 @@ function withShardPatch(job: DownloadJob, filename: string, patch: Partial<Downl
     return job.shards.map((s) => (s.filename === filename ? { ...s, ...patch } : s));
 }
 
-function handleEvent(event: JobEvent): void {
+/** Records the job's terminal telemetry event and clears this module's
+ * own (non-persisted) bookkeeping for it — shared by the "ready"/"cancelled"
+ * job_state branch and the job_error branch below, so both terminal paths
+ * report the same duration/outcome shape exactly once. */
+function recordCompletion(job: DownloadJob, outcome: telemetry.DownloadOutcome, errorKind?: DownloadErrorKind): void {
+    const startedAt = jobStartedAtMs.get(job.id);
+    telemetry.recordEvent("download_completed", {
+        correlationId: job.id,
+        outcome,
+        durationMs: startedAt !== undefined ? Date.now() - startedAt : 0,
+        totalBytes: job.totalBytes,
+        retryCount: job.retryCount,
+        errorKind,
+    });
+    telemetry.metrics.downloadsCompleted.inc(outcome);
+    if (job.totalBytes !== undefined) telemetry.metrics.downloadBytesTotal.inc(job.jobReceivedBytes ?? job.totalBytes);
+    if (startedAt !== undefined) telemetry.metrics.downloadDurationSeconds.observe((Date.now() - startedAt) / 1000);
+    jobStartedAtMs.delete(job.id);
+    lastProgressSampleAtMs.delete(job.id);
+}
+
+/** Exported for download-worker.test.ts — every real caller still reaches
+ * this only through driveJob's event callback above. */
+export function handleEvent(event: JobEvent): void {
     const job = getJob(event.jobId);
     if (!job) return; // job was deleted while its download was in flight
 
@@ -83,6 +120,17 @@ function handleEvent(event: JobEvent): void {
                     bytesPerSecond: event.bytesPerSec,
                     etaSeconds: event.etaSeconds,
                 }, "progress");
+
+                const lastSampleAt = lastProgressSampleAtMs.get(job.id) ?? 0;
+                if (event.jobReceivedBytes !== undefined && Date.now() - lastSampleAt >= PROGRESS_SAMPLE_INTERVAL_MS) {
+                    lastProgressSampleAtMs.set(job.id, Date.now());
+                    telemetry.recordEvent("download_progress_sampled", {
+                        correlationId: job.id,
+                        jobReceivedBytes: event.jobReceivedBytes,
+                        totalBytes: event.totalBytes,
+                        bytesPerSecond: event.bytesPerSec,
+                    });
+                }
             }
             break;
         case "job_state":
@@ -92,25 +140,46 @@ function handleEvent(event: JobEvent): void {
                     ? job.shards.map((shard) => ({ ...shard, state, verificationState: shard.sha256 ? "verified" as const : "unavailable" as const }))
                     : job.shards;
                 updateJob(job.id, { state, shards, nextRetryAt: undefined, bytesPerSecond: undefined, etaSeconds: undefined });
+
+                if (state === "downloading") {
+                    const resuming = job.state === "paused";
+                    if (!jobStartedAtMs.has(job.id)) jobStartedAtMs.set(job.id, Date.now());
+                    telemetry.recordEvent(resuming ? "download_resumed" : "download_started", {
+                        correlationId: job.id,
+                        shardCount: job.shards.length,
+                    });
+                    if (!resuming) telemetry.metrics.downloadsStarted.inc();
+                } else if (state === "paused") {
+                    telemetry.recordEvent("download_paused", { correlationId: job.id });
+                } else if (state === "ready" || state === "cancelled") {
+                    recordCompletion(job, state);
+                }
             }
             break;
-        case "job_error":
+        case "job_error": {
+            const errorKind = (event.errorKind ?? "unknown") as DownloadErrorKind;
             updateJob(job.id, {
                 state: "failed",
                 nextRetryAt: undefined,
                 retryHistory: [...job.retryHistory, {
                     attempt: job.retryCount + 1,
                     at: new Date().toISOString(),
-                    errorKind: (event.errorKind ?? "unknown") as DownloadErrorKind,
+                    errorKind,
                     message: event.errorMessage ?? "Download failed.",
                 }],
                 error: {
                     message: event.errorMessage ?? "Download failed.",
-                    kind: (event.errorKind ?? "unknown") as DownloadErrorKind,
+                    kind: errorKind,
                     retryable: event.retryable ?? false,
                 },
             });
+            if (errorKind === "verification_failed") {
+                telemetry.recordEvent("download_checksum_failed", { correlationId: job.id });
+                telemetry.metrics.downloadChecksumFailures.inc();
+            }
+            recordCompletion(job, "failed", errorKind);
             break;
+        }
     }
 }
 
@@ -134,6 +203,12 @@ function maybeAutoRetry(jobId: string): void {
         retryTimers.delete(jobId);
         const current = getJob(jobId);
         if (!current || current.state !== "failed" || !current.error?.retryable || current.retryCount !== expectedRetryCount) return;
+        telemetry.recordEvent("download_retry", {
+            correlationId: jobId,
+            attempt: expectedRetryCount + 1,
+            errorKind: current.error.kind,
+        });
+        telemetry.metrics.downloadRetries.inc(current.error.kind);
         updateJob(jobId, { state: "queued", retryCount: expectedRetryCount + 1, nextRetryAt: undefined, error: undefined });
         downloadQueue.broadcast();
         wake();
@@ -179,6 +254,18 @@ export function wake(): void {
 }
 
 export function start(): void {
+    // First (and only — see native-downloader.ts's own doc comment: one
+    // instance for the app's lifetime) real caller of this previously-
+    // orphaned diagnostic. Records once at startup rather than per-download,
+    // since availability doesn't change over a running process's lifetime.
+    const capability = getNativeDownloaderCapabilityReport();
+    telemetry.recordEvent("native_addon_capability", {
+        addon: "downloader",
+        available: capability.available,
+        reason: capability.reason,
+    });
+    if (!capability.available) telemetry.metrics.nativeAddonUnavailable.inc();
+
     wake();
 }
 

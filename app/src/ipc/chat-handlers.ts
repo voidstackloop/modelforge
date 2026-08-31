@@ -18,6 +18,7 @@ export function registerChatIpc(): void {
                 messages,
                 options,
                 agentMode,
+                conversationId,
             }: {
                 requestId: string;
                 provider: ProviderId;
@@ -25,6 +26,7 @@ export function registerChatIpc(): void {
                 messages: ChatMessage[];
                 options?: ChatOptions;
                 agentMode?: boolean;
+                conversationId?: string;
             }
         ) => {
             const channel = `chat:chunk:${requestId}`;
@@ -33,7 +35,7 @@ export function registerChatIpc(): void {
             activeChatRequests.set(requestId, controller);
             const tools = agentMode ? [...agentTools.AGENT_TOOLS, ...mcpClient.getConnectedTools()] : undefined;
             try {
-                await dispatchChat(provider, model, messages, options, onToken, controller.signal, tools);
+                await dispatchChat(provider, model, messages, options, onToken, controller.signal, tools, "active-inference", requestId, conversationId);
                 return { done: true };
             } catch (err) {
                 const error = err as Error;

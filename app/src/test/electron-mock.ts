@@ -16,6 +16,28 @@ export const app = {
     getVersion: () => "0.0.0-test",
 };
 
+// Controllable stand-ins for the two dialog calls data-transfer.ts drives —
+// tests set these mutable result objects before calling an export/import
+// function, exactly like a real user picking (or canceling) a save/open
+// dialog. No `.reset()` needed: every field a test cares about gets
+// overwritten explicitly before use, and `canceled: true` is the safe
+// default so a test that forgets to set a result fails closed (no file
+// path) rather than silently writing to some stale path from a prior test.
+export const dialog = {
+    showSaveDialogResult: { canceled: true, filePath: undefined as string | undefined },
+    showOpenDialogResult: { canceled: true, filePaths: [] as string[] },
+    showSaveDialog: (..._args: unknown[]) => Promise.resolve(dialog.showSaveDialogResult),
+    showOpenDialog: (..._args: unknown[]) => Promise.resolve(dialog.showOpenDialogResult),
+};
+
+export const shell = {
+    openPath: (_p: string) => Promise.resolve(""),
+    openExternal: (_url: string) => Promise.resolve(),
+    showItemInFolder: (_p: string) => {},
+};
+
+export class BrowserWindow {}
+
 // A tagged passthrough "encryption" — good enough to test that secrets-store
 // round-trips values through whatever safeStorage provides, without needing
 // a real OS credential store in the test environment. The tag matters: real

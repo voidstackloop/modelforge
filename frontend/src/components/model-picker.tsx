@@ -13,7 +13,7 @@ export type ModelPickerScope = "local" | "cloud";
 export interface ModelPickerItem {
     ref: string;
     name: string;
-    // Bytes on disk — known for local models (Ollama/llama.cpp/ROCm), absent
+    // Bytes on disk — known for local models (llama.cpp/ROCm), absent
     // for cloud/custom ones since there's nothing local to size.
     sizeBytes?: number;
     // Marks the "Custom model ID..." row for a cloud provider — selecting it
@@ -25,7 +25,7 @@ export interface ModelPickerGroup {
     key: string;
     label: string;
     items: ModelPickerItem[];
-    // Which tab this group belongs to — local (Ollama/llama.cpp/MLX/ROCm/vLLM,
+    // Which tab this group belongs to — local (llama.cpp/MLX/ROCm/vLLM,
     // no API key, no per-token cost) vs. cloud (OpenAI/Anthropic/Gemini/custom
     // OpenAI-compatible endpoints). Splitting these into tabs keeps a long
     // local model list from burying the cloud providers below the fold.
@@ -87,7 +87,7 @@ export function ModelPickerDialog({
                       }
                     : group
             )
-            // An empty group (e.g. "Ollama (local)" with nothing installed
+            // An empty group (e.g. "llama.cpp (local)" with nothing installed
             // yet) reads as a dead-end heading with nothing under it —
             // dropped unconditionally, not just while a search is active.
             .filter((group) => group.items.length > 0);

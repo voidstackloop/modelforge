@@ -52,11 +52,11 @@ export interface DownloadShard {
 
 export interface DownloadJob {
     id: string;
-    kind: "huggingface" | "ollama";
+    kind: "huggingface";
     modelName: string;
     publisher: string;
     quantization?: string;
-    backend: "llamacpp" | "mlx" | "vllm" | "ollama" | "transformers";
+    backend: "llamacpp" | "mlx" | "vllm" | "transformers";
     destinationDir: string;
     modelId: string;
     shards: DownloadShard[];
@@ -79,13 +79,25 @@ const PROGRESS_PERSIST_DELAY_MS = 1_000;
 let jobs: DownloadJob[] | null = null;
 let progressFlushTimer: NodeJS.Timeout | null = null;
 
+type LegacyDownloadJob = Omit<DownloadJob, "kind" | "backend"> & {
+    kind: "huggingface" | "ollama";
+    backend: DownloadJob["backend"] | "ollama";
+};
+
 function filePath(): string {
     return path.join(app.getPath("userData"), "download-jobs.json");
 }
 
-function normalizeJob(job: DownloadJob): DownloadJob {
+function normalizeJob(job: DownloadJob | LegacyDownloadJob): DownloadJob {
+    const removedRuntime = job.kind === "ollama" || job.backend === "ollama";
     return {
         ...job,
+        kind: "huggingface",
+        backend: job.backend === "ollama" ? "llamacpp" : job.backend,
+        state: removedRuntime ? "failed" : job.state,
+        error: removedRuntime
+            ? { message: "This download used the removed Ollama runtime. Choose a verified GGUF or Safetensors artifact and download it again.", kind: "unknown", retryable: false }
+            : job.error,
         maxAttempts: job.maxAttempts ?? 4,
         retryHistory: job.retryHistory ?? [],
         shards: job.shards.map((shard) => ({
@@ -96,7 +108,7 @@ function normalizeJob(job: DownloadJob): DownloadJob {
 }
 
 function currentJobs(): DownloadJob[] {
-    if (!jobs) jobs = readJson<DownloadJob[]>(filePath(), []).map(normalizeJob);
+    if (!jobs) jobs = readJson<Array<DownloadJob | LegacyDownloadJob>>(filePath(), []).map(normalizeJob);
     return jobs;
 }
 

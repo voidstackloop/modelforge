@@ -1,4 +1,5 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
 import * as fs from "node:fs";
@@ -76,7 +77,7 @@ function managedVllmExecutable(platform: NodeJS.Platform): string | undefined {
 }
 
 interface RunningServer {
-    process: ChildProcess; model: string; baseUrl: string; port: number; state: RuntimeLifecycleState; exited: boolean;
+    process: ChildProcess; model: string; baseUrl: string; apiKey: string; port: number; state: RuntimeLifecycleState; exited: boolean;
     startedAt: number; activeRequests: number; idleTimer: NodeJS.Timeout | null; logs: string[]; logRemainder: string;
     startupError?: string; startupConfig: RuntimeStartupConfig; lastHealthCheckAt: number | null;
     // Stable ids of the GPUs this process was actually launched against —
@@ -91,7 +92,7 @@ const STARTUP_TIMEOUT_MS = 180_000;
 const HEALTH_POLL_MS = 750;
 const MAX_LOG_LINES = 500;
 const MAX_LOG_LINE_CHARS = 4_000;
-const requestedIdleMinutes = Number(process.env.OLLAMA_CUSTOM_UI_LOCAL_BACKEND_IDLE_MINUTES ?? 10);
+const requestedIdleMinutes = Number(process.env.MODELFORGE_LOCAL_BACKEND_IDLE_MINUTES ?? 10);
 const configuredIdleMinutes = Number.isFinite(requestedIdleMinutes) ? Math.max(0, requestedIdleMinutes) : 10;
 const servers = new Map<LocalBackendId, RunningServer>();
 const serverStarts = new Map<LocalBackendId, { model: string; promise: Promise<string> }>();
@@ -333,7 +334,7 @@ export function validateRuntimeModel(backend: LocalBackendId, value: string, all
 // whatever it always did). Building the env object here (rather than
 // mutating process.env) keeps the restriction scoped to this one spawned
 // process.
-export function buildServerCommand(backend: LocalBackendId, model: string, config: LocalBackendConfig, platform: NodeJS.Platform = process.platform, port = 0, startupInput: RuntimeStartupConfig = {}, resolvedGpus: GpuInfo[] = [], capabilities?: RuntimeCommandCapabilities): { command: string; args: string[]; env: Record<string, string> } {
+export function buildServerCommand(backend: LocalBackendId, model: string, config: LocalBackendConfig, platform: NodeJS.Platform = process.platform, port = 0, startupInput: RuntimeStartupConfig = {}, resolvedGpus: GpuInfo[] = [], capabilities?: RuntimeCommandCapabilities, apiKey = ""): { command: string; args: string[]; env: Record<string, string> } {
     if (!port) throw new Error("A dynamically allocated runtime port is required");
     const startup = normalizeStartupConfig(startupInput);
     const vendor = resolvedGpus[0]?.vendor;
@@ -342,6 +343,7 @@ export function buildServerCommand(backend: LocalBackendId, model: string, confi
 
     if (backend === "mlx") { const managed = environmentPython("mlx", platform); return { command: config.mlxPythonPath?.trim() || (fs.existsSync(managed) ? managed : "python3"), args: ["-m", "mlx_lm.server", "--model", model, "--port", String(port), "--host", "127.0.0.1"], env: {} }; }
     if (backend === "vllm") {
+        if (apiKey) env.VLLM_API_KEY = apiKey;
         if (startup.gpuSelection?.mode === "cpu") throw new Error("vLLM requires a compatible GPU; choose a GPU selection or use a CPU-capable runtime.");
         assertTensorParallelSizeMatches(startup.tensorParallelSize, resolvedGpus.length || (startup.tensorParallelSize ?? 1));
         const args = ["serve", model, "--port", String(port), "--host", "127.0.0.1"];
@@ -354,6 +356,7 @@ export function buildServerCommand(backend: LocalBackendId, model: string, confi
         const managed = managedVllmExecutable(platform);
         return !config.vllmCommand?.trim() && !managed && platform === "win32" ? { command: "wsl.exe", args: ["--", "vllm", ...args], env } : { command: config.vllmCommand?.trim() || managed || "vllm", args, env };
     }
+    if (apiKey) env.LLAMA_API_KEY = apiKey;
     const args = ["-m", model, "--port", String(port), "--host", "127.0.0.1"];
     const layerMode = startup.gpuLayerMode ?? "auto";
     if (layerMode !== "auto") {
@@ -406,9 +409,9 @@ export function identityMatches(payload: unknown, expectedModel: string): boolea
     return ids.some((id) => id === expected || id.includes(leaf) || expected.includes(id));
 }
 
-async function healthCheck(baseUrl: string, expectedModel: string): Promise<boolean> {
+async function healthCheck(baseUrl: string, expectedModel: string, apiKey: string): Promise<boolean> {
     try {
-        const response = await fetch(`${baseUrl}/v1/models`, { signal: AbortSignal.timeout(2_000) });
+        const response = await fetch(`${baseUrl}/v1/models`, { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(2_000) });
         if (!response.ok || !(response.headers.get("content-type") ?? "").includes("json")) return false;
         return identityMatches(await response.json(), expectedModel);
     } catch { return false; }
@@ -430,15 +433,16 @@ async function startOrReuseServer(backend: LocalBackendId, model: string, config
     // configured for a different device group.
     const startupConfig = normalizeStartupConfig(startupInput);
     const existing = servers.get(backend);
-    if (existing && !existing.exited && existing.model === model && JSON.stringify(existing.startupConfig) === JSON.stringify(startupConfig) && await healthCheck(existing.baseUrl, model)) return existing.baseUrl;
+    if (existing && !existing.exited && existing.model === model && JSON.stringify(existing.startupConfig) === JSON.stringify(startupConfig) && await healthCheck(existing.baseUrl, model, existing.apiKey)) return existing.baseUrl;
     if (existing) { if (existing.activeRequests) throw new Error(`The ${backend} runtime is serving ${existing.activeRequests} active request(s).`); await stopServer(backend); }
     const capabilities = await probeRuntimeCommandCapabilities(backend, config);
     if (backend !== "mlx" && !capabilities.checked) throw new Error(capabilities.warnings[0] ?? "Runtime capability probing failed.");
-    const port = await allocatePort(); const baseUrl = `http://127.0.0.1:${port}`; const { command, args, env } = buildServerCommand(backend, model, config, process.platform, port, startupConfig, resolvedGpus, capabilities);
+    const port = await allocatePort(); const baseUrl = `http://127.0.0.1:${port}`; const apiKey = randomBytes(32).toString("base64url");
+    const { command, args, env } = buildServerCommand(backend, model, config, process.platform, port, startupConfig, resolvedGpus, capabilities, apiKey);
     let child: ChildProcess;
     try { child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32", env: Object.keys(env).length > 0 ? { ...process.env, ...env } : undefined }); } catch { throw new Error(describeSpawnFailure(backend)); }
     const resolvedGpuIds = resolvedGpus.map((gpu) => gpu.id).filter((id): id is string => !!id);
-    const entry: RunningServer = { process: child, model, baseUrl, port, state: "starting", exited: false, startedAt: Date.now(), activeRequests: 0, idleTimer: null, logs: [], logRemainder: "", startupConfig, lastHealthCheckAt: null, resolvedGpuIds };
+    const entry: RunningServer = { process: child, model, baseUrl, apiKey, port, state: "starting", exited: false, startedAt: Date.now(), activeRequests: 0, idleTimer: null, logs: [], logRemainder: "", startupConfig, lastHealthCheckAt: null, resolvedGpuIds };
     servers.set(backend, entry); pushLog(entry, "manager", `Starting ${command} ${args.join(" ")}`);
     child.stdout?.setEncoding("utf8"); child.stderr?.setEncoding("utf8"); child.stdout?.on("data", (data: string) => pushLog(entry, "stdout", data)); child.stderr?.on("data", (data: string) => pushLog(entry, "stderr", data));
     let spawnError: string | null = null;
@@ -449,7 +453,7 @@ async function startOrReuseServer(backend: LocalBackendId, model: string, config
         if (spawnError) throw new Error(spawnError);
         if (entry.exited) { const explanation = entry.startupError ?? explainStartupFailure(backend, entry.logs); stoppedSnapshots.set(backend, { logs: [...entry.logs], startupError: explanation, model }); servers.delete(backend); throw new Error(explanation); }
         entry.lastHealthCheckAt = Date.now();
-        if (await healthCheck(baseUrl, model)) { entry.state = "running"; pushLog(entry, "manager", `Identity health check passed on port ${port}`); scheduleIdleStop(backend, entry); return baseUrl; }
+        if (await healthCheck(baseUrl, model, apiKey)) { entry.state = "running"; pushLog(entry, "manager", `Authenticated identity health check passed on port ${port}`); scheduleIdleStop(backend, entry); return baseUrl; }
         await new Promise((resolve) => setTimeout(resolve, HEALTH_POLL_MS));
     }
     entry.state = "unhealthy"; entry.startupError = `Runtime did not identify itself within ${STARTUP_TIMEOUT_MS / 1000}s. ${explainStartupFailure(backend, entry.logs)}`; await stopServer(backend, true); throw new Error(entry.startupError);
@@ -495,11 +499,11 @@ export async function restartServer(backend: LocalBackendId, model: string, conf
     finally { runtimeOperations.delete(backend); }
 }
 
-export async function acquireServer(backend: LocalBackendId, model: string, config: LocalBackendConfig): Promise<{ baseUrl: string; release(): void }> {
+export async function acquireServer(backend: LocalBackendId, model: string, config: LocalBackendConfig): Promise<{ baseUrl: string; apiKey: string; release(): void }> {
     const current = servers.get(backend); if (current) clearIdleTimer(current); const baseUrl = await ensureServer(backend, model, config); const server = servers.get(backend);
     if (!server || server.exited || server.model !== model) throw new Error(`The ${backend} runtime stopped before the request could start.`);
     server.activeRequests++; let released = false;
-    return { baseUrl, release() { if (released) return; released = true; if (servers.get(backend) !== server) return; server.activeRequests = Math.max(0, server.activeRequests - 1); scheduleIdleStop(backend, server); } };
+    return { baseUrl, apiKey: server.apiKey, release() { if (released) return; released = true; if (servers.get(backend) !== server) return; server.activeRequests = Math.max(0, server.activeRequests - 1); scheduleIdleStop(backend, server); } };
 }
 
 export async function stopServer(backend: LocalBackendId, force = false): Promise<StopRuntimeResult> {
@@ -561,7 +565,7 @@ export async function getRuntimeStatuses(config: LocalBackendConfig, currentGpus
             const gpu = await gpuProcessMemory(server.process.pid); vramMB = gpu.vramMB; device = gpu.device;
             if (server.state === "running" || server.state === "unhealthy") {
                 server.lastHealthCheckAt = Date.now();
-                server.state = await healthCheck(server.baseUrl, server.model) ? "running" : "unhealthy";
+                server.state = await healthCheck(server.baseUrl, server.model, server.apiKey) ? "running" : "unhealthy";
             }
         }
         const snapshot = stoppedSnapshots.get(backend); const issues: string[] = [];

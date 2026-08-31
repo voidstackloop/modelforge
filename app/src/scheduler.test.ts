@@ -5,11 +5,11 @@ import * as sessionsStore from "./sessions-store";
 
 describe("scheduler.runTask", () => {
     it("appends the prompt and response to the task's target session on success", async () => {
-        const session = sessionsStore.createSession("ollama:llama3.1:8b");
+        const session = await sessionsStore.createSession("llamacpp:llama3.1-8b.gguf");
         const task = scheduledTasksStore.createTask({
             name: "Test task",
             prompt: "How's it going?",
-            model: "ollama:llama3.1:8b",
+            model: "llamacpp:llama3.1-8b.gguf",
             targetSessionId: session.id,
             intervalMinutes: 30,
         });
@@ -17,7 +17,7 @@ describe("scheduler.runTask", () => {
         scheduler.init(async () => "All good.");
         await scheduler.runTask(task.id);
 
-        const updatedSession = sessionsStore.getSession(session.id);
+        const updatedSession = await sessionsStore.getSession(session.id);
         expect(updatedSession?.messages).toEqual([
             { role: "user", content: "How's it going?" },
             { role: "assistant", content: "All good." },
@@ -28,11 +28,11 @@ describe("scheduler.runTask", () => {
     });
 
     it("records the error and leaves the session untouched when the prompt fails", async () => {
-        const session = sessionsStore.createSession("ollama:llama3.1:8b");
+        const session = await sessionsStore.createSession("llamacpp:llama3.1-8b.gguf");
         const task = scheduledTasksStore.createTask({
             name: "Failing task",
             prompt: "Do the thing.",
-            model: "ollama:llama3.1:8b",
+            model: "llamacpp:llama3.1-8b.gguf",
             targetSessionId: session.id,
             intervalMinutes: 30,
         });
@@ -42,7 +42,7 @@ describe("scheduler.runTask", () => {
         });
         await scheduler.runTask(task.id);
 
-        const updatedSession = sessionsStore.getSession(session.id);
+        const updatedSession = await sessionsStore.getSession(session.id);
         expect(updatedSession?.messages).toEqual([]);
         const updatedTask = scheduledTasksStore.getTask(task.id);
         expect(updatedTask?.lastError).toBe("model unavailable");
@@ -57,7 +57,7 @@ describe("scheduler.runTask", () => {
     });
 
     it("records an error for a malformed model reference instead of throwing", async () => {
-        const session = sessionsStore.createSession("bad-model-ref");
+        const session = await sessionsStore.createSession("bad-model-ref");
         const task = scheduledTasksStore.createTask({
             name: "Bad model",
             prompt: "p",

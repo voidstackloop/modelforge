@@ -33,7 +33,7 @@ test("switching the audit log storage backend migrates existing events and back 
     await expect(toggle).toBeEnabled({ timeout: 10_000 });
     await toggle.click();
 
-    await expect(instance.window.getByText("SQLite")).toBeVisible();
+    await expect(instance.window.getByText("SQLite", { exact: true })).toBeVisible();
     // The pre-existing event must have migrated in, not disappeared.
     await expect(instance.window.getByText("Case created")).toBeVisible();
 

@@ -63,6 +63,15 @@ describe("buildServerCommand", () => {
         );
     });
 
+    it("passes generated credentials through runtime-specific environment variables", () => {
+        const vllm = buildServerCommand("vllm", "org/model", {}, "linux", 49153, {}, [], undefined, "vllm-secret");
+        const llamacpp = buildServerCommand("rocm", "/models/model.gguf", {}, "linux", 49154, {}, [], undefined, "llama-secret");
+        expect(vllm.env).toMatchObject({ VLLM_API_KEY: "vllm-secret" });
+        expect(llamacpp.env).toMatchObject({ LLAMA_API_KEY: "llama-secret" });
+        expect(vllm.args.join(" ")).not.toContain("vllm-secret");
+        expect(llamacpp.args.join(" ")).not.toContain("llama-secret");
+    });
+
     it("allows a vLLM command override without requiring one", () => {
         const { command } = buildServerCommand("vllm", "some/model", { vllmCommand: "/opt/vllm/bin/vllm" }, "linux", 49153);
         expect(command).toBe("/opt/vllm/bin/vllm");

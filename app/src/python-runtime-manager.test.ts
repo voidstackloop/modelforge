@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import * as path from "node:path";
 import { app } from "electron";
 import {
@@ -9,6 +9,7 @@ import {
     PYTHON_RUNTIME_MANIFESTS,
     type PythonRuntimeFamily,
 } from "./python-runtime-manager";
+import { mainResourceOrchestrator } from "./resource-orchestrator";
 
 // environmentPython/environmentDestination decide, per (platform, runtime
 // family), whether a managed Python venv lives on the WSL side (Windows-only,
@@ -185,5 +186,42 @@ describe("ManagedPythonWorker", () => {
     it("shutdown() on a worker that was never started is a harmless no-op", async () => {
         const w = new ManagedPythonWorker("mlx", { command: process.execPath, args: ["-e", FAKE_WORKER_SCRIPT] });
         await expect(w.shutdown()).resolves.toBeUndefined();
+    });
+
+    it("rejects immediately even when shutdown() runs before the resource-orchestrator has granted the lease yet — never spawns a child afterward (item 1: 'Explicit lease')", async () => {
+        // A regression test for a real bug found while adding the
+        // resource-orchestrator wrap: request() used to register itself in
+        // the pending map synchronously (inside `new Promise`'s executor),
+        // so shutdown()'s failAllPending() always found it immediately. Once
+        // request() had to wait on async lease admission first, a shutdown()
+        // called before that admission completed missed the request
+        // entirely — it would go on to grant the lease, spawn a FRESH child
+        // via dispatchRequest()'s own start() (even though shutdown() had
+        // just run), and eventually time out 5s later instead of rejecting
+        // right away.
+        const w = worker(5_000);
+        // No await between request() and shutdown() — this is the exact
+        // race: shutdown() runs while admission is still pending.
+        const pending = w.request("health");
+        const assertion = expect(pending).rejects.toThrow(/shutting down/);
+        await w.shutdown();
+        await assertion;
+
+        // Confirm no child was spawned as a side effect of the request that
+        // lost the race — a later, genuinely new request() call must be the
+        // one that starts a worker, not a stale queued one.
+        const result = await w.request("health");
+        expect(result).toEqual({ status: "ok", method: "health" });
+    });
+
+    it("runs each request as a user-interactive python-worker lease, sized up for the CPU-heavy 'recommend' method", async () => {
+        const w = worker();
+        const withLeaseSpy = vi.spyOn(mainResourceOrchestrator, "withLease");
+
+        await w.request("health");
+        expect(withLeaseSpy.mock.calls.at(-1)?.[0]).toMatchObject({ workloadKind: "python-worker", priority: "user-interactive", requirements: { cpuThreads: 1 } });
+
+        await w.request("recommend");
+        expect(withLeaseSpy.mock.calls.at(-1)?.[0]).toMatchObject({ workloadKind: "python-worker", priority: "user-interactive", requirements: { cpuThreads: 2 } });
     });
 });

@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mainResourceOrchestrator } from "./resource-orchestrator";
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
     ".png": "image/png",
@@ -81,40 +82,51 @@ function ffmpegBinaryPath(): string {
     return ffmpegPath.replace("app.asar", "app.asar.unpacked");
 }
 
+// Item 1: "Image/media processing — Interactive or queued." Always
+// user-triggered (attaching a video to chat), so user-interactive; the
+// resource-orchestrator lease is what makes "queued" real when several
+// attachments are processed back to back — ffmpeg invocations serialize
+// through ordinary CPU-thread budget contention rather than all racing at
+// once.
 export async function extractVideoFrames(filePath: string, count = 5): Promise<ImageData[]> {
-    const tmpDir = path.join(os.tmpdir(), `modelforge-frames-${randomUUID()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const outputPattern = path.join(tmpDir, "frame-%02d.jpg");
+    return mainResourceOrchestrator.withLease(
+        { workloadKind: "user-media", priority: "user-interactive", requirements: { cpuThreads: 2, accelerator: "none" } },
+        async () => {
+            const tmpDir = path.join(os.tmpdir(), `modelforge-frames-${randomUUID()}`);
+            fs.mkdirSync(tmpDir, { recursive: true });
+            const outputPattern = path.join(tmpDir, "frame-%02d.jpg");
 
-    try {
-        await new Promise<void>((resolve, reject) => {
-            execFile(
-                ffmpegBinaryPath(),
-                [
-                    "-i", filePath,
-                    // Sample one frame per second rather than using the
-                    // "thumbnail" filter, which needs ~100 input frames per
-                    // batch to emit even a single output frame — it silently
-                    // under-delivers (or produces nothing) on short clips.
-                    "-vf", "fps=1,scale=768:-1",
-                    "-frames:v", String(count),
-                    outputPattern,
-                ],
-                { timeout: 60_000 },
-                (err) => (err ? reject(err) : resolve())
-            );
-        });
+            try {
+                await new Promise<void>((resolve, reject) => {
+                    execFile(
+                        ffmpegBinaryPath(),
+                        [
+                            "-i", filePath,
+                            // Sample one frame per second rather than using the
+                            // "thumbnail" filter, which needs ~100 input frames per
+                            // batch to emit even a single output frame — it silently
+                            // under-delivers (or produces nothing) on short clips.
+                            "-vf", "fps=1,scale=768:-1",
+                            "-frames:v", String(count),
+                            outputPattern,
+                        ],
+                        { timeout: 60_000 },
+                        (err) => (err ? reject(err) : resolve())
+                    );
+                });
 
-        const frameFiles = fs
-            .readdirSync(tmpDir)
-            .filter((f) => f.startsWith("frame-"))
-            .sort();
+                const frameFiles = fs
+                    .readdirSync(tmpDir)
+                    .filter((f) => f.startsWith("frame-"))
+                    .sort();
 
-        return frameFiles.map((f) => ({
-            mimeType: "image/jpeg",
-            dataBase64: fs.readFileSync(path.join(tmpDir, f)).toString("base64"),
-        }));
-    } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+                return frameFiles.map((f) => ({
+                    mimeType: "image/jpeg",
+                    dataBase64: fs.readFileSync(path.join(tmpDir, f)).toString("base64"),
+                }));
+            } finally {
+                fs.rmSync(tmpDir, { recursive: true, force: true });
+            }
+        }
+    );
 }

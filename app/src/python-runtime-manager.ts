@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { app } from "electron";
 import { killProcessTree } from "./process-tree";
 import { getSpecs, type SystemSpecs } from "./system-specs";
+import { mainResourceOrchestrator } from "./resource-orchestrator";
 
 const execFileAsync = promisify(execFile);
 export const PYTHON_WORKER_PROTOCOL_VERSION = 1;
@@ -232,6 +233,15 @@ export class ManagedPythonWorker {
     private readonly timeoutMs: number;
     private readonly commandOverride?: string;
     private readonly argsOverride?: string[];
+    // Cancels a request still waiting on resource-orchestrator admission
+    // when shutdown() runs — without this, shutdown()'s own failAllPending()
+    // only reaches requests already registered in `pending` (i.e. already
+    // past admission), leaving an in-flight admission wait to eventually
+    // resolve, spawn a fresh child via dispatchRequest()'s own start() call,
+    // and time out 5s later instead of rejecting immediately. Replaced with
+    // a fresh controller after each shutdown so a later request() (e.g. the
+    // "recovers after a crash" path) is never pre-aborted.
+    private admissionAbort = new AbortController();
 
     constructor(private readonly family: PythonRuntimeFamily, options: ManagedPythonWorkerOptions = {}) {
         this.timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -330,7 +340,31 @@ export class ManagedPythonWorker {
         }
     }
 
+    // Item 1: "Python workers — Workload-specific / High CPU / Configurable /
+    // Explicit lease." Scoped to this one request, not the worker's whole
+    // (long-lived, mostly-idle-between-calls) process lifetime — holding a
+    // lease for the process's entire life would reserve CPU budget it isn't
+    // actually using between calls. "recommend" runs the ML-based hardware/
+    // model recommender (system-specs.ts's recommendModelsWithML) and is
+    // genuinely CPU-heavy; "health"/"metrics" are cheap pings.
     request(method: "health" | "metrics" | "recommend", params: Record<string, unknown> = {}): Promise<unknown> {
+        const heavy = method === "recommend";
+        return mainResourceOrchestrator.withLease(
+            { workloadKind: "python-worker", priority: "user-interactive", requirements: { cpuThreads: heavy ? 2 : 1, ramMB: 0, accelerator: "none" } },
+            () => this.dispatchRequest(method, params),
+            { signal: this.admissionAbort.signal }
+        ).catch((err) => {
+            // Only re-labels the specific "was still waiting for admission
+            // when shutdown() ran" case; a request that had already reached
+            // dispatchRequest() rejects with this exact message anyway (via
+            // failAllPending() in shutdown(), below) and is passed through
+            // unchanged.
+            if ((err as Error).name === "AbortError") throw new Error(`Python worker "${this.family}" is shutting down`);
+            throw err;
+        });
+    }
+
+    private dispatchRequest(method: "health" | "metrics" | "recommend", params: Record<string, unknown>): Promise<unknown> {
         this.start();
         const id = crypto.randomUUID();
         return new Promise((resolve, reject) => {
@@ -344,6 +378,8 @@ export class ManagedPythonWorker {
     }
 
     async shutdown(): Promise<void> {
+        this.admissionAbort.abort();
+        this.admissionAbort = new AbortController();
         const child = this.child;
         if (!child) return;
         const pid = child.pid;

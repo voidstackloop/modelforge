@@ -16,10 +16,8 @@ export interface Dictionary {
     attach: string;
     attachFiles: string;
     attachProjectFolder: string;
-    noOllamaModelsInstalled: string;
+    noLocalModelsInstalled: string;
     huggingFaceHint: string;
-    pullFromHuggingFace: string;
-    pullExactTag: string;
     agentMode: string;
     agentModeTooltip: string;
     changeFolder: string;
@@ -36,23 +34,12 @@ export interface Dictionary {
     agentCheckpoint: string;
     continueAgent: string;
     stopAgent: string;
-    ollamaServer: string;
-    serverAddress: string;
-    serverAddressHelp: string;
     save: string;
-    running: string;
-    stopped: string;
-    checking: string;
-    online: string;
-    offline: string;
-    start: string;
-    stop: string;
     yourSystem: string;
     cloudProviders: string;
     keysEncryptedNote: string;
     keysNotEncryptedWarning: string;
-    ollamaModelsSection: string;
-    otherInstalledModels: string;
+    recommendedModelsSection: string;
     chatDefaults: string;
     defaultModel: string;
     temperature: string;
@@ -72,7 +59,6 @@ export interface Dictionary {
     stopSequences: string;
     stopSequencesHelp: string;
     stopSequencesPlaceholder: string;
-    contextLengthOllamaOnly: string;
     frequencyPenalty: string;
     presencePenalty: string;
     penaltyClaudeNote: string;
@@ -135,7 +121,6 @@ export interface Dictionary {
     modelRuntime: string;
     modelRuntimeHint: string;
     modelRuntimeAutomatic: string;
-    modelRuntimeOllama: string;
     modelRuntimeLlamaCpp: string;
     modelRuntimeVllm: string;
     modelRuntimeMlx: string;
@@ -168,14 +153,9 @@ export interface Dictionary {
     ragCollectionsEmpty: string;
     ragCollectionMeta: (docs: number, chunks: number) => string;
     modelsDir: string;
-    modelsDirHint: string;
-    modelsDirDefault: string;
     llamaCppModelsDirDefault: string;
     llamaCppModelsDirHint: string;
     chooseFolder: string;
-    modelsDirApplied: string;
-    modelsDirFailed: string;
-    modelsDirExternalWarning: string;
     analyzeAs: string;
     analyzeDescribeUI: string;
     analyzeToMermaid: string;
@@ -245,7 +225,6 @@ export interface Dictionary {
     downloads: string;
     likes: string;
     noGgufFiles: string;
-    pullWithOllama: string;
     downloadForLlamaCpp: string;
     settingsTabGeneral: string;
     settingsTabModels: string;
@@ -317,8 +296,6 @@ export interface Dictionary {
     addCustomProvider: string;
     onboardingTitle: string;
     onboardingSubtitle: string;
-    onboardingOllama: string;
-    onboardingOllamaDesc: string;
     onboardingLlamaCpp: string;
     onboardingLlamaCppDesc: string;
     onboardingCloudDesc: string;
@@ -366,10 +343,7 @@ export interface Dictionary {
     toastProviderAdded: string;
     toastProviderRemoved: string;
     toastExportDone: string;
-    toastOllamaNotInstalled: string;
-    toastOllamaStartFailed: string;
     copiedAsMarkdown: string;
-    ollamaOfflineBanner: string;
     copied: string;
     copyCode: string;
     openLogsFolder: string;
@@ -482,10 +456,8 @@ export const en: Dictionary = {
     attach: "Attach",
     attachFiles: "Attach files",
     attachProjectFolder: "Attach project folder",
-    noOllamaModelsInstalled: "No Ollama models installed — go to Settings to install one.",
+    noLocalModelsInstalled: "No local GGUF models installed — go to Settings to download one.",
     huggingFaceHint: "Tip: paste any GGUF model's Hugging Face URL (or hf.co/user/repo) to pull it directly — you're not limited to the catalog above.",
-    pullFromHuggingFace: "Pull this GGUF model directly from Hugging Face.",
-    pullExactTag: "Not in the catalog — pull this exact model tag from Ollama's library.",
     agentMode: "Agent",
     agentModeTooltip: "Agent mode: gives the model file tools (read/write/list/search) and shell command execution, scoped to a folder you choose. Every tool call needs your approval, and destructive/system-level commands (deleting outside the workspace, shutdown, privilege escalation) are blocked outright — but this is a safety net, not a full OS sandbox. Only approve commands you understand.",
     changeFolder: "Change folder",
@@ -502,24 +474,12 @@ export const en: Dictionary = {
     agentCheckpoint: "Checkpoint",
     continueAgent: "Continue",
     stopAgent: "Stop here",
-    ollamaServer: "Ollama server",
-    serverAddress: "Server address",
-    serverAddressHelp:
-        "Point this at a remote Ollama instance if you're not running it on this machine. Leave it as the default to use a local install.",
     save: "Save",
-    running: "Running",
-    stopped: "Stopped",
-    checking: "Checking...",
-    online: "Online",
-    offline: "Offline",
-    start: "Start",
-    stop: "Stop",
     yourSystem: "Your system",
     cloudProviders: "Cloud providers",
     keysEncryptedNote: "Keys are encrypted at rest using your OS credential store and never leave this device.",
     keysNotEncryptedWarning: "No OS credential store was found on this system, so keys are being saved in plain text on disk instead of encrypted. They still never leave this device, but anyone with file access to your user profile can read them.",
-    ollamaModelsSection: "Ollama models",
-    otherInstalledModels: "Other installed models",
+    recommendedModelsSection: "Recommended models",
     chatDefaults: "Chat defaults",
     defaultModel: "Default model",
     temperature: "Temperature",
@@ -535,15 +495,14 @@ export const en: Dictionary = {
     topK: "Top K",
     topKHelp: "Limits sampling to the K most likely next tokens. Lower values are more focused/deterministic. Not supported by ChatGPT.",
     repeatPenalty: "Repeat penalty",
-    repeatPenaltyHelp: "Penalizes tokens that already appeared recently, reducing repetition. 1.0 = no penalty. Ollama only.",
+    repeatPenaltyHelp: "Penalizes tokens that already appeared recently, reducing repetition. 1.0 = no penalty. Not currently applied by any local runtime.",
     stopSequences: "Stop sequences",
     stopSequencesHelp: "Generation stops as soon as any of these strings appears in the output. Comma-separated.",
     stopSequencesPlaceholder: "e.g. \\n\\nUser:, ###, <|end|>",
-    contextLengthOllamaOnly: " (local GGUF only)",
     frequencyPenalty: "Frequency penalty",
     presencePenalty: "Presence penalty",
     penaltyClaudeNote:
-        "Context length only applies to Ollama models. Frequency/presence penalty aren't supported by Claude and are ignored for that provider.",
+        "Context length only applies to llama.cpp models. Frequency/presence penalty aren't supported by Claude and are ignored for that provider.",
     systemPrompt: "System prompt",
     promptLibrary: "Prompt library",
     savePromptAsPreset: "Save current prompt as preset",
@@ -603,7 +562,6 @@ export const en: Dictionary = {
     modelRuntime: "Model runtime",
     modelRuntimeHint: "Which backend runs your models. Automatic picks per model based on its format (GGUF, safetensors, MLX) and your detected hardware (NVIDIA/AMD/Intel/Apple GPU, Apple Silicon) — GGUF goes to llama.cpp, safetensors on an NVIDIA/AMD GPU goes to vLLM, MLX-format models on Apple Silicon go to MLX, and anything else falls back to Transformers.",
     modelRuntimeAutomatic: "Automatic (recommended)",
-    modelRuntimeOllama: "Ollama",
     modelRuntimeLlamaCpp: "llama.cpp",
     modelRuntimeVllm: "vLLM",
     modelRuntimeMlx: "MLX",
@@ -630,20 +588,15 @@ export const en: Dictionary = {
     runtimeOverhead: "overhead",
     gpuOffload: "GPU offload",
     ragEmbeddingModel: "RAG embedding model",
-    ragEmbeddingModelHint: "Used to index newly attached folders for retrieval. Existing collections keep whatever model they were created with — changing this only affects new ones.",
+    ragEmbeddingModelHint: "Used to index newly attached folders for retrieval. Existing collections keep whatever model they were created with — changing this only affects new ones. The llama.cpp GGUF list shows every model in your models folder, not just embedding-capable ones — pick a real embedding model (e.g. a BGE or Nomic Embed GGUF), not a chat model.",
     ragCollections: "Indexed collections",
     ragCollectionsHint: "Folders you've attached for retrieval, persisted so re-attaching the same folder only re-embeds files that changed.",
     ragCollectionsEmpty: "No folders indexed yet.",
     ragCollectionMeta: (docs, chunks) => `${docs} document${docs === 1 ? "" : "s"} · ${chunks} chunk${chunks === 1 ? "" : "s"}`,
     modelsDir: "Model storage location",
-    modelsDirHint: "Where Ollama downloads and stores model files. Changing this restarts Ollama (only if this app started it) — running downloads will be interrupted.",
-    modelsDirDefault: "Default (Ollama's own location)",
     llamaCppModelsDirDefault: "Default (app data folder)",
-    llamaCppModelsDirHint: "Where llama.cpp looks for .gguf files — separate from Ollama's own storage above. Files must sit directly in this folder (not a subfolder) with a .gguf extension.",
+    llamaCppModelsDirHint: "Where llama.cpp looks for .gguf files. Files must sit directly in this folder (not a subfolder) with a .gguf extension.",
     chooseFolder: "Choose folder...",
-    modelsDirApplied: "Applied — Ollama restarted with the new location.",
-    modelsDirFailed: "Couldn't restart Ollama with the new location. Try starting it manually.",
-    modelsDirExternalWarning: "Saved, but Ollama is running outside this app — restart it manually (with OLLAMA_MODELS set to this folder) for the change to take effect.",
     analyzeAs: "Analyze as...",
     analyzeDescribeUI: "Describe UI/wireframe",
     analyzeToMermaid: "Convert to Mermaid diagram",
@@ -678,7 +631,7 @@ export const en: Dictionary = {
     you: "You",
     assistant: "Assistant",
     llamaCppSection: "llama.cpp (local)",
-    llamaCppHint: "Run GGUF models directly via llama.cpp instead of Ollama — useful for Vulkan GPU acceleration or models Ollama doesn't package. Agent mode tool-calling isn't supported on this backend yet.",
+    llamaCppHint: "Run GGUF models directly via llama.cpp, in-process with no separate server to manage. Agent mode tool-calling is supported, though every declared tool parameter is effectively required on this backend (no optional parameters).",
     gpuBackend: "GPU backend",
     gpuBackendHint: "Only backends detected on this machine are shown as selectable, besides Auto and CPU.",
     gpuBackendAuto: "Auto-detect",
@@ -686,7 +639,7 @@ export const en: Dictionary = {
     gpuRecommended: "Recommended",
     gpuDetected: "Detected",
     gpuAmdRocmNote:
-        "AMD GPUs are accelerated through Vulkan here. For native ROCm acceleration, run your models through the Ollama backend instead — it supports ROCm directly.",
+        "AMD GPUs are accelerated through Vulkan here. For native ROCm acceleration, run your models through this app's own ROCm backend instead.",
     gpuIntelVulkanNote: "Intel GPUs (Arc and integrated) are accelerated through Vulkan.",
     gpuNoneDetectedNote: "No GPU detected — inference will run on the CPU.",
     gpuSelectionModeLabel: "Default GPU selection",
@@ -714,7 +667,6 @@ export const en: Dictionary = {
     downloads: "downloads",
     likes: "likes",
     noGgufFiles: "No GGUF files found in this repo.",
-    pullWithOllama: "Pull with Ollama",
     downloadForLlamaCpp: "Download for llama.cpp",
     settingsTabGeneral: "General",
     settingsTabModels: "Models & Hardware",
@@ -786,10 +738,8 @@ export const en: Dictionary = {
     addCustomProvider: "Add provider",
     onboardingTitle: "Welcome to Modelforge",
     onboardingSubtitle: "How would you like to run models? You can add more later in Settings.",
-    onboardingOllama: "Ollama (local)",
-    onboardingOllamaDesc: "Free, private, runs on your machine. Recommended to start.",
     onboardingLlamaCpp: "llama.cpp (local)",
-    onboardingLlamaCppDesc: "Free, private, with Vulkan/CUDA GPU acceleration.",
+    onboardingLlamaCppDesc: "Free, private, runs on your machine with Vulkan/CUDA GPU acceleration. Recommended to start.",
     onboardingCloudDesc: "Requires an API key and a paid account with the provider.",
     onboardingKeyLabel: "API key",
     onboardingKeyHint: "Stored encrypted on this device — you can change it anytime in Settings.",
@@ -813,7 +763,7 @@ export const en: Dictionary = {
     dataLocation: "Data location",
     open: "Open",
     diagnostics: "Diagnostics",
-    diagnosticsDescription: "Useful when reporting a bug: app/system versions, Ollama connection status, and recent log output.",
+    diagnosticsDescription: "Useful when reporting a bug: app/system versions, local runtime status, and recent log output.",
     appActivity: "Activity & resource usage",
     appActivityDescription: "What's currently loaded and connected, plus this app's memory footprint.",
     refresh: "Refresh",
@@ -834,10 +784,7 @@ export const en: Dictionary = {
     toastProviderAdded: "provider added",
     toastProviderRemoved: "Provider removed",
     toastExportDone: "Export complete",
-    toastOllamaNotInstalled: "Ollama isn't installed — download it from ollama.com to run local models.",
-    toastOllamaStartFailed: "Couldn't start Ollama",
     copiedAsMarkdown: "Conversation copied as Markdown",
-    ollamaOfflineBanner: "Ollama isn't running — this model won't respond until it's started.",
     copyDiagnosticInfo: "Copy diagnostic info",
     copied: "Copied",
     copyCode: "Copy",
@@ -960,10 +907,8 @@ export const tr: Dictionary = {
     attach: "Ekle",
     attachFiles: "Dosya ekle",
     attachProjectFolder: "Proje klasörü ekle",
-    noOllamaModelsInstalled: "Yüklü Ollama modeli yok — birini yüklemek için Ayarlar'a gidin.",
+    noLocalModelsInstalled: "Yüklü yerel GGUF modeli yok — birini indirmek için Ayarlar'a gidin.",
     huggingFaceHint: "İpucu: herhangi bir GGUF modelinin Hugging Face bağlantısını (veya hf.co/kullanıcı/depo) yapıştırarak doğrudan indirebilirsiniz — yukarıdaki katalogla sınırlı değilsiniz.",
-    pullFromHuggingFace: "Bu GGUF modelini doğrudan Hugging Face'ten indir.",
-    pullExactTag: "Katalogda yok — bu tam model etiketini Ollama kütüphanesinden indirin.",
     agentMode: "Ajan",
     agentModeTooltip: "Ajan modu: modele seçtiğiniz bir klasörle sınırlı dosya araçları (okuma/yazma/listeleme/arama) ve kabuk komutu çalıştırma verir. Her araç çağrısı onayınızı gerektirir ve yıkıcı/sistem düzeyindeki komutlar (çalışma alanı dışında silme, kapatma, yetki yükseltme) tamamen engellenir — ancak bu bir güvenlik ağıdır, tam bir işletim sistemi korumalı alanı değildir. Yalnızca anladığınız komutlara izin verin.",
     changeFolder: "Klasörü değiştir",
@@ -980,26 +925,14 @@ export const tr: Dictionary = {
     agentCheckpoint: "Kontrol noktası",
     continueAgent: "Devam et",
     stopAgent: "Burada dur",
-    ollamaServer: "Ollama sunucusu",
-    serverAddress: "Sunucu adresi",
-    serverAddressHelp:
-        "Bu bilgisayarda çalıştırmıyorsanız, uzak bir Ollama sunucusunu buraya girin. Yerel kurulum için varsayılanı kullanın.",
     save: "Kaydet",
-    running: "Çalışıyor",
-    stopped: "Durduruldu",
-    checking: "Kontrol ediliyor...",
-    online: "Çevrimiçi",
-    offline: "Çevrimdışı",
-    start: "Başlat",
-    stop: "Durdur",
     yourSystem: "Sisteminiz",
     cloudProviders: "Bulut sağlayıcılar",
     keysEncryptedNote:
         "Anahtarlar, işletim sistemi kimlik bilgisi deposu kullanılarak şifrelenir ve bu cihazdan çıkmaz.",
     keysNotEncryptedWarning:
         "Bu sistemde bir işletim sistemi kimlik bilgisi deposu bulunamadığı için anahtarlar şifrelenmeden düz metin olarak diske kaydediliyor. Yine de bu cihazdan çıkmazlar, ancak kullanıcı profilinize dosya erişimi olan herkes onları okuyabilir.",
-    ollamaModelsSection: "Ollama modelleri",
-    otherInstalledModels: "Diğer yüklü modeller",
+    recommendedModelsSection: "Önerilen modeller",
     chatDefaults: "Sohbet varsayılanları",
     defaultModel: "Varsayılan model",
     temperature: "Sıcaklık",
@@ -1015,15 +948,14 @@ export const tr: Dictionary = {
     topK: "Top K",
     topKHelp: "Örneklemeyi en olası K sonraki token ile sınırlar. Düşük değerler daha odaklı/deterministik sonuç verir. ChatGPT tarafından desteklenmez.",
     repeatPenalty: "Tekrar cezası",
-    repeatPenaltyHelp: "Yakın zamanda geçmiş olan token'ları cezalandırarak tekrarı azaltır. 1.0 = ceza yok. Sadece Ollama.",
+    repeatPenaltyHelp: "Yakın zamanda geçmiş olan token'ları cezalandırarak tekrarı azaltır. 1.0 = ceza yok. Şu anda hiçbir yerel çalışma zamanı tarafından uygulanmıyor.",
     stopSequences: "Durdurma dizileri",
     stopSequencesHelp: "Çıktıda bu dizilerden herhangi biri göründüğünde üretim durur. Virgülle ayırın.",
     stopSequencesPlaceholder: "örn. \\n\\nUser:, ###, <|end|>",
-    contextLengthOllamaOnly: " (yalnızca yerel GGUF)",
     frequencyPenalty: "Sıklık cezası",
     presencePenalty: "Varlık cezası",
     penaltyClaudeNote:
-        "Bağlam uzunluğu yalnızca Ollama modelleri için geçerlidir. Sıklık/varlık cezası Claude tarafından desteklenmez ve o sağlayıcı için yok sayılır.",
+        "Bağlam uzunluğu yalnızca llama.cpp modelleri için geçerlidir. Sıklık/varlık cezası Claude tarafından desteklenmez ve o sağlayıcı için yok sayılır.",
     systemPrompt: "Sistem istemi",
     promptLibrary: "İstem kütüphanesi",
     savePromptAsPreset: "Mevcut istemi ön ayar olarak kaydet",
@@ -1083,7 +1015,6 @@ export const tr: Dictionary = {
     modelRuntime: "Model çalışma zamanı",
     modelRuntimeHint: "Modellerinizi hangi arka ucun çalıştıracağı. Otomatik, her modeli formatına (GGUF, safetensors, MLX) ve algılanan donanımınıza (NVIDIA/AMD/Intel/Apple GPU, Apple Silicon) göre seçer — GGUF llama.cpp'ye, NVIDIA/AMD GPU'da safetensors vLLM'e, Apple Silicon'da MLX formatındaki modeller MLX'e gider; geri kalan her şey Transformers'a düşer.",
     modelRuntimeAutomatic: "Otomatik (önerilen)",
-    modelRuntimeOllama: "Ollama",
     modelRuntimeLlamaCpp: "llama.cpp",
     modelRuntimeVllm: "vLLM",
     modelRuntimeMlx: "MLX",
@@ -1110,20 +1041,15 @@ export const tr: Dictionary = {
     runtimeOverhead: "ek yük",
     gpuOffload: "GPU aktarımı",
     ragEmbeddingModel: "RAG gömme modeli",
-    ragEmbeddingModelHint: "Yeni eklenen klasörleri erişim için indekslemek üzere kullanılır. Mevcut koleksiyonlar oluşturuldukları modeli korur — bunu değiştirmek yalnızca yenilerini etkiler.",
+    ragEmbeddingModelHint: "Yeni eklenen klasörleri erişim için indekslemek üzere kullanılır. Mevcut koleksiyonlar oluşturuldukları modeli korur — bunu değiştirmek yalnızca yenilerini etkiler. llama.cpp GGUF listesi, sadece gömme modellerini değil, modeller klasörünüzdeki her modeli gösterir — bir sohbet modeli değil, gerçek bir gömme modeli seçin (örneğin bir BGE veya Nomic Embed GGUF).",
     ragCollections: "İndekslenmiş koleksiyonlar",
     ragCollectionsHint: "Erişim için eklediğiniz klasörler, kalıcı olarak saklanır — aynı klasörü tekrar eklemek yalnızca değişen dosyaları yeniden gömer.",
     ragCollectionsEmpty: "Henüz indekslenmiş klasör yok.",
     ragCollectionMeta: (docs, chunks) => `${docs} belge · ${chunks} parça`,
     modelsDir: "Model depolama konumu",
-    modelsDirHint: "Ollama'nın model dosyalarını indirdiği ve sakladığı yer. Bunu değiştirmek Ollama'yı yeniden başlatır (yalnızca bu uygulama başlattıysa) — devam eden indirmeler kesintiye uğrar.",
-    modelsDirDefault: "Varsayılan (Ollama'nın kendi konumu)",
     llamaCppModelsDirDefault: "Varsayılan (uygulama veri klasörü)",
-    llamaCppModelsDirHint: "llama.cpp'nin .gguf dosyalarını aradığı yer — yukarıdaki Ollama'nın kendi deposundan ayrıdır. Dosyalar bir alt klasörde değil, doğrudan bu klasörde olmalı ve .gguf uzantılı olmalıdır.",
+    llamaCppModelsDirHint: "llama.cpp'nin .gguf dosyalarını aradığı yer. Dosyalar bir alt klasörde değil, doğrudan bu klasörde olmalı ve .gguf uzantılı olmalıdır.",
     chooseFolder: "Klasör seç...",
-    modelsDirApplied: "Uygulandı — Ollama yeni konumla yeniden başlatıldı.",
-    modelsDirFailed: "Ollama yeni konumla yeniden başlatılamadı. Elle başlatmayı deneyin.",
-    modelsDirExternalWarning: "Kaydedildi, ancak Ollama bu uygulamanın dışında çalışıyor — değişikliğin etkili olması için Ollama'yı bu klasör OLLAMA_MODELS olarak ayarlanmış şekilde elle yeniden başlatın.",
     analyzeAs: "Şu şekilde analiz et...",
     analyzeDescribeUI: "UI/wireframe'i betimle",
     analyzeToMermaid: "Mermaid diyagramına dönüştür",
@@ -1158,7 +1084,7 @@ export const tr: Dictionary = {
     you: "Siz",
     assistant: "Asistan",
     llamaCppSection: "llama.cpp (yerel)",
-    llamaCppHint: "GGUF modellerini Ollama yerine doğrudan llama.cpp ile çalıştırın — Vulkan GPU hızlandırma veya Ollama'nın paketlemediği modeller için kullanışlı. Agent modu araç çağırma bu backend'de henüz desteklenmiyor.",
+    llamaCppHint: "GGUF modellerini doğrudan llama.cpp ile, ayrı bir sunucu yönetmeden uygulama içinde çalıştırın. Agent modu araç çağırma destekleniyor, ancak bu backend'de bildirilen her araç parametresi fiilen zorunludur (isteğe bağlı parametre yoktur).",
     gpuBackend: "GPU backend'i",
     gpuBackendHint: "Otomatik ve CPU dışında yalnızca bu makinede tespit edilen backend'ler seçilebilir olarak gösterilir.",
     gpuBackendAuto: "Otomatik algıla",
@@ -1166,7 +1092,7 @@ export const tr: Dictionary = {
     gpuRecommended: "Önerilen",
     gpuDetected: "Algılanan",
     gpuAmdRocmNote:
-        "AMD GPU'lar burada Vulkan üzerinden hızlandırılır. Yerel ROCm hızlandırması için modellerinizi ROCm'u doğrudan destekleyen Ollama arka ucu üzerinden çalıştırın.",
+        "AMD GPU'lar burada Vulkan üzerinden hızlandırılır. Yerel ROCm hızlandırması için modellerinizi uygulamanın kendi ROCm arka ucu üzerinden çalıştırın.",
     gpuIntelVulkanNote: "Intel GPU'lar (Arc ve tümleşik) Vulkan üzerinden hızlandırılır.",
     gpuNoneDetectedNote: "GPU algılanmadı — çıkarım CPU üzerinde çalışacak.",
     gpuSelectionModeLabel: "Varsayılan GPU seçimi",
@@ -1194,7 +1120,6 @@ export const tr: Dictionary = {
     downloads: "indirme",
     likes: "beğeni",
     noGgufFiles: "Bu depoda GGUF dosyası bulunamadı.",
-    pullWithOllama: "Ollama ile indir",
     downloadForLlamaCpp: "llama.cpp için indir",
     settingsTabGeneral: "Genel",
     settingsTabModels: "Modeller ve Donanım",
@@ -1266,10 +1191,8 @@ export const tr: Dictionary = {
     addCustomProvider: "Sağlayıcı ekle",
     onboardingTitle: "Modelforge'a hoş geldiniz",
     onboardingSubtitle: "Modelleri nasıl çalıştırmak istersiniz? Daha sonra Ayarlar'dan başka sağlayıcı da ekleyebilirsiniz.",
-    onboardingOllama: "Ollama (yerel)",
-    onboardingOllamaDesc: "Ücretsiz, özel, bilgisayarınızda çalışır. Başlamak için önerilir.",
     onboardingLlamaCpp: "llama.cpp (yerel)",
-    onboardingLlamaCppDesc: "Vulkan/CUDA GPU hızlandırmalı, ücretsiz ve özel.",
+    onboardingLlamaCppDesc: "Vulkan/CUDA GPU hızlandırmalı, ücretsiz, özel ve bilgisayarınızda çalışır. Başlamak için önerilir.",
     onboardingCloudDesc: "Sağlayıcıdan bir API anahtarı ve ücretli hesap gerektirir.",
     onboardingKeyLabel: "API anahtarı",
     onboardingKeyHint: "Bu cihazda şifreli olarak saklanır — istediğiniz zaman Ayarlar'dan değiştirebilirsiniz.",
@@ -1293,7 +1216,7 @@ export const tr: Dictionary = {
     dataLocation: "Veri konumu",
     open: "Aç",
     diagnostics: "Tanılama",
-    diagnosticsDescription: "Hata bildirirken faydalıdır: uygulama/sistem sürümleri, Ollama bağlantı durumu ve son günlük çıktısı.",
+    diagnosticsDescription: "Hata bildirirken faydalıdır: uygulama/sistem sürümleri, yerel çalışma zamanı durumu ve son günlük çıktısı.",
     copyDiagnosticInfo: "Tanılama bilgisini kopyala",
     appActivity: "Etkinlik ve kaynak kullanımı",
     appActivityDescription: "Şu anda yüklü ve bağlı olanlar, ayrıca bu uygulamanın bellek kullanımı.",
@@ -1315,10 +1238,7 @@ export const tr: Dictionary = {
     toastProviderAdded: "sağlayıcı eklendi",
     toastProviderRemoved: "Sağlayıcı kaldırıldı",
     toastExportDone: "Dışa aktarma tamamlandı",
-    toastOllamaNotInstalled: "Ollama kurulu değil — yerel modeller çalıştırmak için ollama.com adresinden indirin.",
-    toastOllamaStartFailed: "Ollama başlatılamadı",
     copiedAsMarkdown: "Sohbet Markdown olarak kopyalandı",
-    ollamaOfflineBanner: "Ollama çalışmıyor — başlatılana kadar bu model yanıt vermeyecek.",
     copied: "Kopyalandı",
     copyCode: "Kopyala",
     openLogsFolder: "Günlük klasörünü aç",

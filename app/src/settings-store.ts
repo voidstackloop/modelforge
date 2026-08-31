@@ -1,7 +1,9 @@
 import * as path from "node:path";
 import { app } from "electron";
-import { readJsonWithSchema, writeJson } from "./json-store";
+import { readJson, readJsonWithSchema, writeJson } from "./json-store";
 import { appSettingsSchema } from "./schemas";
+import { getManagedSettings, isSettingManaged, MANAGED_SETTING_KEYS } from "./policy-store";
+import type { ManagedSettingKey } from "./policy-store";
 import type { McpServerConfig } from "./mcp-client";
 import type { TimeOfUseTariff } from "./energy-types";
 import type { GpuSelection, GpuSelectionMode } from "./gpu-selection";
@@ -49,17 +51,14 @@ export interface CustomProviderConfig {
 
 export interface AppSettings {
     defaultModel: string | null;
-    ollamaHost: string;
-    // undefined = Ollama's own default location. Only takes effect the next
-    // time this app (re)starts a local `ollama serve` process.
-    modelsDir?: string;
     temperature: number;
     topP: number;
     maxTokens: number;
     frequencyPenalty: number;
     presencePenalty: number;
     contextLength: number;
-    // undefined = auto (let Ollama decide how many layers to offload to GPU).
+    // undefined = auto (the built-in llama.cpp runtime's own GPU-layer
+    // placement heuristic — see resolveGpuLayers in llamacpp-manager.ts).
     gpuLayers?: number;
     gpuLayerMode?: "auto" | "cpu" | "max" | "manual";
     seed?: number;
@@ -91,19 +90,20 @@ export interface AppSettings {
     // launch / reconnect, never serialized.
     mcpServers?: McpServerConfig[];
     // Where downloaded GGUF files for the llama.cpp backend are stored.
-    // Separate from `modelsDir` (which configures Ollama's own OLLAMA_MODELS
-    // directory) since the two backends use incompatible on-disk layouts.
     llamaCppModelsDir?: string;
     llamaCppGpuBackend?: "auto" | "vulkan" | "cuda" | "metal" | "cpu";
     // Embedding model used to index new RAG collections. Existing collections
     // keep whatever model they were created with (stored per-collection in
-    // rag.db) — this only governs newly created ones.
+    // rag.db) — this only governs newly created ones. Either a bare Ollama
+    // tag (legacy — no longer selectable in Settings, but an existing
+    // collection can still reference one) or "llamacpp:<relative-gguf-path>"
+    // — see rag.ts's parseEmbeddingModelRef.
     ragEmbeddingModel?: string;
     // Which backend runs a model. "automatic" (the default) picks per-model
     // based on file format and detected hardware — see resolveAutomaticRuntime
     // in system-specs.ts. Any other value pins every recommendation/download
     // to that one backend regardless of format/hardware fit.
-    preferredRuntime?: "automatic" | "ollama" | "llamacpp" | "vllm" | "mlx";
+    preferredRuntime?: "automatic" | "llamacpp" | "vllm" | "mlx";
     // What the hardware-recommender's "best" pick should optimize for — see
     // RecommendationGoal/pickBest in system-specs.ts. Defaults to "balanced".
     recommendationGoal?: "quality" | "speed" | "memory" | "energy" | "agent" | "balanced";
@@ -160,6 +160,28 @@ export interface AppSettings {
     redactBeforeRemoteSend?: boolean;
     auditLogRetentionDays?: number;
     auditLogBackend?: "json" | "sqlite";
+    // Custom directory for the SQLite audit database (audit-log.sqlite3, +
+    // its -wal/-shm sidecars) when auditLogBackend is "sqlite" — unset means
+    // the default userData folder, same as every other store. Read live on
+    // every call (audit-log-store.ts's sqliteDbPath()), not applied once at
+    // startup, so a change takes effect immediately.
+    auditLogSqliteDir?: string;
+    // Selects a registered MedicationSafetyProvider by name (see
+    // medical-safety.ts's provider registry) — unset means "whatever's
+    // already active" (the built-in demonstration list by default). Only
+    // ever a name, never a provider object/credentials/endpoint — those
+    // belong to the provider implementation itself, not to persisted config.
+    medicationSafetyProviderId?: string;
+    // Selects a registered PatientCasesBackend by name (see
+    // patient-cases-store.ts's backend registry) — unset means "whatever's
+    // already active" (the local, this-device-only JSON store by default).
+    // Only ever a name, never connection details/credentials — those belong
+    // to the backend implementation itself, not to persisted config.
+    patientCasesBackendId?: string;
+    // Selects a registered SessionsBackend by name (see sessions-store.ts's
+    // backend registry) — same unset/"local by default" contract as
+    // patientCasesBackendId above.
+    sessionsBackendId?: string;
     energyMonitoringEnabled?: boolean;
     electricityPricePerKwh?: number;
     energyCurrency?: string;
@@ -181,15 +203,33 @@ export interface AppSettings {
     // no longer resolve to present hardware is never silently rewritten here —
     // see resolveGpuSelection in gpu-selection.ts, which reports staleness at
     // read time instead so the UI can offer an explicit repair action.
-    runtimeGpuConfigs?: Partial<Record<"ollama" | "llamacpp" | "mlx" | "rocm" | "vllm", RuntimeGpuConfig>>;
+    runtimeGpuConfigs?: Partial<Record<"llamacpp" | "mlx" | "rocm" | "vllm", RuntimeGpuConfig>>;
+    // The resource-orchestrator's cross-workload OS-reserve budget mode —
+    // see resource-budget.ts. Distinct from llamaCppVramReserveGB/
+    // llamaCppRamReserveGB above, which only configure node-llama-cpp's own
+    // internal context-sizing math for that one backend.
+    resourceBudgetMode?: "balanced" | "performance" | "efficient" | "manual";
+    // Only consulted when resourceBudgetMode === "manual".
+    resourceMaxRamMB?: number;
+    resourceMaxVramMB?: number;
+    resourceCpuThreadCeiling?: number;
+    resourceRuntimeProfile?: "interactive" | "balanced" | "throughput" | "energy-efficient";
+    // Opt-in: makes this install act as a compute-control-plane fleet agent
+    // (compute-agent.ts) on top of an already-connected shared backend. Off
+    // by default — standalone operation never depends on this.
+    computeAgentEnabled?: boolean;
+    // The node id an organization compute admin assigned this install via
+    // POST /compute/nodes — see compute-agent.ts's own doc comment.
+    computeNodeId?: string;
 }
 
 const DEFAULTS: AppSettings = {
     defaultModel: null,
-    ollamaHost: "http://127.0.0.1:11434",
     temperature: 0.7,
     topP: 1,
-    maxTokens: 2048,
+    // Local 3B/4B models should finish ordinary answers promptly. Users can
+    // still raise this per chat/project for long-form generation.
+    maxTokens: 512,
     frequencyPenalty: 0,
     presencePenalty: 0,
     contextLength: 4096,
@@ -223,13 +263,85 @@ function filePath(): string {
     return path.join(app.getPath("userData"), "settings.json");
 }
 
-export function getSettings(): AppSettings {
-    const stored = readJsonWithSchema(filePath(), {}, appSettingsSchema) as Partial<AppSettings>;
-    return { ...DEFAULTS, ...stored };
+// docs/LOCAL_INFERENCE_HARDENING_PLAN.md: Ollama removal. appSettingsSchema
+// is .passthrough(), so an old settings.json's now-unrecognized `ollamaHost`/
+// `modelsDir` fields are harmless — they just ride along unused, and
+// `runtimeGpuConfigs` is validated as a generic `Record<string, ...>` (see
+// its own schema comment), so a stray `runtimeGpuConfigs.ollama` key doesn't
+// fail validation either. `preferredRuntime` is the one genuinely dangerous
+// case: it's a *recognized* field with a closed z.enum(), "ollama" is no
+// longer a member, and zod fails the *entire* object's .safeParse() over one
+// invalid enum value, not just that field. Without this pre-pass,
+// readJsonWithSchema's existing (correct, for genuine corruption) "back up
+// and reset to defaults" behavior would silently wipe every setting a user
+// with `preferredRuntime: "ollama"` had ever configured. Also drops the
+// now-fully-vestigial `runtimeGpuConfigs.ollama` entry while here, though
+// that part is tidiness, not a crash-prevention necessity. Runs once per
+// process (guarded by `migratedLegacyRuntimeSettings`), since getSettings()
+// is called frequently and the fix is idempotent after the first successful
+// run.
+let migratedLegacyRuntimeSettings = false;
+
+/** Test-only — same pattern as policy-store.ts's resetPolicyStateForTests().
+ * Lets a test observe the migration actually running against a freshly
+ * written legacy-shaped settings.json, instead of the guard having already
+ * flipped true from an earlier getSettings() call in the same process. */
+export function __resetLegacyRuntimeSettingsMigrationForTests(): void {
+    migratedLegacyRuntimeSettings = false;
 }
 
+function migrateLegacyRuntimeSettings(): void {
+    if (migratedLegacyRuntimeSettings) return;
+    migratedLegacyRuntimeSettings = true;
+    const raw = readJson<Record<string, unknown> | null>(filePath(), null);
+    if (!raw || typeof raw !== "object") return;
+
+    let changed = false;
+    if (raw.preferredRuntime === "ollama") {
+        raw.preferredRuntime = "automatic";
+        changed = true;
+    }
+    const runtimeGpuConfigs = raw.runtimeGpuConfigs;
+    if (runtimeGpuConfigs && typeof runtimeGpuConfigs === "object" && "ollama" in runtimeGpuConfigs) {
+        delete (runtimeGpuConfigs as Record<string, unknown>).ollama;
+        changed = true;
+    }
+    if (changed) writeJson(filePath(), raw);
+}
+
+// Managed settings (see policy-store.ts) always win over whatever's in
+// settings.json — applied last, after DEFAULTS and the stored file, so a
+// verified organization policy overrides a locally-saved value regardless of
+// how or when that local value was set (including a value that predates the
+// policy ever existing). This is the single choke point every caller of
+// getSettings() shares (agent-tools.ts's network-tool gate among them), so
+// enforcement doesn't depend on each call site separately checking policy.
+export function getSettings(): AppSettings {
+    migrateLegacyRuntimeSettings();
+    const stored = readJsonWithSchema(filePath(), {}, appSettingsSchema) as Partial<AppSettings>;
+    return { ...DEFAULTS, ...stored, ...getManagedSettings() };
+}
+
+/** Which of the given patch's keys are currently policy-managed, and would
+ * therefore have no effect if written — for a caller (settings:save's IPC
+ * handler) to report back to the renderer, so "I changed it and it silently
+ * didn't take" has an explanation rather than being a confusing no-op. Pure:
+ * does not itself save or filter anything. */
+export function getRejectedPolicyKeys(partial: Partial<AppSettings>): ManagedSettingKey[] {
+    return MANAGED_SETTING_KEYS.filter((key): key is ManagedSettingKey => key in partial && isSettingManaged(key));
+}
+
+// A managed field is silently stripped from `partial` before merging — the
+// write happens as if that key was never in the patch at all, rather than
+// writing it to settings.json and relying solely on getSettings()'s overlay
+// to hide it. Belt-and-braces: getSettings() already guarantees a managed
+// field's value is never *observed* as the local one, but not writing it in
+// the first place also means it can't take effect the moment policy is later
+// removed (a managed value silently "coming back" would be surprising).
 export function saveSettings(partial: Partial<AppSettings>): AppSettings {
-    const merged = { ...getSettings(), ...partial };
+    const filtered: Partial<AppSettings> = { ...partial };
+    for (const key of getRejectedPolicyKeys(partial)) delete filtered[key];
+    const merged = { ...getSettings(), ...filtered };
     writeJson(filePath(), merged);
     return merged;
 }

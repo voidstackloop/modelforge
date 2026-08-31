@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { PullProgress, RestartResult } from "./ollama-manager";
 import type { AttachedFile, MediaAttachment } from "./file-reader";
 import type { ChatMessage, ChatChunk, ChatOptions, ProviderId } from "./providers/types";
 import type { McpServerConfig, McpServerStatus } from "./mcp-client";
@@ -16,10 +15,20 @@ import type { Project } from "./projects-store";
 import type { DownloadJob } from "./download-jobs-store";
 import type { GpuSelection } from "./gpu-selection";
 import type { GpuTelemetrySample } from "./gpu-telemetry";
-import type { PatientCase } from "./patient-cases-store";
+import type { PatientCase, PatientCasesBackendScope } from "./patient-cases-store";
+import type { SyncStatus } from "./case-offline-cache";
 import type { AuditEvent } from "./audit-log-store";
 import type { EvidenceSource } from "./evidence-store";
 import type { ApprovedModel } from "./model-registry-store";
+import type { MedicationSafetyResult, MedicationSafetyCoverage } from "./medical-safety";
+import type { SharedBackendConfig } from "./shared-backend-config-store";
+import type { MigrationSession } from "@modelforge/contracts";
+import type { StagedMigrationResult } from "./case-migration";
+import type { OrganizationMembership } from "./shared-backend-client";
+import type { CreateImagingShareInput, ImagingStudyDetail } from "./imaging-client";
+import type { ImagingIngestionJob, ImagingShareGrant, ImagingStudy } from "@modelforge/contracts";
+import type { AiConsent, AiReview } from "@modelforge/contracts";
+import type { ClinicalAiImagingOption, ClinicalAiModelOption, ClinicalAiRequestDetail, ClinicalAiSubmitInput } from "./clinical-ai-client";
 
 export interface ToolExecuteResult {
     result?: unknown;
@@ -84,30 +93,11 @@ function randomId(): string {
 }
 
 export const api = {
-    ollama: {
-        status: () => ipcRenderer.invoke("ollama:status"),
-        start: () => ipcRenderer.invoke("ollama:start"),
-        stop: () => ipcRenderer.invoke("ollama:stop"),
-        listModels: () => ipcRenderer.invoke("ollama:listModels"),
-        deleteModel: (name: string) => ipcRenderer.invoke("ollama:deleteModel", name),
-        pickModelsDir: (): Promise<string | null> => ipcRenderer.invoke("ollama:pickModelsDir"),
-        setModelsDir: (dir: string | null): Promise<RestartResult> => ipcRenderer.invoke("ollama:setModelsDir", dir),
-
-        pullModel: (name: string, onProgress: (chunk: PullProgress) => void) => {
-            const requestId = randomId();
-            const channel = `ollama:pull:progress:${requestId}`;
-            const listener = (_event: unknown, chunk: PullProgress) => onProgress(chunk);
-            ipcRenderer.on(channel, listener);
-            return ipcRenderer
-                .invoke("ollama:pull", { requestId, name })
-                .finally(() => ipcRenderer.removeListener(channel, listener));
-        },
-    },
-
     llamacpp: {
         listModels: (): Promise<LocalGgufModel[]> => ipcRenderer.invoke("llamacpp:listModels"),
         deleteModel: (name: string): Promise<void> => ipcRenderer.invoke("llamacpp:deleteModel", name),
         getAvailableGpuBackends: (): Promise<string[]> => ipcRenderer.invoke("llamacpp:getAvailableGpuBackends"),
+        getModelTotalLayers: (name: string): Promise<number> => ipcRenderer.invoke("llamacpp:getModelTotalLayers", name),
         getRuntimeInfo: (): Promise<LlamaCppRuntimeInfo> => ipcRenderer.invoke("llamacpp:getRuntimeInfo"),
         setGpuBackend: (backend: GpuBackend): Promise<void> => ipcRenderer.invoke("llamacpp:setGpuBackend", backend),
         pickModelsDir: (): Promise<string | null> => ipcRenderer.invoke("llamacpp:pickModelsDir"),
@@ -141,14 +131,15 @@ export const api = {
             messages: ChatMessage[],
             options: ChatOptions,
             onToken: (chunk: ChatChunk) => void,
-            agentMode?: boolean
+            agentMode?: boolean,
+            conversationId?: string
         ) => {
             const requestId = randomId();
             const channel = `chat:chunk:${requestId}`;
             const listener = (_event: unknown, chunk: ChatChunk) => onToken(chunk);
             ipcRenderer.on(channel, listener);
             const promise = ipcRenderer
-                .invoke("chat:send", { requestId, provider, model, messages, options, agentMode })
+                .invoke("chat:send", { requestId, provider, model, messages, options, agentMode, conversationId })
                 // The invoke reply and a final webContents.send() chunk use
                 // separate IPC routes. The reply can arrive first even when
                 // main sent the chunk first; removing this listener
@@ -182,13 +173,55 @@ export const api = {
         resolveSelection: (selection: GpuSelection): Promise<{ gpus: import("./system-specs").GpuInfo[]; stale: boolean; missingIds: string[] }> => ipcRenderer.invoke("gpu:resolveSelection", selection),
     },
 
+    resource: {
+        // Read-only, PHI-safe by construction — see ipc/resource-handlers.ts's
+        // own doc comment. Poll this (same convention as gpu.getTelemetry)
+        // for the Runtime Manager's Workloads view and the header indicator.
+        getTelemetry: (): Promise<import("./resource-contracts").ResourceTelemetry> => ipcRenderer.invoke("resource:getTelemetry"),
+    },
+
     settings: {
         get: () => ipcRenderer.invoke("settings:get"),
         save: (partial: Record<string, unknown>) => ipcRenderer.invoke("settings:save", partial),
     },
 
+    policy: {
+        status: (): Promise<import("./policy-store").PolicyStatus> => ipcRenderer.invoke("policy:status"),
+        reload: (): Promise<import("./policy-store").PolicyStatus> => ipcRenderer.invoke("policy:reload"),
+    },
+
+    backup: {
+        create: (passphrase: string): Promise<{ success: boolean; filePath?: string }> => ipcRenderer.invoke("backup:create", passphrase),
+        pickFile: (): Promise<{ canceled: boolean; filePath?: string }> => ipcRenderer.invoke("backup:pickFile"),
+        verifyFile: (filePath: string, passphrase: string): Promise<import("./backup-store").BackupSummary> =>
+            ipcRenderer.invoke("backup:verifyFile", filePath, passphrase),
+        restoreFile: (filePath: string, passphrase: string): Promise<import("./backup-store").RestoreResult> =>
+            ipcRenderer.invoke("backup:restoreFile", filePath, passphrase),
+
+        getSchedule: (): Promise<import("./backup-schedule-store").BackupSchedule> => ipcRenderer.invoke("backup:getSchedule"),
+        setSchedule: (
+            partial: Partial<Pick<import("./backup-schedule-store").BackupSchedule, "enabled" | "intervalHours" | "retentionCount">>
+        ): Promise<import("./backup-schedule-store").BackupSchedule> => ipcRenderer.invoke("backup:setSchedule", partial),
+        pickScheduleDestination: (): Promise<{ canceled: boolean; destinationDir?: string }> =>
+            ipcRenderer.invoke("backup:pickScheduleDestination"),
+        hasAutoPassphrase: (): Promise<boolean> => ipcRenderer.invoke("backup:hasAutoPassphrase"),
+        setAutoPassphrase: (passphrase: string): Promise<void> => ipcRenderer.invoke("backup:setAutoPassphrase", passphrase),
+        clearAutoPassphrase: (): Promise<void> => ipcRenderer.invoke("backup:clearAutoPassphrase"),
+
+        getCloudConfig: (): Promise<import("./cloud-backup-store").CloudBackupConfig> => ipcRenderer.invoke("backup:getCloudConfig"),
+        setCloudConfig: (
+            partial: Partial<import("./cloud-backup-store").CloudBackupConfig>
+        ): Promise<import("./cloud-backup-store").CloudBackupConfig> => ipcRenderer.invoke("backup:setCloudConfig", partial),
+        hasCloudSecret: (): Promise<boolean> => ipcRenderer.invoke("backup:hasCloudSecret"),
+        setCloudSecret: (secretAccessKey: string): Promise<void> => ipcRenderer.invoke("backup:setCloudSecret", secretAccessKey),
+        clearCloudSecret: (): Promise<void> => ipcRenderer.invoke("backup:clearCloudSecret"),
+        testCloudConnection: (): Promise<void> => ipcRenderer.invoke("backup:testCloudConnection"),
+    },
+
     sessions: {
         list: () => ipcRenderer.invoke("sessions:list"),
+        listBackends: (): Promise<{ active: string; backends: { name: string; label: string; scope: "local" | "shared"; available: boolean }[] }> =>
+            ipcRenderer.invoke("sessions:listBackends"),
         get: (id: string) => ipcRenderer.invoke("sessions:get", id),
         create: (model: string | null, projectId?: string | null) =>
             ipcRenderer.invoke("sessions:create", { model, projectId: projectId ?? null }),
@@ -209,6 +242,7 @@ export const api = {
                     | "contextSummary"
                     | "contextSummaryThroughIndex"
                     | "tags"
+                    | "assignedUserIds"
                 >
             >
         ) => ipcRenderer.invoke("sessions:update", { id, partial }),
@@ -418,17 +452,23 @@ export const api = {
 
     patientCases: {
         list: (): Promise<PatientCase[]> => ipcRenderer.invoke("patientCases:list"),
+        listBackends: (): Promise<{ active: string; backends: { name: string; label: string; scope: PatientCasesBackendScope; available: boolean }[] }> =>
+            ipcRenderer.invoke("patientCases:listBackends"),
         get: (id: string): Promise<PatientCase | null> => ipcRenderer.invoke("patientCases:get", id),
         create: (title: string): Promise<PatientCase> => ipcRenderer.invoke("patientCases:create", title),
-        update: (id: string, partial: Record<string, unknown>): Promise<PatientCase | null> =>
-            ipcRenderer.invoke("patientCases:update", { id, partial }),
-        delete: (id: string): Promise<void> => ipcRenderer.invoke("patientCases:delete", id),
+        // expectedVersion: the version the caller last loaded this case at
+        // — omitted means "no caller-tracked version, fall back to a
+        // freshest-possible read" (see patient-cases-store.ts's mutateCase
+        // doc comment). Passing it is what turns optimistic concurrency
+        // into a real "someone else edited this since you loaded it" check
+        // instead of one that can only catch races within a single call.
+        update: (id: string, partial: Record<string, unknown>, expectedVersion?: string | null): Promise<PatientCase | null> =>
+            ipcRenderer.invoke("patientCases:update", { id, partial, expectedVersion }),
+        delete: (id: string, expectedVersion?: string | null): Promise<void> =>
+            ipcRenderer.invoke("patientCases:delete", { id, expectedVersion }),
         buildContext: (id: string): Promise<{ text: string; includedFields: string[] } | null> =>
             ipcRenderer.invoke("patientCases:buildContext", id),
-        checkConflicts: (
-            allergies: string[],
-            medications: string[]
-        ): Promise<{ kind: string; medication: string; conflictsWith: string; detail: string }[]> =>
+        checkConflicts: (allergies: string[], medications: string[]): Promise<MedicationSafetyResult> =>
             ipcRenderer.invoke("patientCases:checkConflicts", { allergies, medications }),
         grantConsent: (
             caseId: string,
@@ -446,6 +486,11 @@ export const api = {
             outcome: "accepted" | "accepted-with-edits" | "rejected",
             comment?: string
         ): Promise<PatientCase | null> => ipcRenderer.invoke("patientCases:reviewNote", { caseId, noteId, reviewedBy, outcome, comment }),
+        // P1 item 5 (case-offline-cache.ts): pending/conflicted counts for
+        // the shared backend's offline outbox — {pendingCount: 0, ...} when
+        // no organization is connected (local mode), never an error.
+        getSyncStatus: (): Promise<SyncStatus> => ipcRenderer.invoke("patientCases:getSyncStatus"),
+        discardSyncConflict: (idempotencyKey: string): Promise<void> => ipcRenderer.invoke("patientCases:discardSyncConflict", idempotencyKey),
     },
 
     audit: {
@@ -468,6 +513,8 @@ export const api = {
             ipcRenderer.invoke("audit:verifyIntegrity"),
         sqliteCapability: (): Promise<{ available: boolean; reason?: string; detail?: string }> =>
             ipcRenderer.invoke("audit:sqliteCapability"),
+        pickSqliteDir: (): Promise<string | null> => ipcRenderer.invoke("audit:pickSqliteDir"),
+        setSqliteDir: (dir: string | null): Promise<{ customDir: string | null } | { error: string }> => ipcRenderer.invoke("audit:setSqliteDir", dir),
     },
 
     encryption: {
@@ -498,6 +545,8 @@ export const api = {
             ipcRenderer.invoke("medicalSafety:redact", text),
         checkCitations: (text: string, knownSourceIds: string[]): Promise<{ unverifiedMarkers: string[]; missingCitations: boolean }> =>
             ipcRenderer.invoke("medicalSafety:checkCitations", { text, knownSourceIds }),
+        listMedicationProviders: (): Promise<{ active: string; providers: { name: string; label: string; coverage: MedicationSafetyCoverage }[] }> =>
+            ipcRenderer.invoke("medicalSafety:listMedicationProviders"),
     },
 
     evidence: {
@@ -505,6 +554,48 @@ export const api = {
         addFromUrl: (url: string): Promise<{ source?: EvidenceSource; error?: string }> =>
             ipcRenderer.invoke("evidence:addFromUrl", url),
         delete: (id: string): Promise<void> => ipcRenderer.invoke("evidence:delete", id),
+    },
+
+    sharedBackend: {
+        getConfig: (): Promise<SharedBackendConfig | null> => ipcRenderer.invoke("sharedBackend:getConfig"),
+        setConfig: (config: SharedBackendConfig): Promise<void> => ipcRenderer.invoke("sharedBackend:setConfig", config),
+        clearConfig: (): Promise<void> => ipcRenderer.invoke("sharedBackend:clearConfig"),
+        status: (): Promise<{ configured: boolean; connected: boolean }> => ipcRenderer.invoke("sharedBackend:status"),
+        connect: (): Promise<{ connected: boolean; error?: string }> => ipcRenderer.invoke("sharedBackend:connect"),
+        disconnect: (): Promise<void> => ipcRenderer.invoke("sharedBackend:disconnect"),
+        listOrganizations: (): Promise<OrganizationMembership[]> => ipcRenderer.invoke("sharedBackend:listOrganizations"),
+        createOrganization: (name: string): Promise<{ organization: { id: string; name: string }; user: { id: string } }> =>
+            ipcRenderer.invoke("sharedBackend:createOrganization", name),
+        selectOrganization: (organizationId: string): Promise<void> => ipcRenderer.invoke("sharedBackend:selectOrganization", organizationId),
+        clearSelectedOrganization: (): Promise<void> => ipcRenderer.invoke("sharedBackend:clearSelectedOrganization"),
+        stageLocalCases: (): Promise<StagedMigrationResult> => ipcRenderer.invoke("sharedBackend:stageLocalCases"),
+        activateCaseMigration: (migrationId: string): Promise<MigrationSession> => ipcRenderer.invoke("sharedBackend:activateCaseMigration", migrationId),
+        rollbackCaseMigration: (migrationId: string): Promise<MigrationSession> => ipcRenderer.invoke("sharedBackend:rollbackCaseMigration", migrationId),
+    },
+
+    imaging: {
+        listStudies: (caseId: string): Promise<ImagingStudy[]> => ipcRenderer.invoke("imaging:listStudies", caseId),
+        getStudy: (studyId: string): Promise<ImagingStudyDetail> => ipcRenderer.invoke("imaging:getStudy", studyId),
+        listActivity: (): Promise<ImagingIngestionJob[]> => ipcRenderer.invoke("imaging:listActivity"),
+        upload: (caseId: string, fileName: string, bytes: Uint8Array) => ipcRenderer.invoke("imaging:upload", { caseId, fileName, bytes }),
+        resolveIngestionJob: (jobId: string, decision: "attach" | "reject", caseId?: string): Promise<{ job: ImagingIngestionJob; studyId?: string; requiresReview: boolean }> =>
+            ipcRenderer.invoke("imaging:resolveIngestionJob", { jobId, decision, caseId }),
+        listShares: (studyId: string): Promise<ImagingShareGrant[]> => ipcRenderer.invoke("imaging:listShares", studyId),
+        createShare: (studyId: string, share: CreateImagingShareInput) => ipcRenderer.invoke("imaging:createShare", { studyId, share }),
+        openViewer: (studyId: string): Promise<{ viewerUrl: string; expiresAt: string }> => ipcRenderer.invoke("imaging:openViewer", studyId),
+        closeViewer: (viewerUrl: string): Promise<void> => ipcRenderer.invoke("imaging:closeViewer", viewerUrl),
+    },
+
+    clinicalAi: {
+        listModels: (): Promise<ClinicalAiModelOption[]> => ipcRenderer.invoke("clinicalAi:listModels"),
+        listConsents: (caseId: string): Promise<AiConsent[]> => ipcRenderer.invoke("clinicalAi:listConsents", caseId),
+        createConsent: (caseId: string, consent: { purpose: AiConsent["purpose"]; dataCategories: string[]; expiresAt?: string }): Promise<AiConsent> => ipcRenderer.invoke("clinicalAi:createConsent", { caseId, consent }),
+        revokeConsent: (caseId: string, consentId: string, reason: string): Promise<AiConsent> => ipcRenderer.invoke("clinicalAi:revokeConsent", { caseId, consentId, reason }),
+        listImagingOptions: (caseId: string): Promise<ClinicalAiImagingOption[]> => ipcRenderer.invoke("clinicalAi:listImagingOptions", caseId),
+        preview: (caseId: string, request: ClinicalAiSubmitInput): Promise<unknown> => ipcRenderer.invoke("clinicalAi:preview", { caseId, request }),
+        submit: (caseId: string, request: ClinicalAiSubmitInput): Promise<unknown> => ipcRenderer.invoke("clinicalAi:submit", { caseId, request }),
+        listActivity: (caseId: string): Promise<ClinicalAiRequestDetail[]> => ipcRenderer.invoke("clinicalAi:listActivity", caseId),
+        review: (outputId: string, review: { decision: AiReview["decision"]; correctedText?: string; escalationReason?: string }): Promise<AiReview> => ipcRenderer.invoke("clinicalAi:review", { outputId, review }),
     },
 
     mcp: {

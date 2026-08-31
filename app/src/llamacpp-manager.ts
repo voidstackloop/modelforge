@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 // node-llama-cpp is ESM with top-level await — this app compiles to
 // CommonJS, and `require()`-ing an ESM module with top-level await throws
 // (ERR_REQUIRE_ASYNC_MODULE) instead of loading. A plain dynamic `import()`
@@ -11,9 +12,27 @@ import * as path from "node:path";
 // can't statically see (or rewrite) an import expression inside a string.
 // Type-only imports are erased at compile time and don't hit this problem,
 // so those stay static.
-import type { ChatHistoryItem, Llama, LlamaContextOptions, LlamaModel, LlamaModelOptions, LlamaNuma } from "node-llama-cpp";
+import type {
+    ChatHistoryItem,
+    ChatModelFunctionCall,
+    ChatModelFunctions,
+    GbnfJsonSchema,
+    Llama,
+    LlamaChatSession,
+    LlamaContext,
+    LlamaContextOptions,
+    LlamaModel,
+    LlamaModelOptions,
+    LlamaNuma,
+} from "node-llama-cpp";
 import type { ChatMessage, ChatChunk, ChatOptions, GpuLayerMode, ToolDefinition } from "./providers/types";
 import { withInferenceResourceLock } from "./inference-resource-scheduler";
+import { mainResourceOrchestrator } from "./resource-orchestrator";
+import type { ResourcePriority } from "./resource-contracts";
+import { estimateModelFit } from "./model-fit-estimator";
+import { hasGgufMagic } from "./download-verification";
+import { markBackendAttemptStarting, markBackendAttemptConfirmed } from "./llamacpp-backend-health";
+import { logger } from "./logger";
 
 export type GpuBackend = "auto" | "vulkan" | "cuda" | "metal" | "cpu";
 export type LlamaCppNumaPolicy = "auto" | Exclude<LlamaNuma, false>;
@@ -53,8 +72,181 @@ const dynamicImport = new Function("specifier", "return import(specifier)") as (
 ) => Promise<NodeLlamaCppModule>;
 let modulePromise: Promise<NodeLlamaCppModule> | null = null;
 
+// docs/LOCAL_INFERENCE_HARDENING_PLAN.md §2.5: llama.cpp has no HTTP surface
+// to intercept the way e2e/fixtures/fake-ollama.ts does for Ollama (it runs
+// in-process via this native addon, not as a spawned server) — before this,
+// there was no way to exercise real chat/streaming/cancel/tool-calling flow
+// in the e2e suite without a real GGUF model and a real native build. This
+// swaps the whole module for a deterministic fake, entirely in-process,
+// gated behind an env var only an e2e launch ever sets (see
+// e2e/fixtures/fake-llamacpp.ts) — never reachable from a real packaged app,
+// since nothing in the normal launch path ever sets this variable.
+const FAKE_MODULE_ENV_VAR = "MODELFORGE_E2E_FAKE_LLAMACPP";
+
+interface FakeChatTurn {
+    tokens?: string[];
+    toolCall?: { name: string; arguments: Record<string, unknown> };
+    delayMs?: number;
+}
+
+// Shared, mutable state the fake classes below read from and the exported
+// test-only setter writes to — module-scoped rather than passed through
+// loadNodeLlamaCpp() since e2e/fixtures/fake-llamacpp.ts controls it from
+// outside this process entirely, via Playwright's app.evaluate() re-
+// require()-ing this same compiled file (Node's require cache guarantees
+// it's the same module instance chat-dispatch.ts already loaded).
+const fakeState: { nextTurn: FakeChatTurn | null; chatRequestCount: number; contextCreationCount: number; lastContextSize: number | "auto" | null } =
+    { nextTurn: null, chatRequestCount: 0, contextCreationCount: 0, lastContextSize: null };
+
+/** e2e-only control surface — see e2e/fixtures/fake-llamacpp.ts. A complete
+ * no-op whenever the fake module isn't active (the common case for every
+ * real launch and every non-llama.cpp-focused test), so this export is safe
+ * to leave present unconditionally rather than needing its own gate. */
+export function __setFakeLlamaCppNextChatTurnForTests(turn: FakeChatTurn | null): void {
+    fakeState.nextTurn = turn;
+}
+
+export function __getFakeLlamaCppChatRequestCountForTests(): number {
+    return fakeState.chatRequestCount;
+}
+
+export function __getFakeLlamaCppContextCreationCountForTests(): number {
+    return fakeState.contextCreationCount;
+}
+
+/** The `contextSize` chat() actually asked the fake model to create — lets a
+ * test observe the tool-aware sizing logic in chat() without needing a real
+ * node-llama-cpp context to inspect. */
+export function __getFakeLlamaCppLastContextSizeForTests(): number | "auto" | null {
+    return fakeState.lastContextSize;
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const FAKE_DEFAULT_DELAY_MS = 15;
+
+// A deliberately small fake — only the surface llamacpp-manager.ts itself
+// calls (getLlama, getLlamaGpuTypes, LlamaChatSession, LlamaChat), not a
+// full node-llama-cpp reimplementation. Cast to NodeLlamaCppModule at the
+// call site below rather than exhaustively typed against it.
+function createFakeNodeLlamaCppModule(): NodeLlamaCppModule {
+    function makeFakeModel() {
+        return {
+            fileInsights: { totalLayers: 32 },
+            gpuLayers: 0,
+            flashAttentionSupported: false,
+            trainContextSize: 8192,
+            // A rough ~4-chars-per-token approximation — real code only ever
+            // reads the returned array's `.length`, never the token values.
+            tokenize: (text: string) => new Array(Math.ceil(text.length / 4)).fill(0),
+            dispose: async () => {},
+            createContext: async (options: { contextSize?: number | "auto" }) => {
+                fakeState.contextCreationCount++;
+                fakeState.lastContextSize = options.contextSize ?? "auto";
+                return {
+                    getSequence: () => ({}),
+                    dispose: async () => {},
+                };
+            },
+            createEmbeddingContext: async () => ({
+                getEmbeddingFor: async (input: unknown) => ({
+                    vector: [0.1, 0.2, 0.3, typeof input === "string" ? input.length / 1000 : 0],
+                }),
+                dispose: async () => {},
+            }),
+        };
+    }
+
+    function makeFakeLlama() {
+        return {
+            gpu: "cpu",
+            supportsGpuOffloading: false,
+            cpuMathCores: 4,
+            maxThreads: 4,
+            vramPaddingSize: 0,
+            ramPaddingSize: 0,
+            getGpuDeviceNames: async () => [] as string[],
+            getVramState: async () => ({ total: 0, used: 0, free: 0, unifiedSize: 0 }),
+            getSwapState: async () => ({ maxSize: 0, allocated: 0, used: 0 }),
+            dispose: async () => {},
+            loadModel: async () => makeFakeModel(),
+        };
+    }
+
+    // Runs one configured turn against the real onTextChunk/signal contract
+    // both LlamaChatSession.prompt() and LlamaChat.generateResponse() expose
+    // — shared so the two fakes below can't drift from each other.
+    async function runFakeTurn(options: {
+        onTextChunk?: (text: string) => void;
+        signal?: AbortSignal;
+    }): Promise<{ text: string; toolCall?: FakeChatTurn["toolCall"] }> {
+        fakeState.chatRequestCount++;
+        const turn = fakeState.nextTurn ?? { tokens: ["Hello", " from", " the", " fake", " llama.cpp", " backend."] };
+        fakeState.nextTurn = null; // one-shot, matching fake-ollama.ts's own reasoning
+        const delayMs = turn.delayMs ?? FAKE_DEFAULT_DELAY_MS;
+
+        if (turn.toolCall) {
+            if (delayMs) await sleep(delayMs);
+            if (options.signal?.aborted) throw options.signal.reason ?? new Error("aborted");
+            return { text: "", toolCall: turn.toolCall };
+        }
+
+        let text = "";
+        for (const token of turn.tokens ?? []) {
+            if (delayMs) await sleep(delayMs);
+            if (options.signal?.aborted) throw options.signal.reason ?? new Error("aborted");
+            text += token;
+            options.onTextChunk?.(token);
+        }
+        return { text };
+    }
+
+    class FakeLlamaChatSession {
+        constructor(_options: unknown) {}
+        setChatHistory(_history: unknown): void {}
+        dispose(): void {}
+        async prompt(_text: string, options: { onTextChunk?: (text: string) => void; signal?: AbortSignal } = {}): Promise<string> {
+            const { text } = await runFakeTurn(options);
+            return text;
+        }
+    }
+
+    class FakeLlamaChat {
+        constructor(_options: unknown) {}
+        async generateResponse(_history: unknown, options: { onTextChunk?: (text: string) => void; signal?: AbortSignal } = {}) {
+            const { text, toolCall } = await runFakeTurn(options);
+            const functionCalls = toolCall ? [{ functionName: toolCall.name, params: toolCall.arguments, raw: "" }] : undefined;
+            return {
+                response: text,
+                fullResponse: [text],
+                functionCalls,
+                lastEvaluation: { cleanHistory: [], contextWindow: [], contextShiftMetadata: null },
+                metadata: { stopReason: functionCalls ? "functionCalls" : "eogToken" },
+            };
+        }
+    }
+
+    return {
+        getLlama: async () => makeFakeLlama(),
+        getLlamaGpuTypes: async () => ["cpu"],
+        LlamaChatSession: FakeLlamaChatSession,
+        LlamaChat: FakeLlamaChat,
+        readGgufFileInfo: async () => ({}),
+        // A fixed, plausible layer count — e2e specs only need
+        // getModelTotalLayers() to resolve to *some* finite number, not to
+        // reflect any particular fixture's real architecture.
+        GgufInsights: { from: async () => ({ totalLayers: 32 }) },
+    } as unknown as NodeLlamaCppModule;
+}
+
 function loadNodeLlamaCpp(): Promise<NodeLlamaCppModule> {
-    if (!modulePromise) modulePromise = dynamicImport("node-llama-cpp");
+    if (!modulePromise) {
+        modulePromise = process.env[FAKE_MODULE_ENV_VAR] === "1"
+            ? Promise.resolve(createFakeNodeLlamaCppModule())
+            : dynamicImport("node-llama-cpp");
+    }
     return modulePromise;
 }
 
@@ -76,11 +268,25 @@ const modelCache = new Map<string, LlamaModel>();
 const modelLoads = new Map<string, Promise<LlamaModel>>();
 const modelLastUsed = new Map<string, number>();
 const activeModelUsers = new Map<string, number>();
+interface CachedConversation {
+    modelCacheKey: string;
+    contextConfigKey: string;
+    context: LlamaContext;
+    session: LlamaChatSession;
+    expectedPriorHistory: string;
+    inUse: boolean;
+    lastUsedAt: number;
+}
+// One warm interactive conversation gives the common follow-up path KV-cache
+// reuse without allowing inactive chats to accumulate large context buffers
+// in VRAM. Switching chats evicts the previous context; model weights remain
+// governed independently by maxCachedModels.
+const conversationCache = new Map<string, CachedConversation>();
 let maxCachedModels = 2;
 // Keep warm weights for fast follow-up prompts, then release their RAM/VRAM
 // after inactivity. Headless deployments can override the default without a
 // new UI setting; 0 disables time-based eviction.
-const configuredIdleMinutes = Number(process.env.OLLAMA_CUSTOM_UI_LLAMA_IDLE_MINUTES ?? 15);
+const configuredIdleMinutes = Number(process.env.MODELFORGE_LLAMACPP_IDLE_MINUTES ?? 15);
 const modelIdleTimeoutMs = Number.isFinite(configuredIdleMinutes)
     ? Math.max(0, configuredIdleMinutes) * 60_000
     : 15 * 60_000;
@@ -165,11 +371,42 @@ export function resolveGpuLayers(mode: GpuLayerMode | undefined, manualLayers: n
     return manualLayers;
 }
 
+// Guards a load against a corrupted, mislabeled, or tampered file — a cheap,
+// independent sanity check (see download-verification.ts's own comment on
+// hasGgufMagic) that this codebase already had but never actually wired into
+// any load path (docs/LOCAL_INFERENCE_HARDENING_PLAN.md §4). Not a substitute
+// for the Hugging Face download path's own checksum verification — this
+// catches a file that arrived by any *other* means (a manual copy, a
+// compromised sync folder, another app writing into the models directory)
+// where no reference checksum exists to compare against at all.
+export function assertValidGgufFile(modelPath: string): void {
+    if (!hasGgufMagic(modelPath)) {
+        throw new Error(`"${modelPath}" does not look like a valid GGUF model file (missing GGUF magic header) — refusing to load it.`);
+    }
+}
+
 function modelCacheKey(modelPath: string, gpuLayers: LlamaModelOptions["gpuLayers"]): string {
     return `${modelPath}\0${JSON.stringify(gpuLayers)}`;
 }
 
+function historyFingerprint(messages: ChatMessage[]): string {
+    return createHash("sha256").update(JSON.stringify(toHistory(messages))).digest("hex");
+}
+
+async function disposeCachedConversation(key: string, expected?: CachedConversation): Promise<void> {
+    const entry = conversationCache.get(key);
+    if (!entry || (expected && entry !== expected)) return;
+    conversationCache.delete(key);
+    entry.session.dispose({ disposeSequence: false });
+    await entry.context.dispose();
+    const users = Math.max(0, (activeModelUsers.get(entry.modelCacheKey) ?? 1) - 1);
+    if (users === 0) activeModelUsers.delete(entry.modelCacheKey);
+    else activeModelUsers.set(entry.modelCacheKey, users);
+    modelLastUsed.set(entry.modelCacheKey, Date.now());
+}
+
 async function releaseNativeState(): Promise<void> {
+    const oldConversations = [...conversationCache.values()];
     const oldModels = [...modelCache.values()];
     const oldLlama = llamaInstance;
     backendRevision++;
@@ -179,7 +416,10 @@ async function releaseNativeState(): Promise<void> {
     modelLoads.clear();
     modelLastUsed.clear();
     activeModelUsers.clear();
+    conversationCache.clear();
     clearIdleEvictionTimer();
+    for (const entry of oldConversations) entry.session.dispose({ disposeSequence: false });
+    await Promise.allSettled(oldConversations.map((entry) => entry.context.dispose()));
     await Promise.allSettled([
         ...oldModels.map((model) => model.dispose()),
         ...(oldLlama ? [oldLlama.dispose()] : []),
@@ -227,7 +467,14 @@ export async function setGpuBackend(backend: GpuBackend): Promise<void> {
     if (!["auto", "vulkan", "cuda", "metal", "cpu"].includes(backend)) {
         throw new Error(`Unsupported llama.cpp GPU backend: ${String(backend)}`);
     }
-    if (backend === activeBackend && runtimeReconfigurationsPending === 0) return;
+    if (backend === activeBackend && runtimeReconfigurationsPending === 0) {
+        // The default backend is "auto", which is also activeBackend's
+        // initial value. Returning here used to defer native backend startup
+        // until the first chat, making that first basic question absorb all
+        // initialization latency. Initialize now while the app is starting.
+        await getLlamaInstance();
+        return;
+    }
     const activeError = "The GPU backend cannot be changed while a llama.cpp response is being generated.";
     await withRuntimeReconfiguration(`llamacpp:backend:${backend}`, activeError, async () => {
         if (backend === activeBackend) return;
@@ -298,6 +545,14 @@ async function getLlamaInstance(): Promise<Llama> {
     const backend = activeBackend;
     const creation = (async () => {
         const { getLlama } = await loadNodeLlamaCpp();
+        // See llamacpp-backend-health.ts's doc comment: this is the one
+        // *real* (non-dry-run) native backend initialization, and the one
+        // that can crash the whole process with a signal no in-process
+        // handler can catch. Marking "starting" just before it, and
+        // "confirmed" only once it returns without crashing, is what lets
+        // main.ts's resolveStartupGpuBackend() notice on the *next* launch
+        // that this attempt never made it back.
+        markBackendAttemptStarting(backend);
         const instance = await getLlama({
             gpu: backend === "cpu" ? false : backend,
             maxThreads: runtimeConfig.maxThreads,
@@ -305,6 +560,7 @@ async function getLlamaInstance(): Promise<Llama> {
             ramPadding: runtimeConfig.ramReserveBytes,
             numa: runtimeConfig.numa === "auto" || runtimeConfig.numa === undefined ? false : runtimeConfig.numa,
         });
+        markBackendAttemptConfirmed(backend);
         // A backend change may happen while native initialization is still
         // running. Never publish an instance created for the stale backend.
         if (revision !== backendRevision) {
@@ -339,7 +595,7 @@ export async function getAvailableGpuBackends(): Promise<string[]> {
     }
 }
 
-async function loadModel(modelPath: string, gpuLayers: LlamaModelOptions["gpuLayers"]): Promise<LlamaModel> {
+async function loadModel(modelPath: string, gpuLayers: LlamaModelOptions["gpuLayers"], contextLength?: number): Promise<LlamaModel> {
     const key = modelCacheKey(modelPath, gpuLayers);
     const cached = modelCache.get(key);
     if (cached) {
@@ -350,22 +606,52 @@ async function loadModel(modelPath: string, gpuLayers: LlamaModelOptions["gpuLay
     const pending = modelLoads.get(key);
     if (pending) return pending;
 
+    // Item 6: estimate this specific model's RAM/VRAM footprint before
+    // admission, so the orchestrator's budget sees honest numbers instead
+    // of a 0/0 placeholder (see inference-resource-scheduler.ts's own doc
+    // comment on why that matters). Estimates hardware-optimal placement,
+    // not this call's own manual gpuLayers override if one was set — a
+    // deliberate, safe-direction approximation: it never underestimates
+    // actual usage in a way that risks OOM, at worst it reserves VRAM
+    // budget a CPU-forced load won't actually use.
+    const fit = await estimateModelFit(modelPath, { contextLength }).catch(() => null);
+
     // Coalesce simultaneous first requests. Loading the same weights twice
     // can briefly double RAM/VRAM use and OOM an otherwise suitable GPU.
     const revision = backendRevision;
-    const load = withInferenceResourceLock(`llamacpp:model-load:${modelPath}`, async () => {
-        const llama = await getLlamaInstance();
-        const model = await llama.loadModel({ modelPath, gpuLayers });
-        if (revision !== backendRevision) {
-            await model.dispose();
-            throw new Error("The GPU backend changed while the model was loading. Please retry the request.");
-        }
-        modelCache.set(key, model);
-        modelLastUsed.set(key, Date.now());
-        await evictIdleModels(key);
-        scheduleIdleEviction();
-        return model;
-    });
+    const load = withInferenceResourceLock(
+        `llamacpp:model-load:${modelPath}`,
+        async () => {
+            assertValidGgufFile(modelPath);
+            const llama = await getLlamaInstance();
+            logger.info(
+                `llama.cpp model-load start model=${path.basename(modelPath)} backend=${activeBackend} ` +
+                `gpuLayers=${JSON.stringify(gpuLayers)} context=${contextLength ?? "auto"}`
+            );
+            const model = await llama.loadModel({ modelPath, gpuLayers });
+            if (revision !== backendRevision) {
+                await model.dispose();
+                throw new Error("The GPU backend changed while the model was loading. Please retry the request.");
+            }
+            modelCache.set(key, model);
+            modelLastUsed.set(key, Date.now());
+            const metadata = model.fileInfo?.metadata;
+            const architecture = metadata?.general?.architecture ?? "unknown";
+            const chatTemplate = metadata?.tokenizer?.chat_template;
+            const templateFingerprint = typeof chatTemplate === "string"
+                ? createHash("sha256").update(chatTemplate).digest("hex").slice(0, 12)
+                : "none";
+            logger.info(
+                `llama.cpp model-load complete model=${path.basename(modelPath)} architecture=${architecture} ` +
+                `layers=${model.fileInsights.totalLayers} gpuLayers=${model.gpuLayers} trainContext=${model.trainContextSize} ` +
+                `chatTemplateChars=${typeof chatTemplate === "string" ? chatTemplate.length : 0} chatTemplateSha256=${templateFingerprint}`
+            );
+            await evictIdleModels(key);
+            scheduleIdleEviction();
+            return model;
+        },
+        fit ? { ramMB: fit.estimatedRamMB, vramMB: fit.estimatedVramMB } : undefined
+    );
     modelLoads.set(key, load);
     try {
         return await load;
@@ -478,6 +764,21 @@ function walkGgufFiles(root: string, dir: string, depth: number): RawGgufFile[] 
     return files;
 }
 
+// Settings/Chat's manual-GPU-layer-count input has no way to know a real
+// upper bound without this: "how many transformer layers does this GGUF
+// file actually have" is answerable from the file's header/tensor-info
+// metadata alone, via node-llama-cpp's own readGgufFileInfo/GgufInsights —
+// no backend init, no memory-mapped weight loading, none of the real-GPU
+// risk chat()'s actual getLlamaInstance() carries (see
+// llamacpp-backend-health.ts). Safe to call for any GGUF file regardless of
+// whether it's ever been loaded.
+export async function getModelTotalLayers(modelPath: string): Promise<number> {
+    const { readGgufFileInfo, GgufInsights } = await loadNodeLlamaCpp();
+    const fileInfo = await readGgufFileInfo(modelPath);
+    const insights = await GgufInsights.from(fileInfo);
+    return insights.totalLayers;
+}
+
 export function listModels(modelsDir: string): LocalGgufModel[] {
     if (!fs.existsSync(modelsDir)) return [];
     return groupShardedModels(walkGgufFiles(modelsDir, modelsDir, 0));
@@ -527,12 +828,15 @@ export async function getRuntimeInfo(): Promise<LlamaCppRuntimeInfo> {
     };
 }
 
-export async function deleteModel(modelsDir: string, name: string): Promise<void> {
+// `name` may be a relative path with subfolders (see LocalGgufModel), so
+// this can't reject on path separators — instead it rejects ".." segments
+// and requires the resolved path to still land inside `root`, which is what
+// actually prevents a renderer-supplied name from escaping the configured
+// models directory. Shared by deleteModel and getModelTotalLayersByName —
+// the one path-escape check every renderer-facing "act on this model file
+// by name" entry point must apply identically.
+function resolveModelPathWithinDir(modelsDir: string, name: string): string {
     const root = path.resolve(modelsDir);
-    // `name` may now be a relative path with subfolders (see LocalGgufModel),
-    // so unlike before this can't reject on path separators — instead it
-    // rejects ".." segments and requires the resolved path to still land
-    // inside `root`, which is what actually prevents escaping the directory.
     if (path.isAbsolute(name) || name.split(/[\\/]/).includes("..") || !name.toLowerCase().endsWith(".gguf")) {
         throw new Error("Invalid model file name.");
     }
@@ -540,6 +844,15 @@ export async function deleteModel(modelsDir: string, name: string): Promise<void
     if (target === root || !target.startsWith(root + path.sep)) {
         throw new Error("Invalid model file name.");
     }
+    return target;
+}
+
+export async function getModelTotalLayersByName(modelsDir: string, name: string): Promise<number> {
+    return getModelTotalLayers(resolveModelPathWithinDir(modelsDir, name));
+}
+
+export async function deleteModel(modelsDir: string, name: string): Promise<void> {
+    const target = resolveModelPathWithinDir(modelsDir, name);
     const matchingKeys = [...modelCache.keys()].filter((key) => key.startsWith(`${target}\0`));
     if (matchingKeys.some((key) => (activeModelUsers.get(key) ?? 0) > 0)) {
         throw new Error("This model cannot be deleted while it is generating a response.");
@@ -583,18 +896,76 @@ function escapeRegExp(s: string): string {
 
 // Maps this app's provider-agnostic ChatMessage[] (system/user/assistant,
 // full history resent on every call — same shape every provider gets) onto
-// node-llama-cpp's ChatHistoryItem[] shape. Tool/function-calling isn't
-// wired up for this backend yet, so "tool" role messages and any tool calls
-// on assistant messages are dropped rather than mistranslated.
-function toHistory(messages: ChatMessage[]): ChatHistoryItem[] {
+// node-llama-cpp's ChatHistoryItem[] shape. This app represents a tool call
+// and its result as two separate messages (an assistant message with
+// `toolCalls`, then a later "tool"-role message carrying the result,
+// matching the OpenAI/Ollama wire shape) — node-llama-cpp instead bundles a
+// call and its result into one `ChatModelFunctionCall` entry inside the
+// assistant turn's own `response` array, so a tool-role message is never
+// pushed as its own history item; it's folded into the assistant message
+// that requested it, found by matching `toolCallId`.
+export function toHistory(messages: ChatMessage[]): ChatHistoryItem[] {
     const history: ChatHistoryItem[] = [];
     for (const m of messages) {
-        if (m.role === "system") history.push({ type: "system", text: m.content });
-        else if (m.role === "user") history.push({ type: "user", text: m.content });
-        else if (m.role === "assistant") history.push({ type: "model", response: [m.content] });
-        // "tool" messages are skipped — see note above.
+        if (m.role === "system") {
+            history.push({ type: "system", text: m.content });
+        } else if (m.role === "user") {
+            history.push({ type: "user", text: m.content });
+        } else if (m.role === "assistant") {
+            if (m.toolCalls && m.toolCalls.length > 0) {
+                const response: Array<string | ChatModelFunctionCall> = [];
+                if (m.content) response.push(m.content);
+                for (const call of m.toolCalls) {
+                    // The result lives on a later "tool" message referencing
+                    // this call's id — normally always present by the time
+                    // history is replayed (the caller appends it before ever
+                    // asking for the next turn), but tolerated as missing
+                    // rather than crashing, since a malformed/truncated
+                    // history shouldn't take down generation entirely.
+                    const resultMessage = messages.find((mm) => mm.role === "tool" && mm.toolCallId === call.id);
+                    response.push({
+                        type: "functionCall",
+                        name: call.name,
+                        params: call.arguments,
+                        result: resultMessage?.content ?? null,
+                    });
+                }
+                history.push({ type: "model", response });
+            } else {
+                history.push({ type: "model", response: [m.content] });
+            }
+        }
+        // "tool" messages carry no history item of their own — see above.
     }
     return history;
+}
+
+// Maps this app's generic ToolDefinition (plain JSON-Schema-shaped
+// parameters, used identically by every other provider) onto node-llama-cpp's
+// GBNF-JSON-schema function-definition shape. Two behavior differences from
+// every other provider are disclosed here rather than silently accepted:
+// (1) GBNF-JSON-schema's `additionalProperties` defaults to `false` (vs.
+// unrestricted in standard JSON Schema) — restored to `true` below to match
+// what every existing tool schema (MCP-server-supplied or built-in) actually
+// assumes, since none of them were authored with llama.cpp's stricter
+// default in mind; (2) node-llama-cpp always treats every declared property
+// as required regardless of this schema's own `required` list (its own type
+// definition documents this as a current library limitation) — there is no
+// way to express a genuinely optional tool parameter to the llama.cpp
+// backend today, unlike Ollama/OpenAI.
+export function toLlamaCppFunctions(tools: ToolDefinition[]): ChatModelFunctions {
+    const functions: Record<string, { description?: string; params?: GbnfJsonSchema }> = {};
+    for (const t of tools) {
+        functions[t.name] = {
+            description: t.description,
+            params: {
+                type: "object",
+                properties: t.parameters.properties as Record<string, GbnfJsonSchema>,
+                additionalProperties: true,
+            },
+        };
+    }
+    return functions;
 }
 
 export async function chat(
@@ -603,14 +974,11 @@ export async function chat(
     options: ChatOptions | undefined,
     onToken: (chunk: ChatChunk) => void,
     signal?: AbortSignal,
-    tools?: ToolDefinition[]
+    tools?: ToolDefinition[],
+    priority: Extract<ResourcePriority, "active-inference" | "scheduled-inference"> = "active-inference",
+    diagnosticId = "interactive",
+    conversationId?: string
 ): Promise<void> {
-    if (tools && tools.length > 0) {
-        throw new Error(
-            "Agent mode isn't supported yet for the llama.cpp backend — switch to Ollama, OpenAI, or Claude for tool-calling, or turn Agent mode off."
-        );
-    }
-
     assertGenerationCanStart();
 
     let lastUserIndex = -1;
@@ -623,8 +991,13 @@ export async function chat(
     if (lastUserIndex === -1) throw new Error("No user message to respond to.");
 
     const resolvedGpuLayers = resolveGpuLayers(options?.gpuLayerMode, options?.gpuLayers, options?.contextLength);
+    const traceId = diagnosticId.slice(0, 64);
+    logger.info(
+        `[inference:${traceId}] llama.cpp prepare model=${path.basename(modelPath)} backend=${activeBackend} ` +
+        `gpuLayers=${JSON.stringify(resolvedGpuLayers)} lastUserIndex=${lastUserIndex} messages=${messages.length}`
+    );
     const cacheKey = modelCacheKey(modelPath, resolvedGpuLayers);
-    const model = await loadModel(modelPath, resolvedGpuLayers);
+    const model = await loadModel(modelPath, resolvedGpuLayers, options?.contextLength);
     // A transition can be announced while this call is awaiting a queued or
     // cached model load. Never create a context from a model that the pending
     // transition is about to dispose.
@@ -637,46 +1010,229 @@ export async function chat(
     }
     activeModelUsers.set(cacheKey, (activeModelUsers.get(cacheKey) ?? 0) + 1);
     modelLastUsed.set(cacheKey, Date.now());
-    // A fresh context per call re-evaluates the whole conversation history
-    // every turn instead of reusing a warm KV cache across turns — simpler
-    // and always correct, at the cost of redoing prompt-processing work on
-    // every message. Session-affinity caching (keeping a session alive
-    // across turns of the same conversation) would fix that but needs a
-    // stable conversation identity to key off of, which isn't threaded
-    // through this call today.
-    let context: Awaited<ReturnType<LlamaModel["createContext"]>> | null = null;
-    try {
-        const { LlamaChatSession } = await loadNodeLlamaCpp();
-        const flashAttention: LlamaContextOptions["flashAttention"] = options?.flashAttention === "on"
-            ? true
-            : options?.flashAttention === "off" ? false : "auto";
-        const contextOptions: LlamaContextOptions = {
-            contextSize: options?.contextLength ?? "auto",
-            batchSize: options?.batchSize,
-            threads: options?.cpuThreads,
-            flashAttention,
-            failedCreationRemedy: options?.contextLength === undefined ? { retries: 6, autoContextSizeShrink: 0.16 } : false,
-            performanceTracking: options?.performanceTracking === true,
-        };
-        context = await model.createContext(contextOptions);
-        const sequence = context.getSequence();
-        const priorMessages = messages.slice(0, lastUserIndex);
-        const session = new LlamaChatSession({ contextSequence: sequence });
-        if (priorMessages.length > 0) session.setChatHistory(toHistory(priorMessages));
+    // The renderer now threads a stable conversation id into interactive
+    // calls. One matching tool-free conversation keeps its context/session
+    // warm so follow-ups reuse the evaluated KV cache instead of processing
+    // the entire history again. Missing ids, agent/tool turns, changed
+    // history, model changes, or context-setting changes all stay on the
+    // conservative fresh-context path.
+    // Generation gets its own lease, acquired here — strictly after
+    // loadModel() above has already released its own exclusive-accelerator
+    // lease on a cache miss (see that function). Acquiring the two
+    // sequentially, never nested, is what avoids deadlocking on the single
+    // exclusive-accelerator admission slot.
+    await mainResourceOrchestrator.withLease({
+        workloadKind: priority,
+        priority,
+        requirements: { cpuThreads: 1, ramMB: 0, accelerator: "preferred", allowCpuFallback: true, exclusiveAccelerator: true },
+    }, async () => {
+        let context: Awaited<ReturnType<LlamaModel["createContext"]>> | null = null;
+        let reusedConversation: CachedConversation | null = null;
+        let retainModelUser = false;
+        let generationSucceeded = false;
+        try {
+            const { LlamaChatSession, LlamaChat } = await loadNodeLlamaCpp();
+            const flashAttention: LlamaContextOptions["flashAttention"] = options?.flashAttention === "on"
+                ? true
+                : options?.flashAttention === "off" ? false : "auto";
 
-        await session.prompt(messages[lastUserIndex].content, {
-            signal,
-            temperature: options?.temperature,
-            topP: options?.topP,
-            topK: options?.topK,
-            maxTokens: options?.maxTokens,
-            seed: options?.seed,
-            customStopTriggers: options?.stop,
-            onTextChunk: (text) => onToken({ message: { role: "assistant", content: text }, done: false }),
-        });
-        onToken({ done: true });
+            // Agent mode's tool definitions (this app's full built-in list, plus
+            // any connected MCP server tools) get embedded into every prompt
+            // node-llama-cpp builds for a tools-enabled turn. For cloud providers
+            // with huge context windows that's negligible; for a local model it
+            // can easily exceed a small configured context on its own, before a
+            // single conversation turn is even considered. When that happens,
+            // node-llama-cpp's context-shift strategy has no room to fit even
+            // the minimum required prompt and throws an opaque internal error
+            // ("...did not return a history that fits the context size...").
+            // Estimate the real cost with this model's own tokenizer, grow the
+            // context up to what the model actually supports rather than let
+            // that surface, and fail fast with an actionable message instead if
+            // even the model's max context genuinely isn't enough.
+            let contextSize: LlamaContextOptions["contextSize"] = options?.contextLength ?? "auto";
+            if (tools && tools.length > 0) {
+                const toolTokens = model.tokenize(JSON.stringify(toLlamaCppFunctions(tools))).length;
+                const historyTokens = messages.reduce((sum, m) => sum + model.tokenize(m.content).length, 0);
+                const generationReserve = options?.maxTokens ?? 512;
+                // Fixed margin for chat-template/grammar wrapping overhead this
+                // estimate doesn't account for exactly.
+                const requiredContextSize = toolTokens + historyTokens + generationReserve + 256;
+                const maxSupported = model.trainContextSize;
+                if (requiredContextSize > maxSupported) {
+                    throw new Error(
+                        `Agent mode's enabled tools need roughly ${requiredContextSize} tokens of context, but this model supports at most ${maxSupported}. Disable some MCP tools, shorten the conversation, or switch to a model with a larger context window.`
+                    );
+                }
+                contextSize = Math.min(maxSupported, Math.max(options?.contextLength ?? 0, requiredContextSize));
+            }
+
+            const contextOptions: LlamaContextOptions = {
+                contextSize,
+                batchSize: options?.batchSize,
+                threads: options?.cpuThreads,
+                flashAttention,
+                failedCreationRemedy: contextSize === "auto" ? { retries: 6, autoContextSizeShrink: 0.16 } : false,
+                performanceTracking: options?.performanceTracking === true,
+            };
+            const priorMessages = messages.slice(0, lastUserIndex);
+            const priorHistory = historyFingerprint(priorMessages);
+            const contextConfigKey = JSON.stringify({
+                contextSize,
+                batchSize: options?.batchSize ?? null,
+                threads: options?.cpuThreads ?? null,
+                flashAttention,
+            });
+            if (!tools?.length && conversationId) {
+                const existing = conversationCache.get(conversationId);
+                if (existing && !existing.inUse && existing.modelCacheKey === cacheKey
+                    && existing.contextConfigKey === contextConfigKey && existing.expectedPriorHistory === priorHistory) {
+                    existing.inUse = true;
+                    reusedConversation = existing;
+                    context = existing.context;
+                } else if (existing) {
+                    await disposeCachedConversation(conversationId, existing);
+                }
+            }
+            if (!context) context = await model.createContext(contextOptions);
+            const sequence = context.getSequence();
+            let outputChunks = 0;
+            let outputChars = 0;
+            const generationStartedAt = Date.now();
+            let firstTokenAt: number | null = null;
+            const emitText = (text: string) => {
+                if (firstTokenAt === null) firstTokenAt = Date.now();
+                outputChunks++;
+                outputChars += text.length;
+                onToken({ message: { role: "assistant", content: text }, done: false });
+            };
+            logger.info(
+                `[inference:${traceId}] llama.cpp context-${reusedConversation ? "reused" : "created"} model=${path.basename(modelPath)} ` +
+                `context=${contextSize} batch=${options?.batchSize ?? "default"} threads=${options?.cpuThreads ?? "default"} ` +
+                `flashAttention=${flashAttention}`
+            );
+
+            if (tools && tools.length > 0) {
+                // The lower-level LlamaChat (not LlamaChatSession) is used here
+                // deliberately: LlamaChatSession's function-calling requires a
+                // synchronous `handler` per function that it executes and
+                // resolves internally, which has no place for this app's
+                // per-call human-approval gate (agent-tools.ts's Allow/Deny UI).
+                // LlamaChat.generateResponse() has no such handler concept at
+                // all — it just stops generation and reports the requested
+                // call, exactly like every other provider here (Ollama/OpenAI
+                // pause after one tool-call request and let the caller execute
+                // and resume in a new turn) — see toLlamaCppFunctions()'s doc
+                // comment for the two disclosed schema-translation differences.
+                const llamaChat = new LlamaChat({ contextSequence: sequence });
+                const { functionCalls } = await llamaChat.generateResponse(toHistory(messages), {
+                    functions: toLlamaCppFunctions(tools),
+                    signal,
+                    temperature: options?.temperature,
+                    topP: options?.topP,
+                    topK: options?.topK,
+                    maxTokens: options?.maxTokens,
+                    seed: options?.seed,
+                    customStopTriggers: options?.stop,
+                    onTextChunk: emitText,
+                });
+                if (functionCalls && functionCalls.length > 0) {
+                    onToken({
+                        done: false,
+                        toolCalls: functionCalls.map((call) => ({
+                            id: randomUUID(),
+                            name: call.functionName,
+                            arguments: (call.params ?? {}) as Record<string, unknown>,
+                        })),
+                    });
+                }
+                onToken({ done: true });
+                generationSucceeded = true;
+                logger.info(`[inference:${traceId}] llama.cpp generated chunks=${outputChunks} chars=${outputChars} toolCalls=${functionCalls?.length ?? 0} firstTokenMs=${firstTokenAt === null ? "none" : firstTokenAt - generationStartedAt} totalMs=${Date.now() - generationStartedAt}`);
+            } else {
+                const session = reusedConversation?.session ?? new LlamaChatSession({ contextSequence: sequence });
+                if (!reusedConversation && priorMessages.length > 0) session.setChatHistory(toHistory(priorMessages));
+
+                const response = await session.prompt(messages[lastUserIndex].content, {
+                    signal,
+                    temperature: options?.temperature,
+                    topP: options?.topP,
+                    topK: options?.topK,
+                    maxTokens: options?.maxTokens,
+                    seed: options?.seed,
+                    customStopTriggers: options?.stop,
+                    onTextChunk: emitText,
+                });
+                onToken({ done: true });
+                generationSucceeded = true;
+                if (conversationId) {
+                    const expectedPriorHistory = historyFingerprint([
+                        ...priorMessages,
+                        messages[lastUserIndex],
+                        { role: "assistant", content: response },
+                    ]);
+                    if (reusedConversation) {
+                        reusedConversation.expectedPriorHistory = expectedPriorHistory;
+                        reusedConversation.inUse = false;
+                        reusedConversation.lastUsedAt = Date.now();
+                    } else {
+                        for (const [key, entry] of [...conversationCache]) {
+                            if (key !== conversationId) await disposeCachedConversation(key, entry);
+                        }
+                        conversationCache.set(conversationId, {
+                            modelCacheKey: cacheKey,
+                            contextConfigKey,
+                            context,
+                            session,
+                            expectedPriorHistory,
+                            inUse: false,
+                            lastUsedAt: Date.now(),
+                        });
+                        retainModelUser = true;
+                    }
+                    context = null;
+                }
+                logger.info(`[inference:${traceId}] llama.cpp generated chunks=${outputChunks} chars=${outputChars} toolCalls=0 firstTokenMs=${firstTokenAt === null ? "none" : firstTokenAt - generationStartedAt} totalMs=${Date.now() - generationStartedAt} contextCache=${reusedConversation ? "hit" : conversationId ? "stored" : "off"}`);
+            }
+        } finally {
+            if (reusedConversation && !generationSucceeded) {
+                await disposeCachedConversation(conversationId!, reusedConversation);
+                context = null;
+            }
+            if (context) await context.dispose();
+            if (!retainModelUser) {
+                const users = Math.max(0, (activeModelUsers.get(cacheKey) ?? 1) - 1);
+                if (users === 0) activeModelUsers.delete(cacheKey);
+                else activeModelUsers.set(cacheKey, users);
+            }
+            modelLastUsed.set(cacheKey, Date.now());
+            await evictIdleModels();
+            scheduleIdleEviction();
+        }
+    });
+}
+
+// RAG embeddings via llama.cpp (docs/LOCAL_INFERENCE_HARDENING_PLAN.md §2's
+// other blocking gap alongside tool-calling — rag.ts previously called
+// Ollama's /api/embeddings with no local alternative at all). Reuses the
+// same model cache, refcounting, and backend-transition guards as chat()
+// above; the caller (rag.ts) is responsible for its own resource-orchestrator
+// lease around a batch of calls, matching how it already leases a batch of
+// Ollama embedding calls today — this function does not acquire one itself.
+export async function embed(modelPath: string, text: string): Promise<number[]> {
+    assertGenerationCanStart();
+    const gpuLayers = resolveGpuLayers("auto", undefined, undefined);
+    const cacheKey = modelCacheKey(modelPath, gpuLayers);
+    const model = await loadModel(modelPath, gpuLayers);
+    assertGenerationCanStart();
+    activeModelUsers.set(cacheKey, (activeModelUsers.get(cacheKey) ?? 0) + 1);
+    modelLastUsed.set(cacheKey, Date.now());
+    let embeddingContext: Awaited<ReturnType<LlamaModel["createEmbeddingContext"]>> | null = null;
+    try {
+        embeddingContext = await model.createEmbeddingContext();
+        const embedding = await embeddingContext.getEmbeddingFor(text);
+        return [...embedding.vector];
     } finally {
-        if (context) await context.dispose();
+        if (embeddingContext) await embeddingContext.dispose();
         const users = Math.max(0, (activeModelUsers.get(cacheKey) ?? 1) - 1);
         if (users === 0) activeModelUsers.delete(cacheKey);
         else activeModelUsers.set(cacheKey, users);

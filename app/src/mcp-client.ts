@@ -6,6 +6,14 @@ import type { ToolDefinition } from "./providers/types";
 import { precompileToolSchema, clearValidatorsForServer, validateArgs } from "./mcp-schema-validation";
 import { getOAuthProvider, UnauthorizedError } from "./mcp-oauth";
 import { logger } from "./logger";
+import { mainResourceOrchestrator } from "./resource-orchestrator";
+import {
+    enforceManagedMcpToolCall,
+    enforceManagedMcpDataEgress,
+    filterManagedMcpTools,
+    resolveManagedMcpPolicy,
+    type ManagedMcpPolicy,
+} from "./managed-mcp-policy";
 
 export interface McpServerConfig {
     id: string;
@@ -71,6 +79,14 @@ interface Connection {
     // transport does.
     protocolVersion?: string;
     lastError?: string;
+    // Item 1: "MCP/local tool processes — Usually none GPU / Low-medium CPU /
+    // Bounded / Per-process limits." Only the stdio transport spawns a real
+    // local child process; held for the connection's whole lifetime (not
+    // per-tool-call — a request-scoped lease would add admission latency to
+    // every tool call in an agent loop for no real benefit once the process
+    // is already running) and released on disconnect. Absent for the http
+    // transport, which spawns nothing local.
+    resourceLeaseId?: string;
 }
 
 const connections = new Map<string, Connection>();
@@ -101,19 +117,34 @@ function filterBlockedTools(config: McpServerConfig, tools: McpToolInfo[]): McpT
     return kept;
 }
 
-async function connectStdio(config: McpServerConfig): Promise<Connection> {
+async function connectStdio(config: McpServerConfig, managedPolicy: ManagedMcpPolicy | null): Promise<Connection> {
     if (!config.command) throw new Error("This server has no command configured.");
-    const transport = new StdioClientTransport({
-        command: config.command,
-        args: config.args ?? [],
-        env: { ...(getDefaultInheritedEnv()), ...(config.env ?? {}) },
+    // Acquired (never queued: a slow-to-admit MCP connect would just look
+    // like a hung "Connect" button) before spawning, so a burst of servers
+    // being connected at once is bounded by ordinary CPU/RAM budget
+    // contention rather than left unbounded.
+    const lease = await mainResourceOrchestrator.acquire({
+        workloadKind: "mcp-tool",
+        priority: "user-interactive",
+        requirements: { cpuThreads: 1, ramMB: 0, accelerator: "none" },
+        queueIfUnavailable: false,
     });
-    const client = new Client(CLIENT_INFO, { capabilities: {} });
-    await client.connect(transport);
-    const list = await client.listTools();
-    const tools = filterBlockedTools(config, list.tools as McpToolInfo[]);
-    for (const tool of tools) precompileToolSchema(config.id, tool.name, tool.inputSchema);
-    return { config, client, transport, tools };
+    try {
+        const transport = new StdioClientTransport({
+            command: config.command,
+            args: config.args ?? [],
+            env: { ...(getDefaultInheritedEnv()), ...(config.env ?? {}) },
+        });
+        const client = new Client(CLIENT_INFO, { capabilities: {} });
+        await client.connect(transport);
+        const list = await client.listTools();
+        const tools = filterManagedMcpTools(managedPolicy, filterBlockedTools(config, list.tools as McpToolInfo[]));
+        for (const tool of tools) precompileToolSchema(config.id, tool.name, tool.inputSchema);
+        return { config, client, transport, tools, resourceLeaseId: lease.leaseId };
+    } catch (err) {
+        mainResourceOrchestrator.release(lease.leaseId);
+        throw err;
+    }
 }
 
 // StdioClientTransport's own getDefaultEnvironment() already filters to a
@@ -127,7 +158,7 @@ function getDefaultInheritedEnv(): Record<string, string> {
     return filtered;
 }
 
-async function connectHttp(config: McpServerConfig): Promise<Connection> {
+async function connectHttp(config: McpServerConfig, managedPolicy: ManagedMcpPolicy | null): Promise<Connection> {
     if (!config.url) throw new Error("This server has no URL configured.");
     const transport = new StreamableHTTPClientTransport(new URL(config.url), {
         requestInit: { headers: config.headers ?? {} },
@@ -143,7 +174,7 @@ async function connectHttp(config: McpServerConfig): Promise<Connection> {
         throw err;
     }
     const list = await client.listTools();
-    const tools = filterBlockedTools(config, list.tools as McpToolInfo[]);
+    const tools = filterManagedMcpTools(managedPolicy, filterBlockedTools(config, list.tools as McpToolInfo[]));
     for (const tool of tools) precompileToolSchema(config.id, tool.name, tool.inputSchema);
     return {
         config,
@@ -158,7 +189,13 @@ export async function connectServer(config: McpServerConfig): Promise<{ tools: M
     disconnectServer(config.id);
     let conn: Connection;
     try {
-        conn = config.transport === "stdio" ? await connectStdio(config) : await connectHttp(config);
+        // In managed mode the institutional registry is authoritative. Fetch
+        // it before opening a socket or spawning a child process so an
+        // unregistered endpoint never receives even a tools/list request.
+        const managedPolicy = await resolveManagedMcpPolicy(config);
+        conn = config.transport === "stdio"
+            ? await connectStdio(config, managedPolicy)
+            : await connectHttp(config, managedPolicy);
     } catch (err) {
         throw new Error(`Could not connect to MCP server "${config.name}": ${(err as Error).message}`);
     }
@@ -172,6 +209,7 @@ export function disconnectServer(id: string): void {
     conn.client.close().catch(() => {
         // Best-effort — the process/connection may already be gone.
     });
+    if (conn.resourceLeaseId) mainResourceOrchestrator.release(conn.resourceLeaseId);
     connections.delete(id);
     clearValidatorsForServer(id);
 }
@@ -323,6 +361,12 @@ export async function callMcpToolStructured(
     const { serverId, toolName } = splitQualifiedName(qualified);
     const conn = requireConnection(serverId);
 
+    // Re-resolve immediately before every call. This is intentionally not a
+    // connect-time-only cache: disabling an entry or removing a tool from the
+    // central allowlist must fail closed for an already-open connection.
+    const managedPolicy = await resolveManagedMcpPolicy(conn.config);
+    enforceManagedMcpToolCall(managedPolicy, toolName, args);
+
     // Defense in depth: filterBlockedTools() already keeps a blocked name out
     // of conn.tools (so it's never offered to the model or shown in the
     // approval card), but this call site is checked independently rather
@@ -383,24 +427,33 @@ export interface McpResourceContent {
 
 export async function listResources(serverId: string): Promise<McpResourceInfo[]> {
     const conn = requireConnection(serverId);
+    // Even metadata-only protocol operations re-check that this endpoint is
+    // still active for the currently selected organization.
+    await resolveManagedMcpPolicy(conn.config);
     const result = await conn.client.listResources();
     return result.resources as McpResourceInfo[];
 }
 
 export async function listResourceTemplates(serverId: string): Promise<McpResourceTemplateInfo[]> {
     const conn = requireConnection(serverId);
+    await resolveManagedMcpPolicy(conn.config);
     const result = await conn.client.listResourceTemplates();
     return result.resourceTemplates as McpResourceTemplateInfo[];
 }
 
 export async function readResource(serverId: string, uri: string): Promise<McpResourceContent[]> {
     const conn = requireConnection(serverId);
+    const managedPolicy = await resolveManagedMcpPolicy(conn.config);
+    // Resource URIs can themselves contain case/patient identifiers, so they
+    // are payload rather than harmless protocol metadata.
+    enforceManagedMcpDataEgress(managedPolicy, "MCP resource read", true);
     const result = await conn.client.readResource({ uri });
     return result.contents as McpResourceContent[];
 }
 
 export async function listPrompts(serverId: string): Promise<McpPromptInfo[]> {
     const conn = requireConnection(serverId);
+    await resolveManagedMcpPolicy(conn.config);
     const result = await conn.client.listPrompts();
     return result.prompts as McpPromptInfo[];
 }
@@ -411,6 +464,10 @@ export async function getPrompt(
     args?: Record<string, string>
 ): Promise<{ description?: string; messages: { role: string; content: unknown }[] }> {
     const conn = requireConnection(serverId);
+    const managedPolicy = await resolveManagedMcpPolicy(conn.config);
+    // Selecting a prompt by name is protocol metadata. User-supplied prompt
+    // arguments are data egress and are therefore blocked by metadata-only.
+    enforceManagedMcpDataEgress(managedPolicy, "MCP prompt request", Object.keys(args ?? {}).length > 0);
     return conn.client.getPrompt({ name, arguments: args });
 }
 

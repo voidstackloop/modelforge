@@ -1,6 +1,5 @@
 import { app, ipcMain, IpcMainInvokeEvent, shell } from "electron";
 import { getLogPath, getLogTail } from "../logger";
-import * as ollama from "../ollama-manager";
 import * as sessionsStore from "../sessions-store";
 import * as dataTransfer from "../data-transfer";
 import type { PromptPreset } from "../settings-store";
@@ -20,8 +19,6 @@ export function registerAppIpc(): void {
         node: process.versions.node,
         platform: process.platform,
         arch: process.arch,
-        ollamaHost: ollama.getHost(),
-        ollamaRunning: await ollama.isRunning(),
         logTail: getLogTail(),
     }));
     ipcMain.handle("app:openLogsFolder", () => shell.showItemInFolder(getLogPath()));
@@ -32,8 +29,8 @@ export function registerAppIpc(): void {
     ipcMain.handle("data:exportSessionMarkdown", (_event: IpcMainInvokeEvent, id: string) =>
         dataTransfer.exportSessionMarkdown(getMainWindow(), requireString(id, "session id"))
     );
-    ipcMain.handle("data:getSessionMarkdown", (_event: IpcMainInvokeEvent, id: string) => {
-        const session = sessionsStore.getSession(requireString(id, "session id"));
+    ipcMain.handle("data:getSessionMarkdown", async (_event: IpcMainInvokeEvent, id: string) => {
+        const session = await sessionsStore.getSession(requireString(id, "session id"));
         return session ? dataTransfer.sessionToMarkdown(session) : null;
     });
     ipcMain.handle("data:exportAll", () => dataTransfer.exportAllSessions(getMainWindow()));

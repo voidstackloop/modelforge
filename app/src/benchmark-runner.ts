@@ -97,9 +97,8 @@ export function buildContextPrompt(targetTokens: number): string {
 }
 
 // A benchmark requests placement semantics, not a magic layer count. For
-// node-llama-cpp, "max" maps to its memory-safe automatic offload; for Ollama,
-// leaving num_gpu undefined lets Ollama choose its supported maximum. CPU mode
-// remains explicit for both. This deliberately avoids the old `999` sentinel,
+// node-llama-cpp, "max" maps to its memory-safe automatic offload. CPU mode
+// remains explicit. This deliberately avoids the old `999` sentinel,
 // which could exceed a model's real layer count and is not a portable runtime
 // contract.
 export function benchmarkPlacementOptions(mode: InferenceMeasurement["mode"]): Pick<ChatOptions, "gpuLayerMode" | "gpuLayers"> {
@@ -289,12 +288,12 @@ export async function runBenchmark(
     }
 
     if (request.compareCpuGpu) {
-        if (request.provider === "ollama" || request.provider === "llamacpp") {
+        if (request.provider === "llamacpp") {
             result.comparison.supported = true;
             result.comparison.cpu = await measureInference(execute, request, "cpu", signal);
             result.comparison.gpu = await measureInference(execute, request, "gpu", signal);
         } else {
-            result.comparison.note = "CPU/GPU layer control is available only for Ollama and the built-in llama.cpp runtime.";
+            result.comparison.note = "CPU/GPU layer control is available only for the built-in llama.cpp runtime.";
         }
     }
     result.contextTests = await runContextTests(execute, request, signal);

@@ -9,7 +9,7 @@ import { useI18n } from "@/lib/i18n";
 import { OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS, formatModelRef, formatCustomModelRef, parseModelRef } from "@/lib/providers";
 import { estimateCost, formatCost } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
-import type { OllamaModel, LocalGgufModel, UsageInfo, ChatChunk, AppSettings } from "@/types/electron";
+import type { LocalGgufModel, UsageInfo, ChatChunk, AppSettings } from "@/types/electron";
 
 interface CandidateModel {
     ref: string;
@@ -27,7 +27,6 @@ interface CompareResult {
 export default function Compare() {
     const { t } = useI18n();
     const hasApi = typeof window !== "undefined" && !!window.api;
-    const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
     const [llamaCppModels, setLlamaCppModels] = useState<LocalGgufModel[]>([]);
     const [settings, setSettings] = useState<AppSettings | null>(null);
     const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -38,13 +37,11 @@ export default function Compare() {
 
     useEffect(() => {
         if (!hasApi) return;
-        window.api.ollama.listModels().then(setOllamaModels);
         window.api.llamacpp.listModels().then(setLlamaCppModels);
         window.api.settings.get().then(setSettings);
     }, [hasApi]);
 
     const candidates: CandidateModel[] = [
-        ...ollamaModels.map((m) => ({ ref: formatModelRef("ollama", m.name), label: m.name, group: "Ollama" })),
         ...llamaCppModels.map((m) => ({ ref: formatModelRef("llamacpp", m.name), label: m.label, group: "llama.cpp" })),
         ...OPENAI_MODELS.map((m) => ({ ref: formatModelRef("openai", m.id), label: m.label, group: "OpenAI" })),
         ...ANTHROPIC_MODELS.map((m) => ({ ref: formatModelRef("anthropic", m.id), label: m.label, group: "Anthropic" })),
@@ -65,8 +62,8 @@ export default function Compare() {
         }
         return [...groups.entries()];
         /* eslint-disable-next-line react-hooks/exhaustive-deps --
-           candidates is rebuilt fresh every render from ollamaModels/llamaCppModels/settings, already covered below */
-    }, [ollamaModels, llamaCppModels, settings, query]);
+           candidates is rebuilt fresh every render from llamaCppModels/settings, already covered below */
+    }, [llamaCppModels, settings, query]);
 
     function toggleModel(ref: string) {
         setSelected((prev) => {

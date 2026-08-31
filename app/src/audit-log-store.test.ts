@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import { app } from "electron";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as auditLogStore from "./audit-log-store";
@@ -361,6 +362,85 @@ describe("audit-log-store", () => {
 
             settingsStore.saveSettings({ auditLogBackend: undefined });
             expect(auditLogStore.listEvents()).toHaveLength(0);
+        });
+
+        it("carries events forward when the backend is toggled back and forth more than once in a session", () => {
+            // Settings → Audit & Privacy claims switching backends never loses
+            // events and "switching back to JSON afterward is always
+            // possible" — this must hold across repeated toggles within the
+            // same running process, not just the first switch.
+            auditLogStore.recordEvent("case-created", { targetId: "on-json-1" });
+
+            settingsStore.saveSettings({ auditLogBackend: "sqlite" });
+            auditLogStore.recordEvent("case-updated", { targetId: "on-sqlite-1" });
+
+            settingsStore.saveSettings({ auditLogBackend: "json" });
+            // Written while back on JSON — must see the sqlite-only event
+            // above, not just what was in the JSON file before the first
+            // switch.
+            expect(auditLogStore.listEvents().map((e) => e.targetId).sort()).toEqual(["on-json-1", "on-sqlite-1"]);
+            auditLogStore.recordEvent("case-updated", { targetId: "on-json-2" });
+
+            settingsStore.saveSettings({ auditLogBackend: "sqlite" });
+            // Written on sqlite again — must see everything recorded on JSON
+            // in between, including the event from the *second* time JSON was
+            // active, not just the pre-existing set from the first migration.
+            const events = auditLogStore.listEvents();
+            expect(events.map((e) => e.targetId).sort()).toEqual(["on-json-1", "on-json-2", "on-sqlite-1"]);
+            expect(auditLogStore.verifyChainIntegrity()).toMatchObject({ valid: true, checkedCount: 3 });
+        });
+
+        it("uses a configured custom directory for the SQLite database instead of the default userData folder", () => {
+            const customDir = fs.mkdtempSync(path.join(os.tmpdir(), "modelforge-audit-custom-"));
+            settingsStore.saveSettings({ auditLogBackend: "sqlite", auditLogSqliteDir: customDir });
+            try {
+                auditLogStore.recordEvent("case-created", { targetId: "in-custom-dir" });
+                expect(fs.existsSync(path.join(customDir, "audit-log.sqlite3"))).toBe(true);
+                expect(auditLogStore.listEvents().some((e) => e.targetId === "in-custom-dir")).toBe(true);
+            } finally {
+                settingsStore.saveSettings({ auditLogSqliteDir: undefined });
+            }
+        });
+
+        it("banks events from the previous custom directory into JSON when switching to a different directory, rather than stranding them", () => {
+            const dirA = fs.mkdtempSync(path.join(os.tmpdir(), "modelforge-audit-a-"));
+            const dirB = fs.mkdtempSync(path.join(os.tmpdir(), "modelforge-audit-b-"));
+
+            settingsStore.saveSettings({ auditLogBackend: "sqlite", auditLogSqliteDir: dirA });
+            auditLogStore.recordEvent("case-created", { targetId: "in-dir-a" });
+
+            // Switching directories while still on the sqlite backend — not a
+            // backend toggle, but must be treated as just as much of a
+            // transition (see activeStoreKey()/syncOnBackendTransition()).
+            settingsStore.saveSettings({ auditLogSqliteDir: dirB });
+            try {
+                const events = auditLogStore.listEvents();
+                expect(events.map((e) => e.targetId)).toContain("in-dir-a");
+
+                // Banked into JSON (the one location this store guarantees
+                // every event eventually reaches), not silently left only in
+                // dirA's now-abandoned file.
+                const jsonContents = JSON.parse(fs.readFileSync(auditLogPath(), "utf-8")) as { targetId?: string }[];
+                expect(jsonContents.some((e) => e.targetId === "in-dir-a")).toBe(true);
+            } finally {
+                settingsStore.saveSettings({ auditLogSqliteDir: undefined });
+            }
+        });
+
+        it("falls back to the default userData location when auditLogSqliteDir is unset", () => {
+            settingsStore.saveSettings({ auditLogBackend: "sqlite", auditLogSqliteDir: undefined });
+            auditLogStore.recordEvent("case-created", { targetId: "default-location" });
+            expect(fs.existsSync(path.join(app.getPath("userData"), "audit-log.sqlite3"))).toBe(true);
+        });
+
+        it("falls back to the default userData location when auditLogSqliteDir is a blank string", () => {
+            settingsStore.saveSettings({ auditLogBackend: "sqlite", auditLogSqliteDir: "   " });
+            try {
+                auditLogStore.recordEvent("case-created", { targetId: "blank-dir-fallback" });
+                expect(fs.existsSync(path.join(app.getPath("userData"), "audit-log.sqlite3"))).toBe(true);
+            } finally {
+                settingsStore.saveSettings({ auditLogSqliteDir: undefined });
+            }
         });
 
         it("purges expired events on write too, same as the JSON backend", async () => {

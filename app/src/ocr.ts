@@ -1,4 +1,5 @@
 import { createWorker, type Worker } from "tesseract.js";
+import { mainResourceOrchestrator } from "./resource-orchestrator";
 
 // A single lazily-created worker is reused across calls — spinning one up is
 // relatively expensive (loads the WASM engine + language data), and OCR
@@ -17,11 +18,20 @@ function getWorker(): Promise<Worker> {
     return workerPromise;
 }
 
+// Item 1: "OCR/document processing — Background unless user-triggered." This
+// module is only ever invoked from a direct user action (attaching an image
+// for text extraction), so user-interactive is the right default — there is
+// no scheduled/background OCR path in this codebase to distinguish from.
 export async function recognizeText(imageBase64: string): Promise<string> {
-    const worker = await getWorker();
-    const buffer = Buffer.from(imageBase64, "base64");
-    const {
-        data: { text },
-    } = await worker.recognize(buffer);
-    return text.trim();
+    return mainResourceOrchestrator.withLease(
+        { workloadKind: "user-ocr", priority: "user-interactive", requirements: { cpuThreads: 1, accelerator: "none" } },
+        async () => {
+            const worker = await getWorker();
+            const buffer = Buffer.from(imageBase64, "base64");
+            const {
+                data: { text },
+            } = await worker.recognize(buffer);
+            return text.trim();
+        }
+    );
 }

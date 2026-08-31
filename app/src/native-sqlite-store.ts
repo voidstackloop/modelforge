@@ -16,6 +16,7 @@ import { classifyLoadError, type NativeCapabilityReport } from "./native-capabil
 
 interface NativeAddon {
     openAuditStore(dbPath: string): void;
+    closeAuditStore(dbPath: string): void;
     migrateAuditLogFromJson(dbPath: string, jsonArray: string): MigrationReport;
     auditEventCount(dbPath: string): number;
     verifyAuditStore(dbPath: string): StoreIntegrityReport;
@@ -75,6 +76,19 @@ export function isNativeSqliteStoreAvailable(): boolean {
  * or catch, not silently proceed as if a store exists when it doesn't. */
 export function openAuditStore(dbPath: string): void {
     getNativeAddon().openAuditStore(dbPath);
+}
+
+/** Closes and evicts `dbPath`'s cached native connection, if one exists —
+ * a no-op otherwise, including when the addon was never loaded at all
+ * (deliberately not throwing here like every other export in this file:
+ * "nothing to close" is a normal, common outcome, not a capability failure
+ * the caller needs to react to). Must be called before deleting the
+ * database file out from under this store — see
+ * `store::audit::close_audit_store`'s own doc comment in the Rust addon for
+ * why skipping this would silently keep "cleared" data alive. */
+export function closeAuditStore(dbPath: string): void {
+    if (loadFailed || !nativeAddon) return;
+    nativeAddon.closeAuditStore(dbPath);
 }
 
 /** Imports events from `jsonArray` (the literal contents of audit-log.json)

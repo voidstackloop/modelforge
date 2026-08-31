@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { estimateCost, formatCost } from "./pricing";
 
 describe("estimateCost", () => {
-    it("returns null for a model with no known pricing (e.g. any Ollama model)", () => {
+    it("returns null for a model with no known pricing (e.g. any local GGUF model)", () => {
         expect(estimateCost("llama3.2", 1000, 500)).toBeNull();
     });
 

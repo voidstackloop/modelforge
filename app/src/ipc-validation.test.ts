@@ -3,7 +3,16 @@ import * as settingsStore from "./settings-store";
 import * as secretsStore from "./secrets-store";
 import * as mcpClient from "./mcp-client";
 import * as agentTools from "./agent-tools";
-import { agentToolArgsSchemas, appSettingsSchema, mcpServerConfigSchema, mcpToolArgsSchema, parseOrThrow, secretsSetInputSchema } from "./schemas";
+import * as medicalSafety from "./medical-safety";
+import {
+    agentToolArgsSchemas,
+    appSettingsSchema,
+    mcpServerConfigSchema,
+    mcpToolArgsSchema,
+    medicationConflictCheckInputSchema,
+    parseOrThrow,
+    secretsSetInputSchema,
+} from "./schemas";
 
 // main.ts has no unit-testable seam of its own — its handlers are thin
 // `ipcMain.handle(channel, (event, input) => { const validated =
@@ -121,5 +130,50 @@ describe("tools:execute validation gate", () => {
         const schema = agentToolArgsSchemas.git_status;
         const validated = parseOrThrow(schema, {}, 'arguments for tool "git_status"');
         expect(validated).toEqual({});
+    });
+});
+
+describe("patientCases:checkConflicts validation gate", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("rejects a payload where allergies is a string instead of an array, before checkMedicationConflicts runs", () => {
+        const spy = vi.spyOn(medicalSafety, "checkMedicationConflicts");
+        const malformed = { allergies: "penicillin", medications: [] };
+
+        expect(() => parseOrThrow(medicationConflictCheckInputSchema, malformed, "patientCases:checkConflicts arguments")).toThrow(
+            /Invalid patientCases:checkConflicts arguments: allergies/
+        );
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("rejects a medications array containing a non-string entry, before checkMedicationConflicts runs", () => {
+        const spy = vi.spyOn(medicalSafety, "checkMedicationConflicts");
+        const malformed = { allergies: [], medications: ["warfarin", { dose: "5mg" }] };
+
+        expect(() => parseOrThrow(medicationConflictCheckInputSchema, malformed, "patientCases:checkConflicts arguments")).toThrow(
+            /Invalid patientCases:checkConflicts arguments: medications/
+        );
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("rejects a completely malformed (non-object) payload", () => {
+        expect(() => parseOrThrow(medicationConflictCheckInputSchema, "not an object", "patientCases:checkConflicts arguments")).toThrow(
+            /Invalid patientCases:checkConflicts arguments/
+        );
+    });
+
+    it("the validation error message names only the malformed field, never echoing the submitted allergy/medication values", () => {
+        const malformed = { allergies: "SecretPatientAllergyXYZ", medications: [] };
+        try {
+            parseOrThrow(medicationConflictCheckInputSchema, malformed, "patientCases:checkConflicts arguments");
+            expect.unreachable("expected parseOrThrow to throw");
+        } catch (err) {
+            expect((err as Error).message).not.toContain("SecretPatientAllergyXYZ");
+        }
+    });
+
+    it("still dispatches a well-formed call", () => {
+        const validated = parseOrThrow(medicationConflictCheckInputSchema, { allergies: ["penicillin"], medications: ["amoxicillin"] }, "patientCases:checkConflicts arguments");
+        expect(validated).toEqual({ allergies: ["penicillin"], medications: ["amoxicillin"] });
     });
 });

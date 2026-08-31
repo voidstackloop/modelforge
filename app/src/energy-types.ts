@@ -1,4 +1,11 @@
-export type EnergyRuntime = "llamacpp" | "ollama" | "vllm" | "mlx" | "transformers";
+// "ollama" is intentionally still a valid *stored* value in old energy-usage
+// records (Ollama removal, docs/LOCAL_INFERENCE_HARDENING_PLAN.md) even
+// though nothing can produce it anymore — this type isn't schema-validated
+// on read (energy-usage-store.ts), so a historical record with that value
+// still round-trips fine; a lookup keyed on this type just won't have an
+// entry for it, which degrades gracefully (no label shown) rather than
+// crashing.
+export type EnergyRuntime = "llamacpp" | "vllm" | "mlx" | "transformers";
 export type EnergyMeasurement = "measured" | "estimated";
 
 export interface TimeOfUseTariff {

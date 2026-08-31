@@ -1,4 +1,4 @@
-import type { GgufAssessment, HfGgufFile } from "@/types/electron";
+import type { HfGgufFile } from "@/types/electron";
 
 const SHARD_PATTERN = /^(.*)-(\d{5})-of-(\d{5})\.gguf$/i;
 
@@ -22,12 +22,4 @@ export function ggufGroupSize(group: HfGgufFile[]): number | null {
     return group.length > 0 && group.every((file) => file.sizeBytes !== null)
         ? group.reduce((sum, file) => sum + (file.sizeBytes ?? 0), 0)
         : null;
-}
-
-export function ollamaTagForGguf(modelId: string, filename: string, assessment?: GgufAssessment): string {
-    const base = `hf.co/${modelId}`;
-    const tag = assessment && assessment.quantization !== "GGUF"
-        ? assessment.quantization
-        : filename.split("/").pop();
-    return tag ? `${base}:${tag}` : base;
 }

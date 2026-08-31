@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { assessGgufFiles, classifyGpuVendor, computeGpuTopology, detectGgufQuantization, detectModelFormat, parseMigInstancesFromNvidiaSmiL, recommendModels, recommendModelsWithML, resolveAutomaticRuntime, type GpuInfo, type GpuTopology, type SystemSpecs } from "./system-specs";
+import { assessGgufFiles, classifyGpuVendor, computeGpuTopology, detectGgufQuantization, detectModelFormat, MODEL_CATALOG, parseMigInstancesFromNvidiaSmiL, recommendModels, recommendModelsWithML, resolveAutomaticRuntime, type GpuInfo, type GpuTopology, type SystemSpecs } from "./system-specs";
 
 function baseTopology(overrides: Partial<GpuTopology> = {}): GpuTopology {
     return {
@@ -59,7 +59,54 @@ describe("classifyGpuVendor", () => {
     });
 });
 
+/**
+ * docs/LOCAL_INFERENCE_HARDENING_PLAN.md §2.3: every catalog entry's `name`
+ * is an Ollama tag with no llama.cpp equivalent — huggingFaceSearchQuery is
+ * what Settings.tsx routes a "Download" click to once the recommended
+ * runtime isn't Ollama (see downloadRecommendedModel there). Guards against
+ * a future catalog entry being added without one.
+ */
+describe("MODEL_CATALOG", () => {
+    it("gives every entry a non-empty Hugging Face search query", () => {
+        for (const model of MODEL_CATALOG) {
+            expect(model.huggingFaceSearchQuery, `${model.name} is missing huggingFaceSearchQuery`).toBeTruthy();
+            expect(model.huggingFaceSearchQuery.trim().length).toBeGreaterThan(0);
+        }
+    });
+
+    it("never uses the Ollama tag itself as the search query — it wouldn't surface a real GGUF repo", () => {
+        for (const model of MODEL_CATALOG) {
+            expect(model.huggingFaceSearchQuery).not.toBe(model.name);
+        }
+    });
+});
+
 describe("recommendModels", () => {
+    // Regression guard: recommendModels() used to resolve its "automatic"
+    // default runtime via resolveAutomaticRuntime("ollama", specs) — a
+    // hardcoded literal that returned "ollama" on every non-Apple-Silicon
+    // machine for any model recommended as "Runs fully on GPU"/"Requires
+    // tensor parallelism" (the two outcomes that don't separately override
+    // recommendedRuntime to "llamacpp"). Ollama's removal makes "ollama" an
+    // invalid value nothing can act on — Settings.tsx's download routing
+    // would have silently called the now-deleted Ollama pull IPC channel for
+    // exactly this outcome. Caught by direct code review while removing
+    // Ollama, not by an earlier version of this test — added here so it
+    // can't silently regress again.
+    it("never recommends the removed \"ollama\" runtime, on any platform or GPU outcome", () => {
+        const withBigGpu = recommendModels(baseSpecs({
+            totalRAMGB: 64, freeRAMGB: 48,
+            gpu: { name: "RTX 6000 Ada", vramGB: 48, vendor: "nvidia" },
+            gpus: [{ name: "RTX 6000 Ada", vramGB: 48, vendor: "nvidia" }],
+        }));
+        const withNoGpu = recommendModels(baseSpecs({ totalRAMGB: 16 }));
+        for (const result of [withBigGpu, withNoGpu]) {
+            for (const model of result.models) {
+                expect(model.recommendedRuntime).not.toBe("ollama");
+            }
+        }
+    });
+
     it("falls back to RAM-based sizing when there's no GPU", () => {
         const result = recommendModels(baseSpecs({ totalRAMGB: 16 }));
         expect(result.usableVRAMGB).toBe(0);
@@ -310,10 +357,6 @@ describe("resolveAutomaticRuntime", () => {
         expect(resolveAutomaticRuntime("mlx", appleSilicon)).toBe("mlx");
         expect(resolveAutomaticRuntime("mlx", intelMac)).toBe("transformers");
         expect(resolveAutomaticRuntime("mlx", linuxNvidia)).toBe("transformers");
-    });
-    it("routes Ollama-library models to Ollama, or MLX on Apple Silicon", () => {
-        expect(resolveAutomaticRuntime("ollama", linuxNvidia)).toBe("ollama");
-        expect(resolveAutomaticRuntime("ollama", appleSilicon)).toBe("mlx");
     });
     it("falls back to Transformers for unrecognized formats", () => {
         expect(resolveAutomaticRuntime("unknown", linuxNvidia)).toBe("transformers");
