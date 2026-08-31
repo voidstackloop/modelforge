@@ -7,15 +7,78 @@
 // can reuse its existing parsing/sorting/purge/hash-verification logic
 // unchanged regardless of which backend is active.
 //
-// Every function opens its own short-lived connection rather than holding
-// one across the N-API boundary — simpler to reason about (no Send/Sync
-// juggling of a live `Connection` handed to JS) and appropriate for a
-// scaffold that isn't on any hot path. A real cutover would likely want a
-// pooled/held connection; that's a decision for when this actually replaces
-// the JSON path, not before.
-
+// Every function shares one cached, already-initialized connection per
+// db_path for the life of this process (see `cached_connection` below)
+// rather than each opening its own — this stopped being an academic
+// tradeoff once `audit-log-store.ts`'s `recordEventSqlite` started calling
+// several of these functions (open, get-last-hash, migrate-one-event,
+// maybe-purge, maybe-trim) on every single recorded audit event: with a
+// fresh connection each time, that meant re-opening the file and re-running
+// `CREATE TABLE IF NOT EXISTS`/`PRAGMA` setup up to five times per event, all
+// synchronously on whatever thread called this `#[napi]` function — none of
+// these are `async fn`, so napi-rs runs them directly on the calling JS
+// thread (Electron's main thread), not a tokio worker.
+// Caching the connection removes that repeated setup cost; it does not by
+// itself move the work off the calling thread, which would mean making
+// these `async fn` with the actual rusqlite calls inside
+// `tokio::task::spawn_blocking` — not done here because every caller up
+// through `audit-log-store.ts`'s public API is synchronous today, and the
+// hash-chain in `recordEventSqlite` depends on strict call-order (each
+// event's `previousEventHash` must observe the prior call's effect before
+// the next begins); converting the whole chain to async without breaking
+// that ordering is a larger, separately-scoped change.
 use napi_derive::napi;
 use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+
+static CONNECTIONS: OnceLock<StdMutex<HashMap<String, Arc<StdMutex<Connection>>>>> =
+    OnceLock::new();
+
+/// Returns a shared, already-initialized connection for `db_path`,
+/// opening it (and running schema setup, WAL/pragma configuration, and
+/// permission hardening — see `open_connection`) only the first time this
+/// process sees this path; every later call reuses the same live
+/// connection. The `Arc<StdMutex<...>>` also means two calls into this
+/// module for the same `db_path` can never interleave their SQL against the
+/// same `Connection` object even if a future caller stopped being strictly
+/// sequential — a correctness backstop, not the primary defense (that's
+/// still "every current caller awaits/completes one call before the next").
+fn cached_connection(db_path: &str) -> rusqlite::Result<Arc<StdMutex<Connection>>> {
+    let mut connections = CONNECTIONS
+        .get_or_init(|| StdMutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if let Some(existing) = connections.get(db_path) {
+        return Ok(existing.clone());
+    }
+    let conn = Arc::new(StdMutex::new(open_connection(db_path)?));
+    connections.insert(db_path.to_string(), conn.clone());
+    Ok(conn)
+}
+
+/// Best-effort: restricts the audit database and its WAL-mode sidecar files
+/// (`-wal`, `-shm` — both can transiently hold the same event data as the
+/// main file under WAL mode) to owner-only access, matching
+/// `datastore::write_json_file_atomic`'s treatment of the JSON audit log and
+/// every other file in this app holding patient/conversation-adjacent data.
+/// A no-op on Windows, same platform guard `datastore.rs` and
+/// `json-store.ts`'s `restrictExistingPermissions` both already use — ACL
+/// semantics differ enough there that a Unix mode bit isn't the right tool.
+/// Never fails the caller: unusual ownership or an exotic filesystem must
+/// not stop the audit store from opening.
+#[cfg(unix)]
+fn restrict_audit_file_permissions(db_path: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    const PRIVATE_FILE_MODE: u32 = 0o600;
+    for suffix in ["", "-wal", "-shm"] {
+        let path = format!("{db_path}{suffix}");
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(PRIVATE_FILE_MODE));
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_audit_file_permissions(_db_path: &str) {}
 
 const SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_version (
@@ -73,6 +136,7 @@ fn open_connection(db_path: &str) -> rusqlite::Result<Connection> {
     // future migration has something to compare against instead of having
     // to special-case "no version row at all" as its own case.
 
+    restrict_audit_file_permissions(db_path);
     Ok(conn)
 }
 
@@ -80,8 +144,25 @@ fn open_connection(db_path: &str) -> rusqlite::Result<Connection> {
 /// applies the schema. Idempotent — safe to call on every app start.
 #[napi]
 pub fn open_audit_store(db_path: String) -> napi::Result<()> {
-    open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    cached_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
     Ok(())
+}
+
+/// Evicts and closes `db_path`'s cached connection, if one exists — a no-op
+/// otherwise. Required before deleting the database file out from under
+/// this store (`audit-log-store.ts`'s `clearAll()`): with a cached
+/// connection (see `cached_connection` above), unlinking the file on disk
+/// doesn't stop that connection from reading/writing the now-detached inode
+/// — on Unix this silently keeps "cleared" data alive and reachable through
+/// the stale connection, and a subsequent open of the same path would reuse
+/// it instead of seeing a fresh, empty file. Calling this first makes the
+/// next call for this `db_path` open a genuinely new connection against
+/// whatever's on disk at that path when it's called.
+#[napi]
+pub fn close_audit_store(db_path: String) {
+    if let Some(connections) = CONNECTIONS.get() {
+        connections.lock().unwrap().remove(&db_path);
+    }
 }
 
 #[napi(object)]
@@ -106,8 +187,9 @@ pub fn migrate_audit_log_from_json(
     let events: Vec<serde_json::Value> = serde_json::from_str(&json_array)
         .map_err(|err| napi::Error::from_reason(format!("invalid JSON: {err}")))?;
 
-    let mut conn =
-        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let conn =
+        cached_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let mut conn = conn.lock().unwrap();
     let tx = conn
         .transaction()
         .map_err(|err| napi::Error::from_reason(err.to_string()))?;
@@ -175,7 +257,8 @@ pub fn migrate_audit_log_from_json(
 #[napi]
 pub fn audit_event_count(db_path: String) -> napi::Result<u32> {
     let conn =
-        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        cached_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let conn = conn.lock().unwrap();
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
         .map_err(|err| napi::Error::from_reason(err.to_string()))?;
@@ -196,7 +279,8 @@ pub struct StoreIntegrityReport {
 #[napi]
 pub fn verify_audit_store(db_path: String) -> napi::Result<StoreIntegrityReport> {
     let conn =
-        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        cached_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let conn = conn.lock().unwrap();
     let detail: String = conn
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .map_err(|err| napi::Error::from_reason(err.to_string()))?;
@@ -218,7 +302,8 @@ pub fn verify_audit_store(db_path: String) -> napi::Result<StoreIntegrityReport>
 #[napi]
 pub fn get_last_audit_event_hash(db_path: String) -> napi::Result<Option<String>> {
     let conn =
-        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        cached_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let conn = conn.lock().unwrap();
     // Two independently-nullable layers here: `.optional()` handles "no
     // rows at all" (empty store), and the inner `Option<String>` handles
     // "a row exists but its event_hash column is SQL NULL" (a legacy-shaped
@@ -242,7 +327,8 @@ pub fn get_last_audit_event_hash(db_path: String) -> napi::Result<Option<String>
 #[napi]
 pub fn list_audit_events_json(db_path: String) -> napi::Result<String> {
     let conn =
-        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        cached_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let conn = conn.lock().unwrap();
     let mut stmt = conn
         .prepare(
             "SELECT id, timestamp, action_category, target_type, target_id, detail,
@@ -292,7 +378,8 @@ pub fn list_audit_events_json(db_path: String) -> napi::Result<String> {
 #[napi]
 pub fn trim_audit_events_to_cap(db_path: String, keep_count: u32) -> napi::Result<u32> {
     let conn =
-        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        cached_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let conn = conn.lock().unwrap();
     conn.execute(
         "DELETE FROM audit_events WHERE rowid IN (
             SELECT rowid FROM audit_events ORDER BY rowid ASC
@@ -312,7 +399,8 @@ pub fn trim_audit_events_to_cap(db_path: String, keep_count: u32) -> napi::Resul
 #[napi]
 pub fn purge_audit_events_older_than(db_path: String, cutoff_iso: String) -> napi::Result<u32> {
     let conn =
-        open_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        cached_connection(&db_path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let conn = conn.lock().unwrap();
     conn.execute(
         "DELETE FROM audit_events WHERE timestamp < ?1",
         params![cutoff_iso],
@@ -360,6 +448,126 @@ mod tests {
         open_audit_store(path.clone()).unwrap();
         open_audit_store(path.clone()).unwrap();
         assert_eq!(audit_event_count(path).unwrap(), 0);
+    }
+
+    #[test]
+    fn cached_connection_returns_the_same_connection_for_the_same_path() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        let first = cached_connection(&path).unwrap();
+        let second = cached_connection(&path).unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "the same db_path must reuse one cached connection, not open a new one"
+        );
+    }
+
+    #[test]
+    fn cached_connection_returns_distinct_connections_for_distinct_paths() {
+        let dir = tempdir().unwrap();
+        let a = cached_connection(&db_path(&dir)).unwrap();
+        let other_path = dir
+            .path()
+            .join("other.sqlite3")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let b = cached_connection(&other_path).unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn a_write_through_one_napi_call_is_immediately_visible_to_the_next_against_the_cached_connection()
+     {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        let json = r#"[{"id":"a","timestamp":"2026-01-01T00:00:00.000Z","actionCategory":"case-created"}]"#;
+        migrate_audit_log_from_json(path.clone(), json.to_string()).unwrap();
+        // If this read opened a fresh, unrelated connection instead of the
+        // one migrate_audit_log_from_json just wrote through, WAL semantics
+        // would still make this pass (committed writes are visible to a new
+        // reader) — the real point of this test is documentation-by-example
+        // that caching didn't change the observable read-your-writes
+        // behavior every other test in this file already depends on.
+        assert_eq!(audit_event_count(path).unwrap(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_audit_store_restricts_the_database_file_to_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        open_audit_store(path.clone()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wal_mode_sidecar_files_are_also_restricted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        // A write is needed for SQLite to actually materialize the -wal
+        // sidecar under WAL mode — opening alone may not.
+        migrate_audit_log_from_json(
+            path.clone(),
+            r#"[{"id":"a","timestamp":"2026-01-01T00:00:00.000Z","actionCategory":"case-created"}]"#.to_string(),
+        )
+        .unwrap();
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = format!("{path}{suffix}");
+            if let Ok(metadata) = std::fs::metadata(&sidecar) {
+                assert_eq!(
+                    metadata.permissions().mode() & 0o777,
+                    0o600,
+                    "{sidecar} should be owner-only"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricting_permissions_on_a_path_with_no_sidecar_files_yet_does_not_panic() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+        // No file exists at all yet — set_permissions on all three
+        // candidate paths must fail silently, not panic.
+        restrict_audit_file_permissions(&path);
+    }
+
+    #[test]
+    fn close_audit_store_is_a_no_op_for_a_path_that_was_never_opened() {
+        let dir = tempdir().unwrap();
+        close_audit_store(db_path(&dir)); // must not panic
+    }
+
+    #[test]
+    fn after_close_and_a_deleted_file_the_next_open_starts_genuinely_fresh() {
+        let dir = tempdir().unwrap();
+        let path = db_path(&dir);
+
+        migrate_audit_log_from_json(
+            path.clone(),
+            r#"[{"id":"a","timestamp":"2026-01-01T00:00:00.000Z","actionCategory":"case-created"}]"#.to_string(),
+        )
+        .unwrap();
+        assert_eq!(audit_event_count(path.clone()).unwrap(), 1);
+
+        // Simulates audit-log-store.ts's clearAll(): close the cached
+        // connection, then delete the file out from under it, exactly the
+        // sequence that silently kept stale data alive before
+        // close_audit_store existed.
+        close_audit_store(path.clone());
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(
+            audit_event_count(path).unwrap(),
+            0,
+            "a fresh open after close+delete must not still see the old (now-unlinked) data"
+        );
     }
 
     #[test]

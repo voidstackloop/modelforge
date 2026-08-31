@@ -58,12 +58,20 @@ pub struct DownloadProgress {
 /// single stream otherwise). Mirrors the signature and observable behavior
 /// of the TypeScript `downloadGgufFile` it replaces, so callers don't need
 /// to change.
+///
+/// `expected_sha256`, when given, is checked the same way the job-based
+/// `DownloadManager` already checks each shard's (see `download::job`'s
+/// `run_job_with`) — after the transfer completes, before the caller can
+/// treat the file as trustworthy. A mismatch deletes the finished file
+/// rather than leaving corrupt bytes behind under a name that looks like a
+/// successful download.
 #[napi]
 pub async fn download_gguf_file(
     model_id: String,
     filename: String,
     dest_path: String,
     token: Option<String>,
+    expected_sha256: Option<String>,
     on_progress: ThreadsafeFunction<DownloadProgress>,
 ) -> napi::Result<()> {
     let on_progress = Arc::new(on_progress);
@@ -81,12 +89,89 @@ pub async fn download_gguf_file(
 
     download::run(
         url,
-        filename,
-        dest_path,
+        filename.clone(),
+        dest_path.clone(),
         token,
         progress_fn,
         download::DownloadControls::default(),
     )
     .await
-    .map_err(napi::Error::from)
+    .map_err(napi::Error::from)?;
+
+    verify_or_cleanup(&dest_path, &filename, expected_sha256.as_deref())
+        .await
+        .map_err(napi::Error::from)
+}
+
+/// Extracted from `download_gguf_file` so it's testable with plain
+/// `cargo test` — unlike that function, this takes no `ThreadsafeFunction`,
+/// which needs a live JS environment to construct.
+async fn verify_or_cleanup(
+    dest_path: &str,
+    filename: &str,
+    expected_sha256: Option<&str>,
+) -> Result<(), crate::error::DownloadError> {
+    let Some(expected) = expected_sha256 else {
+        return Ok(());
+    };
+    if let Err(e) =
+        download::verify::verify_sha256(std::path::Path::new(dest_path), filename, expected).await
+    {
+        // Corrupt bytes, not an incomplete transfer — same treatment
+        // download::job::run_job_with gives a checksum-mismatched shard: the
+        // finished file isn't trustworthy and must not be left around to be
+        // mistaken for a real, usable model.
+        tokio::fs::remove_file(dest_path).await.ok();
+        return Err(e);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod verify_or_cleanup_tests {
+    use super::verify_or_cleanup;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn no_expected_hash_skips_verification_and_keeps_the_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("model.gguf");
+        std::fs::write(&path, b"hello world").unwrap();
+
+        verify_or_cleanup(path.to_str().unwrap(), "model.gguf", None)
+            .await
+            .expect("no expected hash means nothing to check");
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn matching_hash_succeeds_and_keeps_the_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("model.gguf");
+        std::fs::write(&path, b"hello world").unwrap();
+        let expected = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+        verify_or_cleanup(path.to_str().unwrap(), "model.gguf", Some(expected))
+            .await
+            .expect("hash matches");
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn mismatched_hash_fails_and_deletes_the_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("model.gguf");
+        std::fs::write(&path, b"hello world").unwrap();
+
+        let err = verify_or_cleanup(
+            path.to_str().unwrap(),
+            "model.gguf",
+            Some("0000000000000000000000000000000000000000000000000000000000000000"),
+        )
+        .await
+        .expect_err("hash should not match");
+
+        assert_eq!(err.kind(), "verification_failed");
+        assert!(!path.exists(), "a corrupt result must not be left on disk");
+    }
 }

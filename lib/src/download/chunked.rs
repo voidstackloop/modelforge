@@ -43,8 +43,9 @@ pub async fn run(
 ) -> Result<(), DownloadError> {
     let part_length_matches =
         std::fs::metadata(part_path).is_ok_and(|metadata| metadata.len() == total_bytes);
-    let existing = DownloadState::load(state_path)
-        .filter(|s| part_length_matches && s.matches(total_bytes, etag.as_deref()));
+    let existing = DownloadState::load(state_path).filter(|s| {
+        part_length_matches && s.matches(total_bytes, etag.as_deref()) && s.is_structurally_valid()
+    });
 
     let state = match existing {
         Some(s) => s,
@@ -297,7 +298,12 @@ async fn download_chunk_once(
                 file.flush().await.ok();
                 let mut guard = state.lock().await;
                 guard.chunks[chunk.index as usize].received = received_here;
-                let _ = guard.save(state_path);
+                // Held across the awaited spawn_blocking call rather than
+                // dropped early — see the periodic-checkpoint save below
+                // for why that matters.
+                let snapshot = guard.clone();
+                let checkpoint_path = state_path.to_path_buf();
+                let _ = tokio::task::spawn_blocking(move || snapshot.save(&checkpoint_path)).await;
                 return Err(DownloadError::Paused { filename: filename.to_string() });
             }
             item = stream.next() => item,
@@ -322,7 +328,24 @@ async fn download_chunk_once(
             guard.chunks[chunk.index as usize].received = received_here;
             if since_checkpoint >= CHECKPOINT_INTERVAL_BYTES {
                 since_checkpoint = 0;
-                let _ = guard.save(state_path);
+                // Runs the actual blocking `std::fs::write` (inside
+                // DownloadState::save) on tokio's dedicated blocking thread
+                // pool instead of this worker thread, which up to
+                // MAX_WORKERS other chunk tasks may be sharing — a plain
+                // synchronous save here used to stall whichever worker
+                // thread happened to be running this task for the whole
+                // write, not just the other chunks waiting on this same
+                // `state` mutex. The guard is deliberately held across the
+                // awaited spawn_blocking call rather than dropped before
+                // it: dropping it early would let two chunk workers' own
+                // snapshot-then-write sequences interleave out of order
+                // (an older snapshot's write landing on disk after a
+                // newer one's — a lost update). Holding it preserves the
+                // exact original serialization; only *where* the blocking
+                // syscall runs changes.
+                let snapshot = guard.clone();
+                let checkpoint_path = state_path.to_path_buf();
+                let _ = tokio::task::spawn_blocking(move || snapshot.save(&checkpoint_path)).await;
             }
         }
     }
@@ -332,7 +355,12 @@ async fn download_chunk_once(
     let mut guard = state.lock().await;
     guard.chunks[chunk.index as usize].received = received_here;
     guard.chunks[chunk.index as usize].done = done;
-    let _ = guard.save(state_path);
+    // Guard held across the awaited spawn_blocking call — see the
+    // periodic-checkpoint save above for why dropping it before the write
+    // would risk a lost update between two chunk workers' end-of-chunk saves.
+    let snapshot = guard.clone();
+    let checkpoint_path = state_path.to_path_buf();
+    let _ = tokio::task::spawn_blocking(move || snapshot.save(&checkpoint_path)).await;
     drop(guard);
 
     if !done {

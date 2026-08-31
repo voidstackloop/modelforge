@@ -10,17 +10,77 @@ pub mod verify;
 
 use crate::error::DownloadError;
 use arc_swap::ArcSwapOption;
+use dashmap::DashMap;
 use governor::DefaultDirectRateLimiter;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use reqwest::{Client, StatusCode, Url};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 
 pub use progress::{ProgressFn, SpeedTracker};
+
+/// Process-wide registry of in-flight destination paths, so two `run()`
+/// calls that happen to target the same file — a double-submitted request,
+/// or a legacy single-file call racing a job-based shard download — never
+/// both open/truncate/rename the same `.part` file at once (see
+/// `chunked::run`'s `.truncate(true)` and `single_stream::run`'s own
+/// truncate-on-fresh-start: neither takes any lock of its own, both assume
+/// they're the only writer). This is in-process only — it does not protect
+/// against a second OS process (a second app instance) targeting the same
+/// path; that would need an OS-level advisory lock file, which nothing in
+/// this codebase does today for downloads specifically (fs4, already a
+/// dependency here for disk-space queries, could provide one in a future
+/// pass if two-process contention on the same download becomes a real
+/// scenario — single-instance enforcement elsewhere in the app is the
+/// current mitigation for that case).
+static DESTINATION_LOCKS: OnceLock<DashMap<PathBuf, Arc<AsyncMutex<()>>>> = OnceLock::new();
+
+fn destination_locks() -> &'static DashMap<PathBuf, Arc<AsyncMutex<()>>> {
+    DESTINATION_LOCKS.get_or_init(DashMap::new)
+}
+
+/// Holds the per-`dest_path` exclusive lock for as long as it's alive —
+/// acquired once at the top of `run()` and released when `run()` returns via
+/// any path (success, error, or an early cancel/pause return), via normal
+/// Rust drop-at-end-of-scope. Cancellation is not honored while *waiting*
+/// for this lock (only once held, via the existing `ctl.cancel`/`ctl.pause`
+/// checks inside `run()`) — a second call queued behind a real download to
+/// the same path is expected to be a rare, short-lived edge case (a
+/// double-submitted request), not a normal occurrence worth adding
+/// cancel-aware queuing for.
+struct DestinationGuard {
+    path: PathBuf,
+    _permit: OwnedMutexGuard<()>,
+}
+
+impl Drop for DestinationGuard {
+    fn drop(&mut self) {
+        // Best-effort: only drop the registry entry itself if nothing else
+        // is waiting on it (this guard's Arc plus the map's own Arc are the
+        // only two references left), so the map doesn't grow forever across
+        // a long process's many distinct downloads — not a correctness
+        // requirement, just tidiness.
+        destination_locks().remove_if(&self.path, |_, lock| Arc::strong_count(lock) <= 2);
+    }
+}
+
+async fn lock_destination(dest_path: &Path) -> DestinationGuard {
+    let path = dest_path.to_path_buf();
+    let lock = destination_locks()
+        .entry(path.clone())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone();
+    let permit = lock.lock_owned().await;
+    DestinationGuard {
+        path,
+        _permit: permit,
+    }
+}
 
 /// Bundles the three "how should this download behave" knobs that the
 /// stateless per-shard primitive (`run`, and the `single_stream`/`chunked`
@@ -239,6 +299,10 @@ pub async fn run(
     ctl: DownloadControls,
 ) -> Result<(), DownloadError> {
     let dest_path = PathBuf::from(dest_path);
+    // Held for the rest of this function's scope (see DestinationGuard's own
+    // doc comment) — released automatically on every return path, including
+    // an early cancel/pause return below.
+    let _destination_guard = lock_destination(&dest_path).await;
     let part = part_path(&dest_path);
     let state = state_path(&dest_path);
 
@@ -297,6 +361,60 @@ pub async fn run(
             ctl,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod destination_lock_tests {
+    use super::lock_destination;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_second_lock_on_the_same_path_waits_for_the_first_to_be_dropped() {
+        let path = PathBuf::from("/tmp/destination-lock-test-same-path.gguf");
+        let overlapped = Arc::new(AtomicBool::new(false));
+
+        let first = lock_destination(&path).await;
+        let overlapped_clone = overlapped.clone();
+        let path_clone = path.clone();
+        let waiter = tokio::spawn(async move {
+            let _second = lock_destination(&path_clone).await;
+            // If the second lock were granted while the first is still
+            // held, this would have already been set to true by the
+            // checker below before the drop(first) line runs.
+            overlapped_clone.store(true, Ordering::SeqCst);
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiter.is_finished(),
+            "the second lock must not be granted while the first is still held"
+        );
+        assert!(!overlapped.load(Ordering::SeqCst));
+
+        drop(first);
+        tokio::time::timeout(Duration::from_millis(200), waiter)
+            .await
+            .expect("the waiter should complete promptly once the first lock is released")
+            .unwrap();
+        assert!(overlapped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn locks_on_different_paths_do_not_block_each_other() {
+        let a = lock_destination(&PathBuf::from("/tmp/destination-lock-test-a.gguf")).await;
+        let waiter = tokio::spawn(async move {
+            let _b = lock_destination(&PathBuf::from("/tmp/destination-lock-test-b.gguf")).await;
+        });
+
+        tokio::time::timeout(Duration::from_millis(200), waiter)
+            .await
+            .expect("a lock on an unrelated path must not wait on this one")
+            .unwrap();
+        drop(a);
     }
 }
 
