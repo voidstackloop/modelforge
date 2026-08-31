@@ -1,0 +1,17 @@
+.git
+.github
+.graphify
+**/node_modules
+**/dist
+**/release
+**/coverage
+**/.env
+**/.env.*
+!**/.env.example
+e2e/test-results
+e2e/playwright-report
+graphify-out
+lib/target
+app/native
+*.log
+

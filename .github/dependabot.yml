@@ -7,6 +7,15 @@ updates:
     directory: /frontend
     schedule:
       interval: weekly
+    # A brand-new release sits for a week before Dependabot will propose it —
+    # protects against a typosquatted or freshly-compromised package version
+    # landing in a PR within hours of publish (Semgrep:
+    # package_managers.dependabot.dependabot-missing-cooldown, which checks
+    # for exactly this 7-day default). Applies to every update type here
+    # (default-days), not just majors: a malicious patch/minor release is
+    # exactly as dangerous as a malicious major one.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       # Security patches land immediately rather than waiting in a batched
@@ -22,6 +31,37 @@ updates:
     directory: /app
     schedule:
       interval: weekly
+    # A brand-new release sits for a week before Dependabot will propose it —
+    # protects against a typosquatted or freshly-compromised package version
+    # landing in a PR within hours of publish (Semgrep:
+    # package_managers.dependabot.dependabot-missing-cooldown, which checks
+    # for exactly this 7-day default). Applies to every update type here
+    # (default-days), not just majors: a malicious patch/minor release is
+    # exactly as dangerous as a malicious major one.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      production-dependencies:
+        applies-to: version-updates
+        dependency-type: production
+      development-dependencies:
+        applies-to: version-updates
+        dependency-type: development
+
+  - package-ecosystem: npm
+    directory: /admin-console
+    schedule:
+      interval: weekly
+    # A brand-new release sits for a week before Dependabot will propose it —
+    # protects against a typosquatted or freshly-compromised package version
+    # landing in a PR within hours of publish (Semgrep:
+    # package_managers.dependabot.dependabot-missing-cooldown, which checks
+    # for exactly this 7-day default). Applies to every update type here
+    # (default-days), not just majors: a malicious patch/minor release is
+    # exactly as dangerous as a malicious major one.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       production-dependencies:
@@ -35,12 +75,30 @@ updates:
     directory: /e2e
     schedule:
       interval: weekly
+    # A brand-new release sits for a week before Dependabot will propose it —
+    # protects against a typosquatted or freshly-compromised package version
+    # landing in a PR within hours of publish (Semgrep:
+    # package_managers.dependabot.dependabot-missing-cooldown, which checks
+    # for exactly this 7-day default). Applies to every update type here
+    # (default-days), not just majors: a malicious patch/minor release is
+    # exactly as dangerous as a malicious major one.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
 
   - package-ecosystem: npm
     directory: /mastervault-mcp-server
     schedule:
       interval: weekly
+    # A brand-new release sits for a week before Dependabot will propose it —
+    # protects against a typosquatted or freshly-compromised package version
+    # landing in a PR within hours of publish (Semgrep:
+    # package_managers.dependabot.dependabot-missing-cooldown, which checks
+    # for exactly this 7-day default). Applies to every update type here
+    # (default-days), not just majors: a malicious patch/minor release is
+    # exactly as dangerous as a malicious major one.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
 
   # lib/ is the napi-rs (Rust) download engine bound into the Electron app.
@@ -48,6 +106,15 @@ updates:
     directory: /lib
     schedule:
       interval: weekly
+    # A brand-new release sits for a week before Dependabot will propose it —
+    # protects against a typosquatted or freshly-compromised package version
+    # landing in a PR within hours of publish (Semgrep:
+    # package_managers.dependabot.dependabot-missing-cooldown, which checks
+    # for exactly this 7-day default). Applies to every update type here
+    # (default-days), not just majors: a malicious patch/minor release is
+    # exactly as dangerous as a malicious major one.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
 
   # ml/hardware-recommender is a standalone Python project (see ci.yml's
@@ -57,6 +124,15 @@ updates:
     directory: /ml/hardware-recommender
     schedule:
       interval: weekly
+    # A brand-new release sits for a week before Dependabot will propose it —
+    # protects against a typosquatted or freshly-compromised package version
+    # landing in a PR within hours of publish (Semgrep:
+    # package_managers.dependabot.dependabot-missing-cooldown, which checks
+    # for exactly this 7-day default). Applies to every update type here
+    # (default-days), not just majors: a malicious patch/minor release is
+    # exactly as dangerous as a malicious major one.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
 
   # The CI/release workflows' own actions (actions/checkout, setup-node, …)
@@ -65,4 +141,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # A brand-new release sits for a week before Dependabot will propose it —
+    # protects against a typosquatted or freshly-compromised package version
+    # landing in a PR within hours of publish (Semgrep:
+    # package_managers.dependabot.dependabot-missing-cooldown, which checks
+    # for exactly this 7-day default). Applies to every update type here
+    # (default-days), not just majors: a malicious patch/minor release is
+    # exactly as dangerous as a malicious major one.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5

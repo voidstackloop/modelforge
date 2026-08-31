@@ -1,0 +1,111 @@
+name: modelforge
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-modelforge}
+      POSTGRES_USER: modelforge_owner
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?set POSTGRES_OWNER_PASSWORD}
+      MODELFORGE_RUNTIME_DB_PASSWORD: ${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres-init-runtime-role.sh:/docker-entrypoint-initdb.d/10-runtime-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U modelforge_owner -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\" --maxmemory 512mb --maxmemory-policy volatile-lru"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  server:
+    image: ${MODELFORGE_SERVER_IMAGE:-modelforge-server:local}
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      target: production
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      OIDC_ISSUER: ${OIDC_ISSUER:?set OIDC_ISSUER}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:?set OIDC_AUDIENCE}
+      DATABASE_URL: postgres://modelforge_owner:${POSTGRES_OWNER_PASSWORD}@postgres:5432/${POSTGRES_DB:-modelforge}
+      RUNTIME_DATABASE_URL: postgres://modelforge_runtime:${POSTGRES_RUNTIME_PASSWORD}@postgres:5432/${POSTGRES_DB:-modelforge}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN}
+      TRUST_PROXY: "1"
+      IMAGING_LOCAL_ROOT: /var/lib/modelforge/imaging
+      IMAGING_ENCRYPTION_KEY: ${IMAGING_ENCRYPTION_KEY:?set IMAGING_ENCRYPTION_KEY}
+      POOL_MAX: ${POOL_MAX:-20}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+    volumes:
+      - imaging-data:/var/lib/modelforge/imaging
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  admin-console:
+    image: ${MODELFORGE_ADMIN_IMAGE:-modelforge-admin-console:local}
+    build:
+      context: .
+      dockerfile: admin-console/Dockerfile
+      target: production
+      args:
+        VITE_OIDC_ISSUER: ${OIDC_ISSUER:?set OIDC_ISSUER}
+        VITE_OIDC_CLIENT_ID: ${OIDC_ADMIN_CLIENT_ID:?set OIDC_ADMIN_CLIENT_ID}
+        VITE_OIDC_AUDIENCE: ${OIDC_AUDIENCE:?set OIDC_AUDIENCE}
+        VITE_API_BASE_URL: /api
+    ports:
+      - "${ADMIN_HTTPS_PROXY_PORT:-8080}:8080"
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+      - /var/cache/nginx:uid=101,gid=101,mode=0755
+      - /var/run:uid=101,gid=101,mode=0755
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  imaging-data:
+

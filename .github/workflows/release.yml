@@ -18,9 +18,9 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -76,7 +76,7 @@ jobs:
           echo "Found $matches artifact(s) matching '$pattern'."
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist-${{ matrix.os }}
           path: |
@@ -100,7 +100,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -142,11 +142,19 @@ jobs:
       - name: Create the release (no assets yet)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Interpolated via env vars, not directly in the `run:` script —
+          # `github` context data is attacker-influenceable in principle
+          # (Semgrep: yaml.github-actions.security.run-shell-injection) and
+          # should never be spliced straight into a shell script even where
+          # today's trigger (a version tag push) makes it low-risk in
+          # practice.
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1 \
-          || gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" \
+          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
+          || gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "$TAG" \
             --generate-notes \
             --draft=false
 
@@ -162,10 +170,14 @@ jobs:
       - name: Upload each release asset individually, with retry + size verification
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # See "Create the release" step's own comment on why these are env
+          # vars rather than direct `${{ github.* }}` interpolation in `run:`.
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           remote_size_of() {
-            gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq \
+            gh release view "$TAG" --repo "$REPO" --json assets --jq \
               '.assets[] | select(.name == "'"$1"'") | .size' 2>/dev/null || true
           }
           overall_missing=0
@@ -195,10 +207,10 @@ jobs:
                 # Only clean up a ghost/partial entry once we know one exists —
                 # never delete-then-fail-to-replace on the very first attempt.
                 if [ -n "$remote_size" ]; then
-                  gh release delete-asset "${{ github.ref_name }}" "$remote_name" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+                  gh release delete-asset "$TAG" "$remote_name" --repo "$REPO" --yes 2>/dev/null || true
                 fi
               fi
-              gh release upload "${{ github.ref_name }}" "$f" --repo "${{ github.repository }}" --clobber || true
+              gh release upload "$TAG" "$f" --repo "$REPO" --clobber || true
             done
             remote_size=$(remote_size_of "$remote_name")
             if [ -z "$remote_size" ] || [ "$remote_size" != "$local_size" ]; then

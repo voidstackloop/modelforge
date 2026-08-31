@@ -1,0 +1,123 @@
+name: modelforge-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: modelforge
+      POSTGRES_USER: modelforge_owner
+      POSTGRES_PASSWORD: ${DEV_DB_OWNER_PASSWORD:-modelforge-owner-dev}
+      MODELFORGE_RUNTIME_DB_PASSWORD: ${DEV_DB_RUNTIME_PASSWORD:-modelforge-runtime-dev}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+      - ./docker/postgres-init-runtime-role.sh:/docker-entrypoint-initdb.d/10-runtime-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U modelforge_owner -d modelforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-dev-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.2
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HOSTNAME: http://localhost:8080
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "${KEYCLOAK_PORT:-8080}:8080"
+    volumes:
+      - keycloak-dev-data:/opt/keycloak/data
+      - ./docker/keycloak/modelforge-realm.json:/opt/keycloak/data/import/modelforge-realm.json:ro
+    restart: unless-stopped
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      target: development
+    environment:
+      NODE_ENV: development
+      PORT: "4000"
+      OIDC_ISSUER: http://localhost:8080/realms/modelforge
+      OIDC_AUDIENCE: modelforge-api
+      OIDC_JWKS_URI: http://keycloak:8080/realms/modelforge/protocol/openid-connect/certs
+      DATABASE_URL: postgres://modelforge_owner:${DEV_DB_OWNER_PASSWORD:-modelforge-owner-dev}@postgres:5432/modelforge
+      RUNTIME_DATABASE_URL: postgres://modelforge_runtime:${DEV_DB_RUNTIME_PASSWORD:-modelforge-runtime-dev}@postgres:5432/modelforge
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_CONSOLE_ORIGIN: http://localhost:5174
+      IMAGING_LOCAL_ROOT: /var/lib/modelforge/imaging
+      # Exactly 32 bytes after base64 decoding. Development only.
+      IMAGING_ENCRYPTION_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
+      RATE_LIMIT_MAX: "1000"
+    ports:
+      - "${SERVER_PORT:-4000}:4000"
+    volumes:
+      - ./server/src:/workspace/server/src:ro
+      - ./server/migrations:/workspace/server/migrations:ro
+      - ./packages/contracts/src:/workspace/packages/contracts/src:ro
+      - imaging-dev-data:/var/lib/modelforge/imaging
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  admin-console:
+    build:
+      context: .
+      dockerfile: admin-console/Dockerfile
+      target: development
+    environment:
+      VITE_OIDC_ISSUER: http://localhost:8080/realms/modelforge
+      VITE_OIDC_CLIENT_ID: modelforge-admin
+      VITE_OIDC_AUDIENCE: modelforge-api
+      VITE_API_BASE_URL: /api
+      VITE_API_PROXY_TARGET: http://server:4000
+    ports:
+      - "${ADMIN_PORT:-5174}:5174"
+    volumes:
+      - ./admin-console/src:/workspace/admin-console/src:ro
+      - ./admin-console/index.html:/workspace/admin-console/index.html:ro
+      - ./admin-console/vite.config.ts:/workspace/admin-console/vite.config.ts:ro
+      - ./admin-console/tsconfig.json:/workspace/admin-console/tsconfig.json:ro
+      - ./admin-console/tsconfig.app.json:/workspace/admin-console/tsconfig.app.json:ro
+      - ./admin-console/tsconfig.node.json:/workspace/admin-console/tsconfig.node.json:ro
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-dev-data:
+  redis-dev-data:
+  keycloak-dev-data:
+  imaging-dev-data:
+

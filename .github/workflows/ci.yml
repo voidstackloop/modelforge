@@ -10,9 +10,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -61,6 +61,10 @@ jobs:
         working-directory: app
         run: npm run build
 
+      - name: Test mastervault-mcp-server
+        working-directory: mastervault-mcp-server
+        run: npm test
+
       - name: Build bundled mastervault-mcp-server (the copy ModelForge packages)
         working-directory: mastervault-mcp-server
         run: npm run build:bundled
@@ -78,6 +82,150 @@ jobs:
           cat worker-output.json
           test "$(grep -o 'mastervault_orient' worker-output.json | wc -l)" -ge 1
 
+  server:
+    # server/ (the Fastify IAM/patient-case service) has its own package
+    # boundary and DATABASE_URL/REDIS_URL-gated integration suites (see e.g.
+    # store/postgres-case-store.test.ts's own disclosure comment) that
+    # simply skip — not fail — when no real Postgres/Redis is reachable.
+    # Real services are wired below so those suites actually run in CI
+    # instead of only ever being exercised by a developer running them
+    # locally; docs/ENTERPRISE_ARCHITECTURE_ROADMAP.md's P0 backlog item 18
+    # ("Run PostgreSQL and Redis suites in mandatory CI... No gated/skipped
+    # enterprise suites") is exactly this gap.
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: modelforge
+          POSTGRES_PASSWORD: modelforge
+          POSTGRES_DB: modelforge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U modelforge"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # DATABASE_URL stays the migration-owner ("modelforge") role — every
+      # postgres-*.test.ts file runs its own runMigrations() against
+      # DATABASE_URL directly (see e.g. store/postgres-iam-store.test.ts),
+      # which needs CREATE SCHEMA/CREATE FUNCTION/ALTER DEFAULT PRIVILEGES
+      # rights a restricted runtime role deliberately doesn't have.
+      # RUNTIME_DATABASE_URL is the separate, restricted role created below
+      # — used by store/postgres-rls.test.ts to prove tenant isolation
+      # (RLS on shared control-plane tables, pooled-connection tenant-
+      # context cleanup) actually holds under a real NO BYPASSRLS,
+      # non-owning role, not just under whatever role happened to run the
+      # migrations. See migrations/010_runtime_role_grants.sql.
+      DATABASE_URL: postgres://modelforge:modelforge@localhost:5432/modelforge_test
+      RUNTIME_DATABASE_URL: postgres://modelforge_runtime:modelforge_runtime@localhost:5432/modelforge_test
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install postgresql-client (for role setup below)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Create restricted runtime database role
+        # Created here (as the modelforge owner role, over the same
+        # connection the app's migrations use) rather than via the
+        # postgres:16-alpine service container's own init hooks, so the
+        # exact privileges this role gets are visible in this workflow file
+        # next to DATABASE_URL/RUNTIME_DATABASE_URL, not buried in image
+        # config. NOSUPERUSER/NOBYPASSRLS is what makes
+        # migrations/008_control_plane_rls.sql's tenant_isolation policies
+        # actually apply to this role at all (a superuser or BYPASSRLS role
+        # ignores row-level security entirely, which would make the RLS
+        # penetration tests pass for the wrong reason). NOCREATEDB/
+        # NOCREATEROLE bounds what a compromised runtime process could do
+        # beyond the schemas/tables migrations/010 explicitly grants it.
+        run: |
+          PGPASSWORD=modelforge psql -h localhost -U modelforge -d modelforge_test -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'modelforge_runtime') THEN
+                  CREATE ROLE modelforge_runtime WITH LOGIN PASSWORD 'modelforge_runtime'
+                      NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION;
+              END IF;
+          END
+          $$;
+          GRANT CONNECT ON DATABASE modelforge_test TO modelforge_runtime;
+          SQL
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Typecheck server
+        working-directory: server
+        run: npm run typecheck
+
+      - name: Test server (Postgres- and Redis-backed suites included, not skipped)
+        working-directory: server
+        run: npm test
+
+      - name: Build server
+        working-directory: server
+        run: npm run build
+
+  admin-console:
+    # admin-console/ is a separate, standalone web app (its own trust
+    # boundary per docs/ENTERPRISE_MULTIUSER_ARCHITECTURE.md §5, not the
+    # Electron clinician app) for managing a ModelForge organization's IAM.
+    # Its own job for the same reason server/e2e are separate: independent
+    # dependency graph, no reason a flaky/slow run here should block them
+    # or vice versa.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: admin-console/package-lock.json
+
+      - name: Install admin-console dependencies
+        working-directory: admin-console
+        run: npm ci
+
+      - name: Typecheck admin-console
+        working-directory: admin-console
+        run: npx tsc -b
+
+      - name: Lint admin-console
+        working-directory: admin-console
+        run: npm run lint
+
+      - name: Test admin-console
+        working-directory: admin-console
+        run: npm test
+
+      - name: Build admin-console
+        working-directory: admin-console
+        run: npm run build
+
   e2e:
     # Electron E2E tests spin up a real Electron process and a Vite preview
     # server per test, which is slower and flakier than the unit-test job
@@ -86,9 +234,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -129,7 +277,7 @@ jobs:
 
       - name: Upload Playwright report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report
           path: e2e/playwright-report
@@ -158,12 +306,12 @@ jobs:
         working-directory: lib
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install rustfmt and clippy
         run: rustup component add rustfmt clippy
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -190,7 +338,7 @@ jobs:
       - name: Test
         run: cargo test
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -232,9 +380,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -267,11 +415,80 @@ jobs:
         working-directory: mastervault-mcp-server
         run: npx --yes @cyclonedx/cyclonedx-npm --output-file ../sbom-mastervault-mcp-server.cdx.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sbom
           path: sbom-*.cdx.json
           retention-days: 90
+
+  security:
+    # SAST + secret scanning — docs/ENTERPRISE_ARCHITECTURE_ROADMAP.md P1
+    # item 9 ("Add artifact signing, provenance, SAST, and secret-scanning
+    # gates"), minus the signing/provenance half: that needs real
+    # certificates/key-custody/HSM infrastructure this repository does not
+    # build (a standing instruction — see that item's own note in the
+    # roadmap's §14 P1 list). SAST and secret-scanning need neither, so
+    # they're not blocked on it. Its own job, independent of test/build, so
+    # a finding here is a distinct, unambiguous signal rather than mixed
+    # into an unrelated build failure.
+    #
+    # Both tools were run locally against this exact repository (working
+    # tree + full commit history) before this job was added, specifically
+    # to avoid shipping an untested gate that immediately red-lines CI on
+    # day one: gitleaks found zero leaks across 121 commits; Semgrep (see
+    # config below) found zero real findings after fixing what it caught
+    # (an unpinned-Actions supply-chain gap across every workflow file, two
+    # `github`-context shell-injection spots in release.yml, a missing
+    # explicit AES-GCM auth-tag length in app/src/case-encryption.ts, and a
+    # missing Dependabot cooldown period) — see docs/OBSERVABILITY.md's
+    # sibling P1 item 8 work for the same "verify locally before gating"
+    # approach applied to the metrics endpoint. The one excluded rule below
+    # is a genuine false-positive class for this codebase, not a suppressed
+    # real finding — see its own comment.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # gitleaks scans commit history, not just the working tree
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION=8.21.2
+          curl -sSL -o /tmp/gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Secret scan (gitleaks — full commit history)
+        run: gitleaks detect --source . --redact -v
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Semgrep
+        run: python -m pip install --upgrade semgrep
+
+      - name: SAST scan (Semgrep — OWASP/JS/TS community rulesets, no account required)
+        run: |
+          semgrep scan \
+            --config p/ci \
+            --config p/owasp-top-ten \
+            --config p/javascript \
+            --config p/typescript \
+            --exclude-rule javascript.express.security.audit.xss.direct-response-write.direct-response-write \
+            --error \
+            --metrics=off
+        # javascript.express.security.audit.xss.direct-response-write assumes
+        # an Express-style app rendering HTML from `res.send()`. Every route
+        # in server/ is a Fastify JSON API — `reply.send(jsonValue)` goes
+        # through Fastify's own JSON serializer, never raw HTML, so there is
+        # no XSS surface for this rule to be finding here. Confirmed by
+        # manual review of every one of the 39 matches this rule produced
+        # locally before adding this exclusion (see this job's own top
+        # comment) — not a blanket "trust the tool less" suppression.
 
   python-recommender:
     # ml/hardware-recommender/ is a standalone project (its own venv, own
@@ -287,9 +504,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip

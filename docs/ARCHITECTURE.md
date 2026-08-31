@@ -25,7 +25,7 @@ Electron's two-process split is used exactly as intended, with nothing loosened 
 
 - **Main process** (`app/src/main.ts`) — a normal Node.js process with full OS access. Owns the
   `BrowserWindow`, registers every `ipcMain.handle` channel, and is the only place that talks to
-  Ollama, cloud provider APIs, the filesystem, child processes, and the OS keychain.
+  local llama.cpp/vLLM inference, cloud provider APIs, the filesystem, child processes, and the OS keychain.
 - **Renderer process** (`frontend/`) — the UI, running with `contextIsolation: true` and
   `nodeIntegration: false`. It has no direct access to Node or Electron APIs.
 - **Preload script** (`app/src/preload.ts`) — the only bridge between them. It uses
@@ -34,11 +34,11 @@ Electron's two-process split is used exactly as intended, with nothing loosened 
   call the specific functions this file exposes — there is no generic "run arbitrary IPC channel"
   escape hatch.
 
-This means every capability the UI has — reading a file, starting Ollama, calling a cloud
+This means every capability the UI has — reading a file, starting local inference, calling a cloud
 provider, writing a setting — exists because a corresponding `ipcMain.handle("namespace:action", …)`
 was deliberately added in `main.ts` and mirrored in `preload.ts`. Grep for `ipcMain.handle` in
 `app/src/main.ts` for the authoritative, current list of every capability the renderer has; the
-channel names are namespaced by feature (`ollama:*`, `sessions:*`, `agent:*`, `downloads:*`,
+channel names are namespaced by feature (`llamacpp:*`, `localBackends:*`, `sessions:*`, `agent:*`, `downloads:*`,
 `data:*`, and so on).
 
 Streaming responses (chat tokens, download progress, terminal output) use the complementary
@@ -61,7 +61,7 @@ is request/response only.
   React context that owns in-memory chat/session state and talks to the main process through
   `window.electronAPI`.
 
-The renderer never talks to Ollama, OpenAI, Anthropic, etc. directly — every provider call is
+The renderer never talks to inference runtimes, OpenAI, Anthropic, etc. directly — every provider call is
 proxied through the main process so API keys never need to reach the renderer's JS context, and so
 CSP can block the renderer from making arbitrary network requests at all.
 
@@ -78,11 +78,12 @@ Roughly grouped by responsibility:
 |---|---|
 | Bootstrap | `main.ts` (window creation, all IPC registration), `menu.ts`, `preload.ts` |
 | Provider adapters | `providers/openai.ts`, `providers/anthropic.ts`, `providers/gemini.ts`, `providers/openai-compatible.ts` (shared implementation for every OpenAI-compatible custom endpoint), `providers/sse.ts` (shared streaming parser), `providers/types.ts` |
-| Local model runtimes | `ollama-manager.ts` (start/stop/pull/list against a local or remote Ollama daemon), `llamacpp-manager.ts` (GGUF inference via node-llama-cpp, GPU backend detection), `local-server-manager.ts` (custom OpenAI-compatible local backends: vLLM, LocalAI, TGI, etc.) |
+| Local model runtimes | `llamacpp-manager.ts` (in-process GGUF inference and GPU backend detection), `local-server-manager.ts` (authenticated, supervised vLLM/advanced OpenAI-compatible runtimes), and the central resource orchestrator |
 | Agent mode | `agent-tools.ts` (every tool implementation, workspace sandboxing, the destructive-command blocklist), `command-sandbox.ts` (OS-level sandboxing via bubblewrap/`sandbox-exec` where available), `terminal-manager.ts` (the embedded PTY-backed terminal panel), `mcp-client.ts` (external MCP server connections) |
 | Persistence | `json-store.ts` (shared atomic-write/corruption-recovery helper), `settings-store.ts`, `sessions-store.ts`, `projects-store.ts`, `secrets-store.ts` (OS-keychain-backed via Electron `safeStorage`), `scheduled-tasks-store.ts`, `download-jobs-store.ts`, `energy-usage-store.ts`, `patient-cases-store.ts`, `audit-log-store.ts`, `evidence-store.ts` (see [Clinical workspace](CLINICAL_WORKSPACE.md)) |
+| Enterprise foundation | `policy-store.ts` (signed, admin-managed settings — see [Central policy](CENTRAL_POLICY.md)), `backup-store.ts` (encrypted whole-profile backup and verified restore — see [Backup and restore](BACKUP_RESTORE.md)) |
 | Clinical safety | `medical-safety.ts` (emergency detection, conflict warnings, redaction, citation checks), `case-encryption.ts` (AES-256-GCM encryption at rest for patient case data), `mcp-oauth.ts` (OAuth 2.1 + PKCE for HTTP MCP servers) — see [Clinical workspace](CLINICAL_WORKSPACE.md) |
-| Retrieval | `rag.ts` / `rag-db.ts` — chunking, Ollama-embedding, and similarity search for large folder/file attachments |
+| Retrieval | `rag.ts` / `rag-db.ts` — chunking, verified llama.cpp embeddings, and similarity search for large folder/file attachments |
 | Models & downloads | `huggingface.ts` (Hub search API), `download-queue.ts` / `download-worker.ts` / `native-downloader.ts` (resumable parallel downloads, using the Rust addon when available), `download-verification.ts` (checksum/size verification) |
 | System | `system-specs.ts` (RAM/VRAM detection across all GPUs), `resource-monitor.ts`, `power-monitor.ts`, `process-tree.ts`, `benchmark-runner.ts` |
 | Integrations | `figma.ts`, `ocr.ts` (tesseract.js), `accounts.ts` (linked GitHub account), `scheduler.ts` (scheduled chat-completion tasks) |
@@ -173,7 +174,7 @@ model change here isn't manually ported over.
 
 1. Renderer (`Chat.tsx` via `sessions-context.tsx`) calls `window.electronAPI.chat.send(...)`.
 2. Preload forwards this to the `chat:send` IPC channel.
-3. `main.ts` resolves the active provider (`ollama` / `llamacpp` / `openai` / `anthropic` /
+3. `main.ts` resolves the active provider (`llamacpp` / `vllm` / `openai` / `anthropic` /
    `gemini` / a custom OpenAI-compatible endpoint), decrypts its API key from `secrets-store` if
    needed, and calls the matching adapter in `providers/`.
 4. The adapter opens a streaming HTTP request to the provider and, for each chunk, calls back into

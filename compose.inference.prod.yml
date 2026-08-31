@@ -1,0 +1,132 @@
+name: modelforge
+
+services:
+  server:
+    networks: [default, inference]
+    environment:
+      MODELFORGE_INFERENCE_HOST_ALLOWLIST: ${MODELFORGE_INFERENCE_HOST_ALLOWLIST:-llama-server,vllm-nvidia,vllm-rocm}
+    secrets:
+      - llamacpp_inference_api_key
+      - vllm_inference_api_key
+
+  llama-server:
+    profiles: ["inference-llamacpp"]
+    image: ${LLAMACPP_SERVER_IMAGE:?set LLAMACPP_SERVER_IMAGE to an immutable tag or digest}
+    command:
+      - --model
+      - /models/${LLAMACPP_MODEL_FILE:?set LLAMACPP_MODEL_FILE}
+      - --alias
+      - ${LLAMACPP_SERVED_MODEL:?set LLAMACPP_SERVED_MODEL}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --api-key-file
+      - /run/secrets/llamacpp_inference_api_key
+      - --metrics
+      - --jinja
+    secrets: [llamacpp_inference_api_key]
+    volumes:
+      - ${LLAMACPP_MODELS_DIR:?set LLAMACPP_MODELS_DIR}:/models:ro
+    networks: [inference]
+    read_only: true
+    tmpfs: [/tmp:mode=1777]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  vllm-nvidia:
+    profiles: ["inference-vllm-nvidia"]
+    image: ${VLLM_NVIDIA_IMAGE:?set VLLM_NVIDIA_IMAGE to an immutable tag or digest}
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        case "$${VLLM_MODEL}" in /models/*) ;; *)
+        echo "VLLM_MODEL must point to a verified snapshot under /models" >&2; exit 64;; esac;
+        export VLLM_API_KEY="$$(cat /run/secrets/vllm_inference_api_key)";
+        exec vllm serve "$${VLLM_MODEL}" --served-model-name "$${VLLM_SERVED_MODEL}"
+        --host 0.0.0.0 --port 8000 --gpu-memory-utilization "$${VLLM_GPU_MEMORY_UTILIZATION}"
+        --max-model-len "$${VLLM_MAX_MODEL_LEN}";
+    environment:
+      VLLM_MODEL: ${VLLM_MODEL:?set VLLM_MODEL to an approved local snapshot path}
+      VLLM_SERVED_MODEL: ${VLLM_SERVED_MODEL:?set VLLM_SERVED_MODEL}
+      VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
+      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-4096}
+    secrets: [vllm_inference_api_key]
+    volumes:
+      - ${VLLM_MODELS_DIR:?set VLLM_MODELS_DIR}:/models:ro
+      - vllm-compile-cache:/home/vllm/.cache/vllm
+    networks: [inference]
+    shm_size: ${VLLM_SHM_SIZE:-8gb}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=5).read()"]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+  vllm-rocm:
+    profiles: ["inference-vllm-rocm"]
+    image: ${VLLM_ROCM_IMAGE:?set VLLM_ROCM_IMAGE to an immutable tag or digest}
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        case "$${VLLM_MODEL}" in /models/*) ;; *)
+        echo "VLLM_MODEL must point to a verified snapshot under /models" >&2; exit 64;; esac;
+        export VLLM_API_KEY="$$(cat /run/secrets/vllm_inference_api_key)";
+        exec vllm serve "$${VLLM_MODEL}" --served-model-name "$${VLLM_SERVED_MODEL}"
+        --host 0.0.0.0 --port 8000 --gpu-memory-utilization "$${VLLM_GPU_MEMORY_UTILIZATION}"
+        --max-model-len "$${VLLM_MAX_MODEL_LEN}";
+    environment:
+      VLLM_MODEL: ${VLLM_MODEL:?set VLLM_MODEL to an approved local snapshot path}
+      VLLM_SERVED_MODEL: ${VLLM_SERVED_MODEL:?set VLLM_SERVED_MODEL}
+      VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
+      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-4096}
+    secrets: [vllm_inference_api_key]
+    volumes:
+      - ${VLLM_MODELS_DIR:?set VLLM_MODELS_DIR}:/models:ro
+      - vllm-compile-cache:/home/vllm/.cache/vllm
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add: ["video"]
+    networks: [inference]
+    shm_size: ${VLLM_SHM_SIZE:-8gb}
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=5).read()"]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+networks:
+  inference:
+    internal: true
+
+volumes:
+  vllm-compile-cache:
+
+secrets:
+  llamacpp_inference_api_key:
+    file: ${LLAMACPP_API_KEY_FILE:?set LLAMACPP_API_KEY_FILE}
+  vllm_inference_api_key:
+    file: ${VLLM_API_KEY_FILE:?set VLLM_API_KEY_FILE}

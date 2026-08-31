@@ -1,0 +1,112 @@
+name: modelforge-dev
+
+services:
+  server:
+    environment:
+      LLAMACPP_INFERENCE_API_KEY: ${LLAMACPP_INFERENCE_API_KEY:-modelforge-llamacpp-dev}
+      VLLM_INFERENCE_API_KEY: ${VLLM_INFERENCE_API_KEY:-modelforge-vllm-dev}
+      MODELFORGE_INFERENCE_HOST_ALLOWLIST: llama-server,vllm-nvidia,vllm-rocm,localhost,127.0.0.1,::1
+
+  llama-server:
+    profiles: ["inference-llamacpp"]
+    image: ${LLAMACPP_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    command:
+      - --model
+      - /models/${LLAMACPP_MODEL_FILE:-model.gguf}
+      - --alias
+      - ${LLAMACPP_SERVED_MODEL:-modelforge-llamacpp}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --metrics
+      - --jinja
+    ports:
+      - "127.0.0.1:${LLAMACPP_PORT:-8081}:8080"
+    volumes:
+      - ${LLAMACPP_MODELS_DIR:-./models/llamacpp}:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    environment:
+      LLAMA_API_KEY: ${LLAMACPP_INFERENCE_API_KEY:-modelforge-llamacpp-dev}
+    restart: unless-stopped
+
+  vllm-nvidia:
+    profiles: ["inference-vllm-nvidia"]
+    image: ${VLLM_NVIDIA_IMAGE:-vllm/vllm-openai:v0.25.1}
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        case "$${VLLM_MODEL}" in /models/*) ;; *)
+        echo "VLLM_MODEL must point to a verified snapshot under /models" >&2; exit 64;; esac;
+        exec vllm serve "$${VLLM_MODEL}" --served-model-name "$${VLLM_SERVED_MODEL}"
+        --host 0.0.0.0 --port 8000 --gpu-memory-utilization "$${VLLM_GPU_MEMORY_UTILIZATION}"
+        --max-model-len "$${VLLM_MAX_MODEL_LEN}";
+    environment:
+      VLLM_MODEL: ${VLLM_MODEL:-/models/approved-snapshot}
+      VLLM_SERVED_MODEL: ${VLLM_SERVED_MODEL:-modelforge-vllm}
+      VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
+      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-4096}
+      VLLM_API_KEY: ${VLLM_INFERENCE_API_KEY:-modelforge-vllm-dev}
+    ports:
+      - "127.0.0.1:${VLLM_PORT:-8000}:8000"
+    volumes:
+      - ${VLLM_MODELS_DIR:-./models/vllm}:/models:ro
+      - vllm-compile-cache:/root/.cache/vllm
+    shm_size: ${VLLM_SHM_SIZE:-8gb}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/v1/models',headers={'Authorization':'Bearer '+os.environ['VLLM_API_KEY']}); urllib.request.urlopen(r,timeout=5).read()"]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+  vllm-rocm:
+    profiles: ["inference-vllm-rocm"]
+    image: ${VLLM_ROCM_IMAGE:-vllm/vllm-openai-rocm:v0.25.1}
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        case "$${VLLM_MODEL}" in /models/*) ;; *)
+        echo "VLLM_MODEL must point to a verified snapshot under /models" >&2; exit 64;; esac;
+        exec vllm serve "$${VLLM_MODEL}" --served-model-name "$${VLLM_SERVED_MODEL}"
+        --host 0.0.0.0 --port 8000 --gpu-memory-utilization "$${VLLM_GPU_MEMORY_UTILIZATION}"
+        --max-model-len "$${VLLM_MAX_MODEL_LEN}";
+    environment:
+      VLLM_MODEL: ${VLLM_MODEL:-/models/approved-snapshot}
+      VLLM_SERVED_MODEL: ${VLLM_SERVED_MODEL:-modelforge-vllm}
+      VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
+      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-4096}
+      VLLM_API_KEY: ${VLLM_INFERENCE_API_KEY:-modelforge-vllm-dev}
+    ports:
+      - "127.0.0.1:${VLLM_PORT:-8000}:8000"
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add: ["video"]
+    volumes:
+      - ${VLLM_MODELS_DIR:-./models/vllm}:/models:ro
+      - vllm-compile-cache:/root/.cache/vllm
+    shm_size: ${VLLM_SHM_SIZE:-8gb}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/v1/models',headers={'Authorization':'Bearer '+os.environ['VLLM_API_KEY']}); urllib.request.urlopen(r,timeout=5).read()"]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache:

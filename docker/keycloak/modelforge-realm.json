@@ -1,0 +1,51 @@
+{
+  "realm": "modelforge",
+  "enabled": true,
+  "displayName": "ModelForge Development",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "loginWithEmailAllowed": true,
+  "clients": [
+    {
+      "clientId": "modelforge-admin",
+      "name": "ModelForge Admin Console (development)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:5174/*"],
+      "webOrigins": ["http://localhost:5174"],
+      "protocol": "openid-connect",
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5174/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "ModelForge API audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "modelforge-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "developer",
+      "email": "developer@modelforge.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "ModelForge",
+      "lastName": "Developer",
+      "credentials": [
+        { "type": "password", "value": "developer", "temporary": false }
+      ]
+    }
+  ]
+}

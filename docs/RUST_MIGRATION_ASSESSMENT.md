@@ -36,7 +36,7 @@ named in the migration brief:
 
 | Module | Lines | What it does today |
 |---|---|---|
-| [rag.ts](../app/src/rag.ts) | 271 | Chunking, Ollama embedding calls, brute-force `cosineSimilarity` over every chunk in a collection (own comment at L243 already flags this), orchestration |
+| [rag.ts](../app/src/rag.ts) | 271 | Chunking, llama.cpp embedding calls, brute-force `cosineSimilarity` over every chunk in a collection (own comment at L243 already flags this), orchestration |
 | [rag-db.ts](../app/src/rag-db.ts) | 191 | `better-sqlite3`-backed storage for collections/documents/chunks/embeddings (blobs) |
 | [case-encryption.ts](../app/src/case-encryption.ts) | 165 | `scryptSync` KDF, AES-256-GCM via Node `crypto`, in-memory `Buffer` session key, verifier-based unlock |
 | [workspace-path.ts](../app/src/workspace-path.ts) | 37 | Lexical + `realpath` path confinement for agent file/terminal operations — genuinely check-then-use |

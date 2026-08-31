@@ -1,0 +1,216 @@
+# ModelForge Medical — Harness CI pipeline (safe subset, parallel run only)
+#
+# STATUS: repository-side template, NOT a validated/running pipeline.
+# See docs/HARNESS_INTEGRATION.md §10 for the configuration checklist,
+# schema-verification note, and exactly what was/wasn't validated locally.
+#
+# This pipeline deliberately:
+#   - does NOT publish releases (no electron-builder --publish, no GitHub
+#     Release creation) — .github/workflows/release.yml remains the only
+#     thing that ships a release;
+#   - does NOT replace any existing GitHub Actions workflow — both run in
+#     parallel until functional parity is proven (see the referenced doc's
+#     staged-adoption plan);
+#   - does NOT include the 3-OS native-addon load test — that job needs
+#     confirmed Windows/macOS Harness Cloud runner access first (an
+#     unresolved institutional decision, see the referenced doc);
+#   - contains NO secrets, tokens, or real organization identifiers. Every
+#     <PLACEHOLDER> below must be filled in by whoever provisions the
+#     Harness account this would run under. This file cannot execute as-is.
+#
+# Every `command:` value below is copied verbatim from the equivalent step in
+# .github/workflows/ci.yml, docs/DEVELOPMENT.md, or the relevant
+# package.json — never invented.
+
+pipeline:
+  name: ModelForge Medical — CI (parallel, non-publishing)
+  identifier: modelforge_medical_ci_parallel
+  orgIdentifier: <HARNESS_ORG_ID>
+  projectIdentifier: <HARNESS_PROJECT_ID>
+  properties:
+    ci:
+      codebase:
+        connectorRef: <GITHUB_CONNECTOR_REF>
+        build: <+input>
+  stages:
+    - stage:
+        name: Frontend
+        identifier: frontend
+        type: CI
+        spec:
+          cloneCodebase: true
+          infrastructure:
+            type: KubernetesDirect # placeholder — see docs/HARNESS_INTEGRATION.md §8.1; swap for Harness Cloud infra if that's the chosen posture
+            spec:
+              connectorRef: <BUILD_INFRA_CONNECTOR_REF>
+              namespace: modelforge-ci
+          execution:
+            steps:
+              - step:
+                  name: Install
+                  identifier: frontend_install
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd frontend && npm ci
+              - step:
+                  name: Lint
+                  identifier: frontend_lint
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd frontend && npm run lint
+              - step:
+                  name: Typecheck
+                  identifier: frontend_typecheck
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd frontend && npx tsc -b
+              - step:
+                  name: Test
+                  identifier: frontend_test
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd frontend && npm test
+              - step:
+                  name: Build
+                  identifier: frontend_build
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd frontend && npm run build
+
+    - stage:
+        name: App
+        identifier: app
+        type: CI
+        spec:
+          cloneCodebase: true
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: <BUILD_INFRA_CONNECTOR_REF>
+              namespace: modelforge-ci
+          execution:
+            steps:
+              - step:
+                  name: Install
+                  identifier: app_install
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd app && npm ci
+              - step:
+                  name: Typecheck
+                  identifier: app_typecheck
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd app && npx tsc -p tsconfig.json --noEmit
+              - step:
+                  name: Test
+                  identifier: app_test
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd app && npm test
+              - step:
+                  name: Build
+                  identifier: app_build
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd app && npm run build
+
+    - stage:
+        name: Rust
+        identifier: rust_lib
+        type: CI
+        spec:
+          cloneCodebase: true
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: <BUILD_INFRA_CONNECTOR_REF>
+              namespace: modelforge-ci
+          execution:
+            steps:
+              - step:
+                  name: Format check
+                  identifier: rust_fmt
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd lib && cargo fmt --check
+              - step:
+                  name: Clippy
+                  identifier: rust_clippy
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd lib && cargo clippy --all-targets -- -D warnings
+              - step:
+                  name: Test
+                  identifier: rust_test
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd lib && cargo build --release && cargo test
+
+    - stage:
+        name: SBOM
+        identifier: sbom
+        type: CI
+        spec:
+          cloneCodebase: true
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: <BUILD_INFRA_CONNECTOR_REF>
+              namespace: modelforge-ci
+          execution:
+            steps:
+              - step:
+                  name: Install (frontend)
+                  identifier: sbom_install_frontend
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd frontend && npm ci
+              - step:
+                  name: Install (app)
+                  identifier: sbom_install_app
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd app && npm ci
+              - step:
+                  name: Generate SBOM (frontend)
+                  identifier: sbom_frontend
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd frontend && npx --yes @cyclonedx/cyclonedx-npm --output-file ../sbom-frontend.cdx.json
+              - step:
+                  name: Generate SBOM (app)
+                  identifier: sbom_app
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: cd app && npx --yes @cyclonedx/cyclonedx-npm --output-file ../sbom-app.cdx.json
+              - step:
+                  name: Save SBOM artifacts
+                  identifier: sbom_save
+                  type: Run
+                  spec:
+                    shell: Sh
+                    command: |
+                      mkdir -p /harness/sbom-output
+                      cp sbom-*.cdx.json /harness/sbom-output/
+                    # Artifact retention/upload mechanism (Harness CI's native
+                    # artifact-saving step) depends on the chosen build
+                    # infrastructure — deliberately left as a plain copy here
+                    # rather than guessing the exact native step syntax for
+                    # infra this repository has no access to verify against.

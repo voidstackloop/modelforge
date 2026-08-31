@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "graphify": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["-m", "graphify.serve", "graphify-out/graph.json"]
+    },
+    "context7": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest", "--headless", "--isolated"]
+    }
+  }
+}

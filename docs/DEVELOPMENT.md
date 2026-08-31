@@ -6,8 +6,8 @@
 - A Rust toolchain (`cargo`) — only needed if you plan to rebuild the native downloader addon in
   `lib/`. Prebuilt binaries are checked into `app/native/`, so a normal `npm run dev` does not
   require Rust.
-- [Ollama](https://ollama.com) installed locally if you want to exercise the default provider
-  end-to-end during development (not required to build or test the app).
+- A GGUF model for in-process llama.cpp testing, or a compatible CUDA/ROCm
+  Linux/WSL environment for vLLM (neither is required to build or run unit tests).
 
 ## Getting the code running
 
@@ -158,7 +158,7 @@ frontend/          React + Vite renderer (the UI)
 app/                Electron main process
   src/main.ts           Window management, IPC handler registration (grep "ipcMain.handle" for the full API surface)
   src/preload.ts         The typed contextBridge surface exposed to the renderer as window.electronAPI
-  src/providers/         Ollama/OpenAI/Anthropic/Gemini/OpenAI-compatible chat + tool-calling adapters
+  src/providers/         llama.cpp/vLLM/OpenAI/Anthropic/Gemini/OpenAI-compatible chat + tool-calling adapters
   src/agent-tools.ts      Agent mode's full tool catalog (workspace-sandboxed filesystem/shell/git/network tools)
   src/command-sandbox.ts  OS-level command sandboxing (bubblewrap on Linux, sandbox-exec on macOS)
   src/*-store.ts          Settings/sessions/projects/secrets/scheduled-tasks persistence (atomic writes, corruption recovery)

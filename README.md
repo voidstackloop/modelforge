@@ -4,13 +4,13 @@
 [![Release](https://img.shields.io/github/v/release/voidstackloop/modelforge)](https://github.com/voidstackloop/modelforge/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **Notice (v1.3.0): this project has moved from a general-purpose local AI chat/agent client to a medical-focused clinical workspace.** If you were using it as a general-purpose Ollama/llama.cpp chat client, the underlying agent-mode/model-management functionality is all still here, but the product is now scoped, tested, and documented specifically for clinical decision-support and documentation use cases — see **[Product boundary](#product-boundary)** below for exactly what that does and doesn't mean. Pin to a pre-1.3.0 release if you need the prior general-purpose framing.
+> **Notice (v1.3.0): this project has moved from a general-purpose local AI chat/agent client to a medical-focused clinical workspace.** The underlying agent-mode and model-management functionality remains, but the product is now scoped, tested, and documented specifically for clinical decision-support and documentation use cases — see **[Product boundary](#product-boundary)** below for exactly what that does and doesn't mean. Pin to a pre-1.3.0 release if you need the prior general-purpose framing.
 
-A cross-platform clinical workspace that unifies local and cloud AI models in one interface: [Ollama](https://ollama.com) and llama.cpp for local (on-device) inference, plus OpenAI, Anthropic, and Gemini for cloud models. Built with Electron, React, and TypeScript on the general-purpose [Modelforge](https://github.com/voidstackloop/modelforge) chat/agent client.
+A cross-platform clinical workspace that unifies local and cloud AI models in one interface: llama.cpp for on-device GGUF inference, vLLM for managed or remote Safetensors deployments, plus OpenAI, Anthropic, and Gemini for cloud models. Built with Electron, React, and TypeScript on the general-purpose [Modelforge](https://github.com/voidstackloop/modelforge) chat/agent client.
 
 Beyond chat, ModelForge Medical includes an **agentic mode** — the model can read/write files and run shell commands in a folder you choose, with every action gated behind your explicit approval — plus a clinical layer: structured **Patient Cases**, an **Evidence Library**, a per-case **Knowledge Graph**, and an **Audit & Privacy** log.
 
-![Chat view with a local Ollama model](docs/screenshots/chat.png)
+![Chat view with a local inference model](docs/screenshots/chat.png)
 
 ## Product boundary
 
@@ -23,8 +23,8 @@ ModelForge Medical is a **clinical decision-support, medical research, and docum
 Every clinically relevant answer is asked to follow an eight-section structure (Summary → Known patient facts → Assessment/possible interpretations → Missing information → Red flags → Suggested next steps → Evidence and citations → Uncertainty and limitations), enforced via system prompt in `frontend/src/pages/Chat.tsx` (`CLINICAL_RESPONSE_CONTRACT`). Because a system prompt is not a hard guarantee, the safety-critical checks below run independently of the model:
 
 - **Emergency red-flag detection** (`app/src/medical-safety.ts`, `checkForEmergencyFlags`) scans the user's own message for plain-language emergency phrasing (difficulty breathing, stroke symptoms, severe chest pain, anaphylaxis, major bleeding, loss of consciousness, active self-harm risk, overdose) *before* any model call, and shows a persistent banner telling the user to contact emergency services — this never depends on, or waits for, a model response.
-- **Allergy/medication conflict warnings** (`checkMedicationConflicts`) run against a Patient Case's recorded allergies and medications using simple keyword/synonym matching — explicitly **not** a licensed drug-interaction database (First Databank, Lexicomp, Multum, etc.), and labeled as such in the UI every time a warning appears.
-- **Transmission preview and consent**: sending a message to a remote provider (OpenAI/Anthropic/Gemini/a custom endpoint) while a patient case or file is attached shows exactly what's included and requires explicit confirmation before anything leaves the device. Local providers (Ollama, llama.cpp) never trigger this, since nothing leaves the device either way.
+- **Allergy/medication conflict warnings** (`checkMedicationConflicts`) run against a Patient Case's recorded allergies and medications using simple keyword/synonym matching — explicitly **not** a licensed drug-interaction database (First Databank, Lexicomp, Multum, etc.). The check returns a structured result (provider identity, a status of demonstration/clinically-authoritative/unavailable/failed, and static limitations text) rather than a bare warnings list, and the UI renders four distinct states — matches found, checked with no matches, unavailable/failed, or not applicable — so an empty result is never shown or implied as "safe" or "cleared."
+- **Transmission preview and consent**: sending a message to a remote provider (OpenAI/Anthropic/Gemini/a custom endpoint) while a patient case or file is attached shows exactly what's included and requires explicit confirmation before anything leaves the device. In-process llama.cpp inference never triggers this because it remains on device; remote vLLM is treated as a network destination.
 - **Untrusted-content framing**: attached files and retrieved (RAG) content are wrapped with an explicit instruction that the model must treat them as reference material, not commands — mitigating (not eliminating) prompt injection from an imported clinical document.
 
 ## Medical MCP integrations
@@ -74,7 +74,7 @@ Beyond the transmission preview and audit trail described earlier, this session 
 - **Automatic session locking** — a configurable inactivity timeout (Settings → Audit & Privacy, default 15 minutes, disable-able) that re-locks case encryption after no keyboard/mouse activity; Patient Cases shows a passphrase prompt in place of case content until unlocked again. Still device-login-level security if encryption itself is off — there is no separate app-wide lock independent of case encryption.
 - **Configurable audit log retention** — Settings → Audit & Privacy lets you cap how long audit events are kept (30/90/365 days, or forever), purged on both read and write, on top of the existing fixed 5,000-event cap.
 - **Tamper-evident audit log** — every audit event is now SHA-256 hash-chained to the one before it (`app/src/audit-log-store.ts`); Settings → Audit & Privacy's "Verify integrity" button recomputes the chain and reports whether any event was edited, reordered, or deleted after the fact.
-- **Encryption at rest also covers chat sessions**, not just patient cases — `sessions.json` shares the exact same passphrase and encryption gate as `patient-cases.json`, since chat messages routinely carry the same clinical detail typed or pasted into a message.
+- **Encryption at rest also covers chat sessions and RAG-indexed document content**, not just patient cases — `sessions.json` (chat messages routinely carry the same clinical detail typed or pasted into a message) and `rag.db`'s indexed text/headings/names (`app/src/rag-db.ts` — a RAG folder is arbitrary local content the user points the app at, just as capable of holding clinical documents as a Patient Case) share the exact same passphrase and encryption gate as `patient-cases.json`. Document/folder *paths* stay unencrypted (they're used as exact-match lookup keys) and embeddings stay unencrypted (not human-readable, needed in plaintext for similarity search) — both documented, deliberate exceptions, not oversights. Not yet covered: exported files, which remain plaintext by construction.
 - **Structured consent records and clinical-note review sign-off** on a case (Patient Cases → a case → Consent / Clinical notes) — consent grants/revocations with scope and method, and a reviewedBy/outcome sign-off gate specifically for model-generated notes, so "present in the case" is never conflated with "a clinician reviewed it."
 - **Approved model registry** (Settings → Audit & Privacy → Approved model registry) — optionally restrict Clinical Assistant to an explicit allowlist of provider/model pairs; enforced in `Chat.tsx`'s send path, not just hidden from a picker.
 - **SBOM generation and dependency update automation** — CI (`.github/workflows/ci.yml`, `sbom` job) generates a CycloneDX SBOM for every npm workspace on each run; `.github/dependabot.yml` covers all five npm workspaces, the Rust download engine (`lib/`), the Python hardware-recommender project, and the workflows' own GitHub Actions.
@@ -100,11 +100,12 @@ None of these are substitutes for encrypting the whole device, a real identity/a
 ## Features
 
 **Chat & providers**
-- Local Ollama models, OpenAI, Anthropic, Google Gemini, **and llama.cpp** in one interface, with token-by-token streaming.
+- Local llama.cpp models, managed or remote vLLM deployments, OpenAI, Anthropic, and Google Gemini in one interface, with token-by-token streaming.
 - **Custom OpenAI-compatible providers** — add Groq, Mistral, DeepSeek, xAI (Grok), OpenRouter, a self-hosted server, or any other endpoint that speaks the OpenAI chat-completions format, via one shared implementation rather than a dedicated client per vendor. Quick-add presets fill in the base URL for the popular ones; you just paste an API key.
-- **llama.cpp backend** — run GGUF models directly via [node-llama-cpp](https://github.com/withcatai/node-llama-cpp) instead of Ollama, with **Vulkan**, CUDA, or Metal GPU acceleration (auto-detected, selectable in Settings). Useful for Vulkan acceleration or models Ollama doesn't package. This is an *additional* backend, not a replacement — Ollama is still fully supported side by side. Agent mode tool-calling isn't wired up for this backend yet (a clear error explains this if you try); everything else (streaming, GPU offload, all the generation parameters) works the same as any other provider. Model weights load once and stay warm across messages, but each turn currently re-evaluates the full conversation from scratch rather than reusing a cache across turns — correct, but slower on long conversations than it could be.
+- **llama.cpp backend** — run verified GGUF models directly through [node-llama-cpp](https://github.com/withcatai/node-llama-cpp), with Vulkan, CUDA, or Metal acceleration selected from detected hardware. Streaming, embeddings, structured output, and Agent tool calling share the same resource-orchestrated lifecycle.
+- **vLLM backend** — run verified Safetensors models through a managed Linux/WSL process or an authenticated remote OpenAI-compatible endpoint. The app verifies endpoint identity before use and injects runtime credentials through environment variables rather than command-line arguments.
 - Vision support — attach images (or extract frames from a video) for models that can see them. When an image is attached, an **"Analyze as..."** menu fills the composer with a ready-made prompt for common diagram/wireframe tasks — describe the UI, convert it to a Mermaid diagram, generate React + Tailwind code from it, list its components, or review it for usability/accessibility issues.
-- Live token usage and estimated cost per message and per session (Ollama is free/local; cloud providers show a running estimate).
+- Live token usage and estimated cost per message and per session (local inference has no provider charge; cloud providers show a running estimate).
 
 **Organization**
 - **Projects** — group related chats under shared instructions and default model parameters.
@@ -120,7 +121,7 @@ None of these are substitutes for encrypting the whole device, a real identity/a
 
 **Files & retrieval**
 - Attach files, folders, images, video, and PDFs directly into a conversation.
-- Large folders are automatically chunked, embedded (via Ollama), and retrieved by relevance instead of dumped whole into the prompt — so a big project doesn't blow out a small model's context window.
+- Large folders are automatically chunked, embedded through the selected llama.cpp embedding model, and retrieved by relevance instead of dumped whole into the prompt — so a big project doesn't blow out a small model's context window.
 - **Screenshot capture** — pick a screen or window from the Attach menu and it's captured and attached as an image, no separate screenshot tool needed. (macOS may require granting Screen Recording permission the first time.)
 - **OCR** — extract plain text from any attached image with one click, dropped straight into the composer. Runs fully offline via [tesseract.js](https://github.com/naptha/tesseract.js) after its first use (which needs network access once, to download the ~2MB English text-recognition model).
 - **Figma frame import** — add a personal access token in Settings → Integrations, then paste a "Copy link to selection" URL from Figma to fetch that frame as an image, attached like any other screenshot.
@@ -133,24 +134,24 @@ None of these are substitutes for encrypting the whole device, a real identity/a
 
 **Models & hardware**
 - Model recommendations based on your actual hardware — RAM and VRAM are detected and summed **across all GPUs**, not just the first one, so multi-GPU machines get accurate suggestions.
-- **GPU offload control** — set how many model layers Ollama offloads to GPU (`num_gpu`) per chat, per project, or as a global default; leave it blank to let Ollama decide automatically.
+- **GPU offload control** — choose automatic, CPU-only, maximum, or a manual llama.cpp GPU layer count per chat, per project, or globally. The central resource orchestrator accounts for RAM/VRAM before loading or generating.
 - **Custom local GPU backends** — register any OpenAI-compatible local endpoint as a no-key GPU backend, including vLLM, LocalAI, TGI, vendor runtimes, and custom CUDA/ROCm/SYCL/Vulkan llama-server builds. Models from these endpoints appear beside other custom providers and retain streaming and Agent tool-calling support when the server supports it.
 - **Bounded VRAM cache** — llama.cpp model loads are coalesced, active models are protected, and idle model/offload variants are evicted least-recently-used so switching models does not grow VRAM use without limit.
-- **Real Hugging Face search** — typing in the model search box queries the actual Hugging Face Hub API (not just "paste an exact URL"), showing real repos ranked by downloads/likes; expand one to see its actual GGUF files with real file sizes, then either pull it via Ollama or download it directly for the llama.cpp backend. Pasting an exact `hf.co/user/repo` tag or a full URL still works too, for Ollama's own pull mechanism.
+- **Real Hugging Face search** — typing in the model search box queries the Hugging Face Hub API, showing real repositories ranked by downloads and likes. Expand one to inspect GGUF files and sizes, then download directly into the verified llama.cpp artifact workflow.
 - Models with reliable tool/function-calling support are flagged with a 🔧 badge, so picking a good Agent mode model doesn't require guesswork.
-- **Custom model storage location** — Settings → General → Ollama Server → "Model storage location" lets you point downloaded models at any folder (e.g. a larger or faster drive) instead of Ollama's default location. If this app started Ollama, it restarts it automatically with the new location; if Ollama is running outside the app, you're told to restart it yourself.
+- **Immutable server artifact registry** — enterprise deployments record source revision, SHA-256, configuration hash, license attestation, runtime format, capabilities, and verification state before a llama.cpp or vLLM deployment can be activated.
 
 **Customization & control**
 - **First-run setup** — on first launch, pick which provider you want to start with (a local one, or a cloud one with its API key) right away, instead of hunting through Settings. Skippable, and only shown once.
 - **Settings is organized into a sidebar** (General, Models, Integrations, Chat & Prompts, Voice, Automation, Data), each with its own icon — it holds up better as more settings get added over time than one long scrolling page.
 - English and Turkish UI localization.
 - **Theming** — light/dark/system color mode plus a choice of accent colors (default gray, blue, green, purple, orange, rose), in Settings → General → Appearance.
-- Configurable Ollama host — point at a remote server instead of localhost.
+- Configurable authenticated OpenAI-compatible endpoints, including remote vLLM deployments, with explicit private-network or TLS-required policy.
 - Data export/import, and one-click "copy diagnostic info" for bug reports.
 - **Updates** — packaged builds check GitHub Releases for new versions automatically on launch, plus a manual "Check for updates" button in Settings (also available from the app menu).
 
 **Voice**
-- **Voice input** — record a question with the mic button; it's transcribed via OpenAI's Whisper API and dropped into the composer (requires an OpenAI API key in Settings, even when chatting with a local Ollama model).
+- **Voice input** — record a question with the mic button; it's transcribed via OpenAI's Whisper API and dropped into the composer (requires an OpenAI API key in Settings even when chatting with a local model).
 - **Read aloud** — any assistant reply can be played back through your OS's own text-to-speech voices, with a per-message speaker button, an optional "auto-read every response" toggle, and a voice picker with a test button in Settings → Voice tab. Works fully offline, no API key needed.
 - Both are start/stop/cancel controllable mid-action — stop a reply from being read, or cancel a recording before it's sent for transcription.
 - Not included: fully real-time, bidirectional voice conversation (speaking over the model and having it react instantly, à la OpenAI's Realtime API). That's a different streaming architecture and hasn't been built.
@@ -160,7 +161,7 @@ None of these are substitutes for encrypting the whole device, a real identity/a
 <details>
 <summary>Server, system info, and model catalog</summary>
 
-![Ollama server settings, system specs, and available models](docs/screenshots/settings-server.png)
+![Local inference settings, system specs, and available models](docs/screenshots/settings-server.png)
 
 </details>
 
@@ -197,17 +198,17 @@ Download the latest installer for your platform from the [Releases](../../releas
 
 No installer signing certificate is configured yet, so every platform will show some form of "unknown publisher" warning on first launch — this is expected for an unsigned build, not a sign of a corrupted download.
 
-Modelforge talks to a local [Ollama](https://ollama.com) install by default — no API key required. OpenAI and Anthropic support is optional: add your API key in **Settings** only if you want to use those providers.
+Modelforge includes an in-process llama.cpp runtime, so a separate local inference daemon is not required. vLLM and cloud providers are optional and configured in **Settings** or through the enterprise inference registry.
 
 ## Quick start: try it in 5 minutes
 
-1. **Install [Ollama](https://ollama.com/download)** and pull a small model to test with: `ollama pull llama3.2`.
-2. **Install and launch Modelforge.** On first launch it detects your local Ollama install automatically — no setup screen, no account, no API key.
-3. **Send a message.** Pick `llama3.2` from the model dropdown and chat — you should see the response stream in token-by-token.
+1. **Install and launch Modelforge.** No separate local inference service or account is required for llama.cpp.
+2. **Open Models**, search Hugging Face, and download a small GGUF instruct model. Keep automatic runtime selection enabled unless you need a manual override.
+3. **Send a message.** Pick the downloaded model and confirm the response streams token by token.
 4. **Try an attachment.** Drop in an image (with a vision-capable model like `llama3.2-vision`) or a PDF and ask a question about it.
 5. **Create a Project.** Group a couple of chats under one project with a shared system prompt, and confirm new chats in that project inherit it.
 6. **Open the command palette** with `Ctrl/Cmd+K` and jump between chats without touching the mouse.
-7. **Check Settings** — switch the UI language (English/Turkish), add an OpenAI or Anthropic key if you want to compare a cloud model side-by-side with a local one, or point "Ollama host" at a remote server.
+7. **Check Settings** — switch the UI language, add a cloud provider key, or configure an authenticated remote vLLM/OpenAI-compatible endpoint for side-by-side comparison.
 
 If steps 2–3 work, the core app is functioning correctly — everything else layers on top of that same chat pipeline.
 
@@ -267,9 +268,11 @@ rebuilding the native Rust addon, cross-platform packaging details, CI/release p
 This README covers what the app does and how to install/build it. For anything deeper:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the Electron main/renderer/preload split works, the IPC bridge, the native Rust downloader addon, the persistence pattern (atomic writes, corruption recovery), and the end-to-end data flow for sending a chat message.
+- **[docs/INFERENCE.md](docs/INFERENCE.md)** — llama.cpp/vLLM runtime selection, artifact and deployment trust boundaries, authentication, Docker profiles, GPU policy, failover rules, and live verification.
 - **[docs/AGENT_MODE.md](docs/AGENT_MODE.md)** — the full Agent mode tool catalog, the workspace-sandboxing and OS-level command-sandboxing model, the tool-approval policy and exactly why each tool is or isn't auto-approvable, and MCP server integration.
 - **[docs/CLINICAL_WORKSPACE.md](docs/CLINICAL_WORKSPACE.md)** — the detailed reference for everything medical-specific: Patient Cases, Evidence Library, Knowledge Graph, Clinical Assistant's safety layer (emergency detection, conflict warnings, transmission preview, redaction), Audit & Privacy (encryption at rest, session locking, retention), the Graphify/BioMCP/DICOM MCP integrations, and the MCP client rework (official SDK, OAuth 2.1+PKCE, AJV validation) that preceded them.
 - **[docs/ENTERPRISE_READINESS_ASSESSMENT.md](docs/ENTERPRISE_READINESS_ASSESSMENT.md)** — an evidence-backed gap analysis against institutional/regulatory deployment requirements (identity & RBAC, PHI protection, tamper-evident audit, clinical interoperability, terminology, licensed medication safety, clinical validation, model governance, output safety, operational readiness, MCP/agent security, accessibility), a threat model, a target architecture, a phased roadmap, and a regulatory-readiness matrix (KVKK, HIPAA/FDA, GDPR/MDR/AI Act). Current deployment classification: **research and clinician-supervised evaluation only.**
+- **[docs/SHARED_BACKEND_DESIGN.md](docs/SHARED_BACKEND_DESIGN.md)** — a design (not yet implemented) for an optional shared/networked `PatientCasesBackend`, the concrete counterpart to that assessment's target architecture: deployment topology, OIDC-based auth reusing the existing MCP OAuth client, API shape, multi-tenant isolation, conflict semantics, migration path, and audit-shipping — written against the `PatientCasesBackend`/`MedicationSafetyProvider` configuration-boundary interfaces that already exist in `patient-cases-store.ts`/`medical-safety.ts`.
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** — prerequisites, running in dev mode, testing, building, packaging installers for each platform, and the project's directory layout.
 - **[docs/RUST_DATASTORE_TEST_REPORT.md](docs/RUST_DATASTORE_TEST_REPORT.md)** — full verification report for the Rust-backed data store I/O and the audit log's O(1) append fix: every test suite run (Rust/app/frontend/E2E, with and without the native addon built), what the added stress tests caught, and before/after timing comparisons.
 - **[ml/hardware-recommender/README.md](ml/hardware-recommender/README.md)** — the standalone Python project that trains the hardware/model-fit recommender. Its training pipeline isn't part of the app's build, but its trained checkpoint ships with the app and is used at runtime via a Python worker to enhance the Models & hardware recommendations mentioned above.
@@ -289,7 +292,7 @@ The `app` suite covers the store layer (atomic writes, corrupted-file recovery),
 - **Content Security Policy** restricting plugins, frames, and form submissions; external links open in your default browser instead of an unmanaged Electron window.
 - **API keys** are encrypted at rest via the OS credential store (`safeStorage`) and never leave the device. On the rare system with no OS credential store available (e.g. some keyring-less Linux setups), keys fall back to being stored in plain text on disk rather than being silently dropped — Settings shows a prominent warning in that case rather than the normal "encrypted" note.
 - **Agent mode** tool calls are workspace-sandboxed (path-traversal rejected) and require explicit per-call approval — see [Agent mode](#agent-mode) above and [docs/AGENT_MODE.md](docs/AGENT_MODE.md) for the full detail.
-- No telemetry, no analytics, no data sent anywhere except directly to whichever provider (Ollama, OpenAI, Anthropic) you've configured.
+- No telemetry or analytics; data is sent only to the inference endpoint or cloud provider explicitly selected and approved for the request.
 
 ## Contributing
 

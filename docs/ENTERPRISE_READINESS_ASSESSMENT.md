@@ -93,43 +93,78 @@ RBAC for this product shape implies a **server-mediated deployment topology** (s
 §5 Target architecture), not just a login screen bolted onto the current
 single-process app.
 
-### 2.2 Central institutional administration — **absent entirely**
+### 2.2 Central institutional administration — **signed local policy done; network push/RBAC still absent**
 
-`app/src/settings-store.ts`'s `AppSettings` is a single flat, per-device JSON file
-(`settings-store.ts:1-225`, confirmed no `organization`/`centralPolicy`/`orgPolicy`
-field via grep). There is no concept of an admin pushing policy to a fleet of
-installs, no remote configuration, no remote revocation, and no organization-wide
-feature toggle. Agent mode can be disabled per-device by the device's own user
-(Settings toggle exists for `networkToolsEnabled`, `verificationEnabled`, etc.) but
-**not by an administrator remotely** — anyone with the app installed can re-enable
-anything on their own machine. **[SW+CFG]**: requires a central policy service (or
-at minimum, a signed policy file distribution mechanism) — pure client-side
-enforcement without server backing is fundamentally circumventable by whoever has
-local admin rights on the device.
+**Done, this engagement**: `app/src/policy-store.ts` — a signed, versioned JSON
+policy document an institution's admin tooling drops at a fixed, OS-conventional,
+machine-wide directory (distinct from Electron's per-user `userData`, so a
+device's own user can't edit or delete their own governance policy without OS-level
+admin rights — see `docs/CENTRAL_POLICY.md` for the full trust-model writeup). The
+app verifies an Ed25519 signature against a trusted public key co-located with the
+policy, enforces expiry with a 7-day grace period, and — critically — **falls back
+to the last-known-good verified policy rather than reverting to local control**
+when a later read is invalid (tampered, corrupted, or expired past grace): this is
+the specific fail-closed property that stops "corrupt the policy file" from being
+an effective way to escape governance. `settings-store.ts`'s `getSettings()`/
+`saveSettings()` are the single choke point every caller in the app already shares
+(confirmed: `agent-tools.ts`'s network-tool gate reads `getSettings()` directly),
+so a managed field's value always wins on read and can't be persisted to
+`settings.json` on write, regardless of which code path attempts it — not just a
+UI-level restriction. Settings → Audit & Privacy shows the live policy state
+(Active/Expired-grace/Invalid/Not configured), issuer, expiry, and which specific
+settings are currently locked, with the corresponding controls actually disabled
+in the UI (confirmed: the audit-log retention `<select>` and case auto-lock
+`<select>` are wired to this).
 
-### 2.3 PHI and sensitive-data protection — **partial, one store only**
+**Still absent**: this is a *pull, not push* model — no live revocation (a new
+policy takes effect the next time the local file is re-checked, not instantly
+across a fleet), no per-user/per-role policy (one policy per device, since there's
+no identity system to scope it by — see §2.1), and only a small, deliberately
+curated subset of `AppSettings` is governable (`MANAGED_SETTING_KEYS` in
+`policy-store.ts` — network tools, verification loop/step limit, case auto-lock,
+redact-before-remote-send, audit retention/backend, medication-safety provider
+and patient-cases backend selection), not the full settings surface. There is
+still no organization/tenant concept, no admin console (policy authoring is a
+CLI script — `app/scripts/sign-policy.js` — an admin runs locally, not a hosted
+UI), and no MDM-integrated distribution (an institution's own configuration-
+management tooling must place the two files at the documented OS path).
+**[SW+CFG]**: the signed-policy mechanism itself is now built; MDM distribution
+tooling, a hosted policy-authoring console, and live push/revocation remain
+**[CFG]** institutional/infrastructure work layered on top of a real, working
+verification-and-enforcement foundation rather than a stub.
+
+### 2.3 PHI and sensitive-data protection — **on-disk content and JSON exports now covered; Markdown export and OS-level surfaces remain open**
 
 **PHI-bearing stores identified by inspection:**
 
 | Store | File | PHI risk | Encryption today |
 |---|---|---|---|
 | Patient cases | `patient-cases.json` / `.enc.json` | High — allergies, meds, conditions, notes | **Yes**, opt-in AES-256-GCM (`case-encryption.ts`) |
-| Chat sessions | `sessions-store.ts` → `sessions.json` | High — case context gets pasted/typed directly into chat messages, model responses | **No** |
+| Chat sessions | `sessions-store.ts` → `sessions.json` / `.enc.json` | High — case context gets pasted/typed directly into chat messages, model responses | **Yes** — shares `case-encryption.ts`'s gate (confirmed by inspection of `sessions-store.ts`; an earlier revision of this document incorrectly listed this as uncovered) |
+| RAG-indexed document content | `rag-db.ts` → `rag.db` (`collections.name`, `documents.name`, `chunks.text`/`heading`) | High — folders a user points the app at can contain clinical documents | **Yes**, same passphrase/key as above. **Not** covered: `documents.path`/`collections.folder_path` (kept plaintext — they're SQL equality-lookup keys; AES-GCM's random IV breaks exact-match queries on ciphertext without a separate blind-index scheme, and a filename is a materially smaller leak than the extracted text) and `chunks.embedding` (not human-readable; needed in plaintext for similarity search) — both documented limitations in `rag-db.ts`, not oversights |
 | Evidence sources | `evidence-store.ts` → `evidence-sources.json` | Low (URLs/metadata only, no patient data by design) | No (not needed) |
 | Audit log | `audit-log-store.ts` → `audit-log.json` | Low by design (`detail` documented as non-clinical, never enforced at the type level) | No |
-| RAG embeddings | `app/src/rag.ts` (per `docs/ARCHITECTURE.md`) | High if a clinical document is embedded | **Not inspected in this pass — flag for follow-up; likely unencrypted like sessions.** |
-| Exported files | `data-transfer.ts`-driven exports (session/all export) | High | **No** — exports are plaintext by construction |
+| Exported files | `data-transfer.ts`-driven exports (session/all export) | High | **Partial** — JSON exports (single session, all sessions) are encrypted with the same case-encryption session key when it's enabled, and refuse to write plaintext (`CaseDataLockedError`) if it's enabled but locked; import decrypts them the same way and fails closed (`EncryptedExportUnreadableError`) on a wrong passphrase or a disabled/locked store. Markdown export stays intentionally plaintext (it's a human-readable format by design) but now warns the user before writing one while case encryption is on. Prompt-preset export/import is unaffected — deliberately, since presets aren't patient data (see `data-transfer.ts`) |
 | Electron cache/temp | Chromium's own disk cache, crash dumps | Unknown/high | **Not addressed at all** — outside this app's direct control without Electron-level hardening |
-| Logs | `logger.ts` rotating file logs | Medium — depends on what gets logged; not audited for PHI leakage in this pass | **Not addressed** |
+| Logs | `logger.ts` rotating file logs | Medium — a spot check found no store that logs message/case content directly (`patient-cases-store.ts`, `sessions-store.ts`, `rag.ts` make zero `logger.*` calls), but this is not a full audit | **Not addressed**; spot-checked only |
 | Backups | None exist — no backup mechanism at all currently | N/A | N/A |
 
-**This is the single largest concrete gap**: chat session history — where actual
-clinical conversation content lives, arguably the *highest*-PHI-density store in the
-app — has **no encryption at rest**, while only the structured Patient Case store
-does. A user could enable case encryption, feel protected, and still have full
-clinical detail sitting in plaintext `sessions.json` from every conversation.
-**[SW]** extending `case-encryption.ts`'s pattern to sessions is directly buildable;
-**[SW]** a temp-file/cache audit is buildable; **[CFG]** enterprise key
+**Remaining concrete gap**: JSON export/import (`data-transfer.ts`'s
+`serializeForExport`/`deserializeImportedPayload`) now closes the "encrypt every
+store, then silently export a plaintext copy" hole for session data — there is no
+patient-case export feature to have the same gap. Markdown export is a narrower,
+accepted exception: it's inherently a plaintext, human-readable format, so it can't
+be encrypted without defeating its own purpose, and the renderer now warns visibly
+before writing one while case encryption is on rather than doing so silently. Worth
+being explicit about the trade-off this makes: an encrypted export can only be
+decrypted by importing it into a ModelForge install with case encryption enabled
+and unlocked under the *same* passphrase active at export time — rotating the
+passphrase re-encrypts the live stores in place, but a previously-exported file is
+a static snapshot that migration never touches, and sharing an export with someone
+who doesn't hold that passphrase isn't supported (that would need a real,
+separately-designed "share outside the app" feature). Electron's own
+cache/temp/crash-dump surfaces and full log-content auditing are also still open.
+**[SW]** a full temp-file/cache/log audit is buildable; **[CFG]** enterprise key
 management (HSM/KMS-backed keys, rotation) requires infrastructure this app doesn't
 have and a passphrase-only design (as built) cannot satisfy on its own; **[LEGAL]**
 BAA/DPA and zero-retention configuration metadata are provider contracts, not code.
@@ -201,10 +236,18 @@ ready to plug in a licensed terminology server later.
 `KNOWN_INTERACTIONS` (5 pairs: warfarin+aspirin, warfarin+ibuprofen, MAOI+SSRI,
 sildenafil+nitrate, metformin+contrast dye). The in-repo comment on
 `KNOWN_INTERACTIONS` states verbatim: *"NOT a substitute for a licensed
-drug-interaction database (e.g. First Databank, Lexicomp, Multum)."* Every UI
-surface that renders a warning from this function (`PatientCaseDetail.tsx`) appends
-*"Generated by simple keyword matching, not a licensed drug-interaction database.
-Verify independently."* **This labeling is a real, load-bearing safety control** — it
+drug-interaction database (e.g. First Databank, Lexicomp, Multum)."*
+`checkMedicationConflicts()` now returns a structured `MedicationSafetyResult`
+(provider identity, a `status` of demonstration/clinically-authoritative/
+unavailable/failed, and static limitations text) rather than a bare warnings
+array, specifically so an empty result can never be rendered or read as "verified
+safe." `PatientCaseDetail.tsx` (`medicationConflictCheckInputSchema`-validated at
+the IPC boundary) renders four distinct states from it — matches found (labeled
+with the provider and its limitations, e.g. *"...not a licensed drug-interaction
+database..."*), checked with no matches (*"No matches found by \<provider\>; this
+is not a clinical interaction check"*), unavailable/failed (an explicit failure
+banner, never collapsing to a clean result), and not applicable (nothing
+recorded). **This labeling is a real, load-bearing safety control** — it
 correctly prevents the single most dangerous failure mode of a system like this
 (silent false confidence from an absent warning) by making the limitation
 unavoidably visible at the point of use. No cross-sensitivity beyond the three
@@ -213,10 +256,10 @@ renal/hepatic adjustment, no pregnancy/age/weight/pediatric logic, no formulary
 support. **[DATA]**: a real medication-safety engine requires a licensed database
 (First Databank/Multum/Lexicomp-class) — this is a data-licensing problem, not an
 engineering one. **[SW]**: the *abstraction boundary* — a `MedicationSafetyProvider`
-interface `checkMedicationConflicts()` could be refactored behind, with the current
-demonstration table as the default/fallback implementation and a licensed-database
-adapter pluggable per institution — is directly buildable now and is the concrete,
-correctly-scoped "software responsibility" here.
+interface with a `coverage` field (`"demonstration"` vs. `"clinically-authoritative"`)
+and an optional `isAvailable()` — already exists, with the current demonstration
+table as the default implementation; a licensed-database adapter is pluggable per
+institution behind that same interface without touching any call site.
 
 ### 2.8 Clinical AI validation — **absent entirely**
 
@@ -252,28 +295,35 @@ extension of the existing `mcp-presets.ts`/trust-profile pattern already used fo
 servers. **[CLIN]**: deciding *which* models are approved for *which* use cases is a
 clinical/governance decision, not one code can make.
 
-### 2.10 Output safety — **partial**
+### 2.10 Output safety — **partial, structural validation now closed**
 
-What exists: the 8-section response contract (prompt-level, not enforced), pre-model
-deterministic emergency detection (`checkForEmergencyFlags` — genuinely
-model-independent, a real control), the "Not verified" badge on every assistant
-message (`Chat.tsx`'s `MessageBubble`), transmission preview before remote sends,
-and (built but **not wired into the UI** — confirmed via grep, `checkCitations` is
-only referenced from its own test file) a citation-verification function that checks
-a model's inline citation markers against known Evidence Library sources. **Gap**:
-there is no structured *validation* of a model's response against the 8-section
-contract — a model that skips "Uncertainty and limitations" or fabricates a citation
-is not caught by anything today; the contract is a system-prompt instruction only,
-exactly as `docs/CLINICAL_WORKSPACE.md` already discloses. No abstention enforcement
-(a model can answer confidently even when the contract asks it to say "insufficient
-data"). No mechanism requires an identifiable clinician's sign-off before a
-model-drafted note (e.g. a SOAP note) is treated as final — `ClinicalNote.author`
-(`patient-cases-store.ts`) does distinguish `"clinician" | "model-inference"`
-provenance, which is good, but nothing *enforces* a review step before a
-model-inference note could be acted on. **[SW]**: structured-output validation
-(parse the response for the 8 required section headers, flag a response missing
-any), wiring `checkCitations` into the chat UI, and a review/sign-off gate on
-`clinicalNotes` are all directly buildable now.
+What exists: the 8-section response contract (prompt-level — a model can still fail
+to follow it, so this alone is not enforcement), pre-model deterministic emergency
+detection (`checkForEmergencyFlags` — genuinely model-independent, a real control),
+the "Not verified" badge on every assistant message (`Chat.tsx`'s `MessageBubble`),
+transmission preview before remote sends, a citation-verification function
+(`checkCitations`, `medical-safety.ts`) wired into the chat UI via
+`CitationCheckNotice` (`Chat.tsx`) — an unverified marker or an uncited clinical
+claim is flagged inline, not just internally computed — and, closing the specific
+gap this section previously flagged, structured-output validation against the
+8-section contract itself: `checkResponseContractCompliance`
+(`frontend/src/lib/clinical-constants.ts`) parses a completed response for all
+eight required headings and `ResponseContractNotice` (`Chat.tsx`) flags exactly
+which ones a response silently dropped, applicable only when the response clearly
+attempted the structured format at all (avoiding false positives on short
+non-clinical replies). Both checks are deterministic and client-side, independent
+of the model. **Remaining gap**: no abstention enforcement (a model can answer
+confidently even when the contract asks it to say "insufficient data" — this is a
+*content* judgment, not a structural one, and isn't something section-heading
+matching can catch). No mechanism requires an identifiable clinician's sign-off
+before a model-drafted note (e.g. a SOAP note) is treated as final —
+`ClinicalNote.author` (`patient-cases-store.ts`) does distinguish
+`"clinician" | "model-inference"` provenance, which is good, but nothing *enforces*
+a review step before a model-inference note could be acted on. **[SW]**: a
+review/sign-off gate on `clinicalNotes` is directly buildable now; abstention
+enforcement would need model-output content analysis, a materially different (and
+harder to get right without false positives) problem than the structural checks
+above.
 
 ### 2.11 Evidence quality — **partial**
 
@@ -292,24 +342,50 @@ distinct store) — this separation exists and is a real strength; it's the
 *rendering* of that separation in the chat transcript itself (as opposed to the case
 page) that's incomplete.
 
-### 2.12 Operational readiness — **absent**
+### 2.12 Operational readiness — **backup now done; CI supply-chain gaps partially closed**
 
 No centralized monitoring (single-device app, nothing to centralize into). No HA
-concept (desktop app). No backup mechanism of any kind exists — a user's Patient
-Cases, chat history, and audit log live only on their local disk with no built-in
-backup, encrypted or not. No defined RPO/RTO. `.github/workflows/ci.yml` and
-`release.yml` exist and run tests/build/typecheck plus a release-asset
-verification step (confirmed by direct inspection), but **no dependency/SBOM
-scanning step was found** (`grep -n 'npm audit|codeql|security' ci.yml` → no
-matches) and **no `.github/dependabot.yml` exists**. `electron-builder` update
-signing is explicitly **not configured** — `docs/DEVELOPMENT.md`'s own "Adding
-signing later (not currently configured)" section confirms every installer today
-ships with an "unknown publisher" warning, and `electron-updater` (present in
-`app/package.json`) auto-updates without a code-signing chain of trust in place.
-**[SW]**: SBOM generation (`npm sbom` / CycloneDX, trivial to add to CI), Dependabot
-config, and a documented incident-response runbook are directly buildable now.
-**[CFG]**: code-signing certificates, a backup destination/schedule, and defined
-RPO/RTO are institutional decisions layered on top of buildable mechanisms.
+concept (desktop app).
+
+**Done, this session**: `app/src/backup-store.ts` — encrypted, whole-profile
+backup and verified restore, covering every file this app persists (patient
+cases, chat sessions, audit log, and the rest — see `docs/BACKUP_RESTORE.md`
+for the full inventory and rationale). Uses its own passphrase, a separate
+encryption domain from case-encryption's. Restore is a three-phase design
+(decrypt-and-validate-first, an automatic pre-restore safety snapshot, then
+staged-and-verified writes) specifically so a bad restore is itself
+reversible, and a wrong passphrase or corrupted file never touches live data.
+Backups can be manual or scheduled (`app/src/backup-scheduler.ts`) — turning
+scheduling on gives a real, operator-defined RPO of at most the configured
+interval, rather than "however long since your last manual backup." Both
+remain **app-open only** (no OS-level task registration, same limitation as
+`scheduler.ts`'s agent-prompt scheduling), and the automatic-backup
+passphrase is stored in the OS keychain (same mechanism as provider API
+keys) to run with nobody present — a different, explicitly-stated trust
+model than manual backups' never-touches-disk passphrase. An optional
+secondary cloud destination (`app/src/cloud-backup-store.ts`, any
+S3-compatible object store, best-effort and independent of local-write
+success) is also available. Compression (gzip per file before the
+encrypted envelope) cuts typical backup size well below the previous
+~1.33x-of-live-data figure. Full detail in `docs/BACKUP_RESTORE.md`'s RPO
+and cloud-destination sections.
+
+**Corrected from an earlier stale claim in this document**: `.github/dependabot.yml`
+already exists and is comprehensive (weekly updates across every npm
+workspace, `cargo`, `pip`, and `github-actions` itself) — see
+`docs/HARNESS_INTEGRATION.md` §1.3 for the full re-verification. `SBOM
+generation` also already exists (`.github/workflows/ci.yml`'s `sbom` job,
+CycloneDX per workspace). **Still genuinely absent**: no SAST, no dedicated
+secret-scanning step, no license-policy gate, no `SECURITY.md`/`CODEOWNERS`.
+`electron-builder` update signing remains explicitly **not configured** —
+`docs/DEVELOPMENT.md`'s own "Adding signing later (not currently configured)"
+section confirms every installer today ships with an "unknown publisher"
+warning, and `electron-updater` (present in `app/package.json`) auto-updates
+without a code-signing chain of trust in place.
+**[SW]**: a documented incident-response runbook is still directly buildable
+now (not yet done). **[CFG]**: code-signing certificates and a *scheduled*
+backup policy (today's is manual-only) are institutional decisions layered on
+top of the buildable mechanism that now exists.
 
 ### 2.13 Agent and MCP security — **strong relative to the rest of the app, with one explicit known gap**
 
@@ -365,13 +441,13 @@ layered on top of the engineering work.
 | MFA | None | Critical | Delegate to IdP (do not build custom MFA) | P0 | CFG |
 | RBAC/ABAC | None | Critical | Role model + enforcement layer, server-mediated | P0 | SW+CFG |
 | Break-glass access | None | High | Justification-logged emergency access flow | P0 | SW |
-| Central policy admin | None (per-device settings only) | Critical | Central policy service, signed policy distribution | P0 | SW+CFG |
+| Central policy admin | **Done (signed local policy)** — `policy-store.ts`, fail-closed, `MANAGED_SETTING_KEYS` subset enforced at the `getSettings()`/`saveSettings()` choke point | Was Critical, now Medium (no live push/per-role scoping) | Remaining: MDM distribution tooling, live push/revocation, per-role policy (needs identity) | P1 | SW done; CFG (distribution) + SW (identity-scoped policy, blocked on §2.1) remain |
 | Approved model registry | Free-text model string, no governance | High | Curated, admin-approved model list | P0 | SW+CLIN |
 | MCP/endpoint allowlist | User can add any MCP server locally | High (institutional context) | Admin-scoped allowlist enforcement | P0 | SW+CFG |
-| PHI inventory/encryption | Only patient-cases.json encrypted; sessions.json, exports, RAG store, logs, cache not covered | Critical | Extend encryption to all PHI-bearing stores; audit temp/cache/log paths | P0 | SW |
+| PHI inventory/encryption | Patient cases, chat sessions, and RAG-indexed content (text/names, not paths/embeddings — see §2.3) now share one encryption gate; JSON session exports/imports now ride the same gate (§2.3); Markdown export stays plaintext by design with a visible warning; logs and OS-level cache/temp remain uncovered | High (was Critical) | Audit temp/cache/log paths | P0 | SW |
 | Enterprise key management | Passphrase-derived key, session-memory only, no rotation | High | KMS/HSM-backed key option for institutional deployments | P0 | SW+CFG |
 | Secure deletion | Plain file delete (`fs.rmSync`) | Medium | Document as best-effort; true secure-erase is filesystem/disk-dependent | P1 | SW+CFG |
-| Backup encryption | No backup mechanism exists at all | High | Build backup mechanism, encrypted by default | P0 | SW+CFG |
+| Backup encryption | **Done** — `backup-store.ts`, own passphrase (separate domain from case encryption), 3-phase verified restore with automatic pre-restore safety snapshot | Was High, now Low | Remaining: scheduled/automatic backups (today's is manual-only, by design — see `docs/BACKUP_RESTORE.md`) | P1 | SW done; CFG (a scheduling/reminder policy) remains |
 | Legal hold | None | Medium | Retention-override flag per case/audit event | P1 | SW+LEGAL |
 | DLP | None | Medium | Outbound-content scanning before remote send (beyond current redaction) | P1 | SW |
 | Clinical-grade de-identification | Regex-only, explicitly non-clinical-grade | High | Licensed NLP de-identification service | P1 | DATA+CLIN |
@@ -383,7 +459,7 @@ layered on top of the engineering work.
 | Terminology (SNOMED/LOINC/RxNorm/UMLS) | Free-text only | High | Coded-value fields + pluggable terminology service | P1 | DATA+SW |
 | Licensed medication safety | Demonstration table only (explicitly labeled) | Critical if mistaken for real clearance | `MedicationSafetyProvider` abstraction + licensed adapter | P1 | DATA+SW |
 | Clinical validation framework | None | Critical | Instrumentation now; formal study is clinical work | P0 | SW (instrumentation) + CLIN (study) |
-| Output structured validation | Prompt-only contract, not enforced | High | Parse/validate response structure; wire in existing `checkCitations` | P1 | SW |
+| Output structured validation | ~~Prompt-only contract, not enforced~~ **Done** — `checkResponseContractCompliance` + `checkCitations`, both wired into `Chat.tsx` | — | Remaining: abstention enforcement (content-level, not structural — see §2.10) | P1 | SW |
 | Windows agent sandboxing | Denylist only, no OS-level confinement | High (Windows installs specifically) | Document as risk; evaluate AppContainer/Job Object confinement | P1 | SW+CFG |
 | SBOM / dependency scanning | None found in CI | Medium | Add SBOM generation + Dependabot to CI | P1 | SW |
 | Update signing | Not configured (`docs/DEVELOPMENT.md` confirms) | Medium | Configure code-signing certificates | P1 | CFG |
@@ -395,7 +471,7 @@ layered on top of the engineering work.
 
 | Threat | Current exposure | Mitigations present | Mitigations missing |
 |---|---|---|---|
-| **PHI exposure via stolen/lost device** | High — most PHI-bearing stores unencrypted (§2.3) | Case-encryption for `patient-cases.json` only; OS-level disk encryption is the user's own responsibility (documented) | Full-store encryption, remote wipe, MDM integration |
+| **PHI exposure via stolen/lost device** | Medium — patient cases, chat sessions, and RAG-indexed content now share one encryption gate (§2.3); JSON session exports/imports now ride the same gate; Markdown export and OS-level cache/temp/logs remain unencrypted | Case-encryption covers `patient-cases.json`, `sessions.json`, `rag.db` content, and JSON session exports; OS-level disk encryption is the user's own responsibility (documented) | Temp/cache/log hardening, remote wipe, MDM integration |
 | **Malicious insider (authorized user misusing access)** | High — no RBAC, no per-patient authorization, no audit-actor identity | Audit trail exists (weak) | RBAC, break-glass justification logging, authenticated actors, tamper-evident log |
 | **Stolen device with app open/unlocked** | Medium — session lock exists for case data specifically | `caseAutoLockMinutes` auto-lock (§Encryption/session-lock in `docs/CLINICAL_WORKSPACE.md`) | Whole-app lock (chat/Settings remain reachable per documented limitation), MFA re-auth |
 | **Compromised/malicious model provider** | Medium — remote sends require explicit confirmation, redaction is opt-in | Transmission preview, local/remote badge, provider selection is user-controlled | No provider attestation/BAA-status tracking, no automatic zero-retention enforcement |
@@ -409,6 +485,13 @@ layered on top of the engineering work.
 ---
 
 ## 5. Target architecture for institutional deployment
+
+> A concrete, implementation-ready design for the patient-case-storage slice of this
+> architecture — deployment topology, auth, API shape, conflict handling, migration,
+> audit-shipping — now exists in **[docs/SHARED_BACKEND_DESIGN.md](SHARED_BACKEND_DESIGN.md)**,
+> written against the `PatientCasesBackend` configuration-boundary interface added to
+> `patient-cases-store.ts` after this assessment was originally written. That document
+> accepts the target architecture below as given rather than re-deriving it.
 
 The current single-process desktop shape is fundamentally incompatible with several
 P0 requirements (RBAC, central policy, tamper-evident central audit, SIEM
@@ -470,7 +553,7 @@ before an identity system exists to populate the actor) means redoing the work.
 
 ### Phase 0 — Foundation (blocks all P0 work)
 - Full PHI inventory completion (§2.3's flagged-but-not-fully-inspected stores:
-  `rag.ts` embeddings, exports, logs, Electron cache/temp).
+  `rag.ts` embeddings, Markdown export, logs, Electron cache/temp).
 - Decide target architecture posture (single-device-only vs. control-plane-backed —
   §5) — **this is a product decision, not an engineering one**, and everything
   downstream depends on it.
@@ -481,22 +564,46 @@ before an identity system exists to populate the actor) means redoing the work.
 - Depends on: Phase 0's architecture decision.
 - OIDC relying-party integration; role model (clinician/admin/researcher/
   auditor/support) with `patient-level`/`department-level` scoping; break-glass
-  flow with mandatory justification text, itself an audited event; central policy
-  fetch-and-cache with signature verification and expiry.
+  flow with mandatory justification text, itself an audited event.
+- **Done, ahead of the identity dependency** (§2.2): the *policy* half of this
+  phase — signed-document fetch-and-cache with signature verification, expiry,
+  and grace-period fail-closed behavior (`policy-store.ts`) — turned out not to
+  require identity as a prerequisite (a policy document doesn't need to know
+  *who* the user is, only that it's genuinely from the institution), so it's
+  built and enforced today against a curated settings subset. What's still
+  gated on identity: *per-role* policy (today's policy is per-device, not
+  per-user/role, since there's no identity to scope it by) and live network
+  push/revocation (today's is a local, periodically-re-checked file).
 - **Acceptance criteria**: no PHI-bearing action is reachable without a verified
-  identity and a role check; break-glass access is itself audit-logged with the
-  justification text; a revoked policy takes effect within the defined grace
-  period even offline-then-reconnected.
+  identity and a role check — **open**; break-glass access is itself audit-logged
+  with the justification text — **open**; a revoked policy takes effect within
+  the defined grace period even offline-then-reconnected — **met** for the
+  local-file policy mechanism (`policy-store.ts`'s 7-day grace period,
+  `policy-store.test.ts`'s expiry/fallback tests), not yet for a networked
+  push scenario since there's no network delivery mechanism built.
 
 ### Phase 2 — Tamper-evident audit + PHI encryption completion (P0)
 - Depends on: Phase 1 (for authenticated actors on every event).
-- Hash-chain or sign every audit event; extend encryption-at-rest to
-  `sessions.json`, exports, and any PHI-bearing cache/temp path found in Phase 0's
-  inventory; central audit shipping with local buffering.
+- **Done** (audit): every audit event is hash-chained (`audit-log-store.ts`'s
+  `previousEventHash`/`eventHash`, `verifyChainIntegrity()`) — an out-of-band edit
+  to the local log is detectable. Central audit shipping with local buffering
+  remains open (needs Phase 1 identity to populate an authenticated actor — see
+  `docs/SHARED_BACKEND_DESIGN.md` §7 for the client-side design).
+- **Done** (encryption): `sessions.json` and RAG-indexed document content
+  (`rag.db`) now share `patient-cases.json`'s encryption gate (§2.3). JSON
+  session exports/imports (`data-transfer.ts`) now ride the same gate too —
+  encrypted on export when enabled, fail closed (not plaintext) when enabled
+  but locked, and import fails closed on a wrong passphrase rather than
+  silently importing garbage or reporting "nothing found."
+- **Remaining**: Markdown export stays plaintext by design (see §2.3) — a
+  visible warning now stands in for encryption there, since the format can't
+  be encrypted without defeating its purpose. Any PHI-bearing cache/temp path
+  found in a full Phase 0 inventory pass is still plaintext.
 - **Acceptance criteria**: any out-of-band edit to the local audit log file is
-  detectable; every store in the Phase 0 inventory marked "PHI: high" is
-  encrypted at rest; audit events survive a network outage and ship on
-  reconnection without loss or duplication.
+  detectable — **met**; every store in the Phase 0 inventory marked "PHI: high" is
+  encrypted at rest — **met except Markdown export (by design) and cache/temp**;
+  audit events survive a network outage and ship on reconnection without loss or
+  duplication — **open**, depends on Phase 1.
 
 ### Phase 3 — Model/MCP governance (P0/P1)
 - Depends on: Phase 1 (policy delivery mechanism).
@@ -532,21 +639,42 @@ before an identity system exists to populate the actor) means redoing the work.
 
 ### Phase 6 — Output safety hardening + evidence provenance (P1)
 - Depends on: nothing above — can run in parallel with Phases 1-5.
-- Structured-response validation against the 8-section contract; wire
-  `checkCitations` into the chat UI; evidence-grading labels in Evidence Library;
-  a review/sign-off gate before a `clinicalNotes` entry with
-  `author: "model-inference"` is treated as final.
-- **Acceptance criteria**: a response missing a required contract section is
-  visibly flagged, not silently accepted; an unresolvable citation marker is
-  rendered as unverified in the transcript, not just internally computed.
+- **Done**: structured-response validation against the 8-section contract
+  (`checkResponseContractCompliance`) and citation verification (`checkCitations`)
+  are both wired into the chat UI (`Chat.tsx`'s `ResponseContractNotice` /
+  `CitationCheckNotice`) — a response missing a required section, or citing a
+  source with no match, is flagged inline rather than passing silently.
+- **Remaining**: evidence-grading labels in Evidence Library; a review/sign-off
+  gate before a `clinicalNotes` entry with `author: "model-inference"` is treated
+  as final.
+- **Acceptance criteria** *(met for the structural checks above; still open for
+  the remaining items)*: a response missing a required contract section is
+  visibly flagged, not silently accepted — **met**; an unresolvable citation
+  marker is rendered as unverified in the transcript, not just internally
+  computed — **met**; evidence-grading and note-review sign-off remain open.
 
 ### Phase 7 — Operational readiness (P1)
-- Depends on: Phase 2 (backup must cover the now-fully-encrypted stores).
-- Encrypted backup mechanism with defined RPO/RTO; SBOM + Dependabot in CI;
-  code-signing for releases; documented incident-response runbook.
+- Depends on: Phase 2 (backup must cover the now-fully-encrypted stores) — met,
+  `backup-store.ts` covers every file each store persists, encrypted or not.
+- **Done**: encrypted backup mechanism (`backup-store.ts`) — own passphrase,
+  verified restore, automatic pre-restore safety snapshot for rollback;
+  scheduled backups (`backup-scheduler.ts`) give RPO a real, operator-defined
+  number instead of "manual, user-controlled"; an optional S3-compatible
+  cloud destination (`cloud-backup-store.ts`) for a secondary off-device
+  copy; SBOM (`ci.yml`'s `sbom` job) and Dependabot (`.github/dependabot.yml`)
+  were already present, corrected from this document's earlier stale claim
+  (§2.12).
+- **Remaining**: scheduled backups are still app-open only, no OS-level task
+  registration — a device off/asleep longer than the configured interval
+  still has a gap `docs/BACKUP_RESTORE.md` states honestly rather than
+  papering over; code-signing for releases; a documented incident-response
+  runbook; SAST/secret-scanning in CI (still absent, unlike SBOM/Dependabot).
 - **Acceptance criteria**: a restore-from-backup drill succeeds against a
-  synthetic dataset; CI fails the build on a newly-disclosed critical CVE in a
-  direct dependency.
+  synthetic dataset — **met**, `backup-store.test.ts`'s round-trip and
+  rollback tests plus `e2e/tests/backup-restore.spec.ts`; CI fails the build
+  on a newly-disclosed critical CVE in a direct dependency — **open** (no
+  SAST/vulnerability-scanning gate exists yet, only Dependabot's
+  version-currency alerts).
 
 ### Phase 8 — Accessibility + maturity (P2)
 - WCAG 2.2 AA audit and remediation; `aria-live` correctness pass on
@@ -685,14 +813,14 @@ states current gaps against the requirement, not a certification.
 | Control area | Test types required |
 |---|---|
 | Identity/RBAC | Unauthorized-access rejection tests per role/scope combination; break-glass justification-required test; session-revocation-takes-effect test |
-| Central policy | Signature-verification-failure rejection test; expired-policy grace-period test; offline-then-reconnect policy-refresh test |
+| Central policy | **Done**: signature-verification-failure rejection (`policy-store.test.ts` — wrong key, tampered payload, non-canonical bytes, unrecognized settings field), expired-policy grace-period behavior, and last-known-good fallback on a later invalid read, all covered at the unit level plus an end-to-end Playwright pass (`e2e/tests/central-policy.spec.ts`) through the real Settings UI. Remaining: an offline-then-reconnect *network* policy-refresh test once a networked push mechanism exists (today's mechanism is a local file, so this doesn't yet apply) |
 | PHI encryption | Round-trip tests per newly-encrypted store (mirroring `case-encryption.test.ts`'s pattern already in the repo); tamper-detection tests (GCM auth-tag failure, as already exists for case encryption) |
 | Tamper-evident audit | Hash-chain-break-detection test; out-of-band-edit-detection test; concurrent-write-ordering test |
 | Model/MCP governance | Non-approved-model-not-selectable test; policy-revocation-takes-effect test; denylist-enforcement test (mirroring `mcp-client.test.ts`'s existing `blockedTools` suite) |
 | FHIR integration | Read-only enforcement test (no write-capable code path exists at all); patient-matching accuracy test against synthetic data; provenance-tagging-present test on every imported field |
 | Medication safety abstraction | Adapter-swap test (demonstration table vs. mock licensed adapter produce compatibly-shaped results); "never treat absence of warning as clearance" — a UI test asserting the disclaimer text is always present alongside any conflict-check result, including zero-warning results |
-| Output structured validation | Missing-section-detection test; citation-verification test (extending the existing but unwired `checkCitations` test coverage into an integration test through the chat UI) |
-| Backup/restore | Full restore-from-backup integration test against a synthetic dataset; encrypted-backup-cannot-be-read-without-key test |
+| Output structured validation | **Done**: missing-section-detection unit tests (`Chat.clinical.test.ts`) and e2e coverage through the real chat UI (`e2e/tests/response-contract-notice.spec.ts`, `chat-streaming.spec.ts`) for both `checkResponseContractCompliance` and `checkCitations` |
+| Backup/restore | **Done**: full round-trip restore, wrong-passphrase rejection (with zero live-file side effects), tampered/corrupted backup rejection (GCM auth tag), checksum-mismatch rejection independent of the auth tag, path-traversal-shaped file name rejection, stale-counterpart cleanup on encrypted/plaintext mode mismatch, and rollback-via-safety-snapshot — all in `backup-store.test.ts` (12 tests), plus a real-UI pass in `e2e/tests/backup-restore.spec.ts` |
 | Accessibility | Automated WCAG audit (axe-core or equivalent) in CI; `aria-live` announcement test for emergency banner |
 
 Every test category above should follow the existing repository convention: real
