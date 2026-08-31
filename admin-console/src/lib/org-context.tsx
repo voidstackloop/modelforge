@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { getMe } from "./api/client";
 import { loadPermissions, type PermissionMap } from "./authz/permissions";
@@ -7,7 +7,12 @@ import type { MeResponse } from "./api/types";
 interface MeContextValue {
     me: MeResponse | undefined;
     error: string | undefined;
-    refresh: () => void;
+    /** Awaitable so a caller that just mutated org membership (e.g.
+     * OrgPicker creating a new organization) can wait for the refreshed
+     * membership list before navigating into it — RequireOrg below bounces
+     * back to "/" the instant its organizationId isn't in `me.memberships`
+     * yet, which fired immediately on a fire-and-forget refresh. */
+    refresh: () => Promise<void>;
 }
 
 const MeContext = createContext<MeContextValue | undefined>(undefined);
@@ -19,27 +24,36 @@ const MeContext = createContext<MeContextValue | undefined>(undefined);
 export function MeProvider({ children }: { children: ReactNode }) {
     const [me, setMe] = useState<MeResponse | undefined>(undefined);
     const [error, setError] = useState<string | undefined>(undefined);
-    const [generation, setGeneration] = useState(0);
-
+    const mountedRef = useRef(true);
     useEffect(() => {
-        let cancelled = false;
+        // StrictMode's mount→cleanup→mount dance runs this cleanup once
+        // before the "real" mount — reset to true on every mount, not just
+        // once, or the ref stays permanently false and load() below never
+        // commits its result again.
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+        };
+    }, []);
+
+    const load = useCallback(async () => {
         // Intentional fetch-on-mount/refresh, same pattern (and same
         // suppression) as frontend/'s sessions-context.tsx.
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setError(undefined);
-        getMe()
-            .then((response) => {
-                if (!cancelled) setMe(response);
-            })
-            .catch((err: unknown) => {
-                if (!cancelled) setError(err instanceof Error ? err.message : "Could not load your account.");
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [generation]);
+        try {
+            const response = await getMe();
+            if (mountedRef.current) setMe(response);
+        } catch (err) {
+            if (mountedRef.current) setError(err instanceof Error ? err.message : "Could not load your account.");
+        }
+    }, []);
 
-    return <MeContext.Provider value={{ me, error, refresh: () => setGeneration((g) => g + 1) }}>{children}</MeContext.Provider>;
+    useEffect(() => {
+        void load();
+    }, [load]);
+
+    return <MeContext.Provider value={{ me, error, refresh: load }}>{children}</MeContext.Provider>;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- shared with MeProvider, same as sessions-context.tsx's useSessions

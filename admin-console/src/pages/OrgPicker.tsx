@@ -44,6 +44,11 @@ export default function OrgPicker() {
         setCreateError(undefined);
         try {
             const { organization } = await createOrganization(newOrgName.trim());
+            // RequireOrg checks the freshly-created org against `me`'s
+            // membership list before rendering — without this, it's still
+            // the pre-creation snapshot and RequireOrg bounces straight back
+            // to "/", which looked like the creation had silently failed.
+            await refresh();
             navigate(`/organizations/${organization.id}/users`);
         } catch (err) {
             setCreateError(err instanceof ApiError ? (err.body?.message ?? err.message) : "Could not create the organization.");

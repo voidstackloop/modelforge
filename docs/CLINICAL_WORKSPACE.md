@@ -602,7 +602,15 @@ Notably:
   tested in this codebase (see [Development: testing](DEVELOPMENT.md#testing)).
 
 Playwright e2e (`e2e/tests/*.spec.ts`) has not been extended for the clinical
-layer or run against it in this environment — see [Known limitations](#known-limitations).
+layer with scripted assertions, but `e2e/full-app-tour.js` (a headless,
+non-mocked Electron launch — the same `_electron.launch({headless: "new"})`
+pattern as `manual-app-test.js`) has been run against it end to end: every
+clinical route (Patient Cases list, create, detail; Evidence Library;
+Knowledge Graph; Audit & Privacy) plus every Settings and Runtime Manager tab,
+with zero console errors or uncaught page errors captured across the whole
+run. Screenshots from that pass are in `docs/screenshots/`. This is visual/
+crash verification, not scripted behavioral assertions — see [Known
+limitations](#known-limitations) for what that still leaves uncovered.
 
 ## Known limitations
 
