@@ -133,7 +133,15 @@ BEGIN
     WITH changed AS (
         UPDATE public.compute_nodes
         SET state='offline', updated_at=now(),
-            document=jsonb_set(jsonb_set(document,'{state}','"offline"'::jsonb),'{updatedAt}',to_jsonb(now()::text))
+            -- to_jsonb() applied directly to a timestamptz produces a real
+            -- ISO-8601 string ("2026-08-31T13:45:00.123456+00:00"); casting
+            -- to ::text first (the bug this replaced) instead captures
+            -- Postgres's own default text format ("2026-08-31
+            -- 13:45:00.123456+00" -- space-separated, no colon in the
+            -- offset), which fails the strict z.string().datetime({offset:
+            -- true}) this document's own updatedAt field is re-validated
+            -- against on every subsequent read.
+            document=jsonb_set(jsonb_set(document,'{state}','"offline"'::jsonb),'{updatedAt}',to_jsonb(now()))
         WHERE state='online' AND last_heartbeat_at < p_cutoff
         RETURNING id
     ) SELECT COALESCE(array_agg(id),'{}'::uuid[]) INTO affected FROM changed;
@@ -152,14 +160,18 @@ BEGIN
     WITH expired AS (
         UPDATE public.compute_resource_leases
         SET state='expired', updated_at=p_now,
-            document=jsonb_set(jsonb_set(document,'{state}','"expired"'::jsonb),'{updatedAt}',to_jsonb(p_now::text))
+            -- See sweep_stale_compute_nodes() above for why this must not
+            -- cast p_now to ::text before to_jsonb().
+            document=jsonb_set(jsonb_set(document,'{state}','"expired"'::jsonb),'{updatedAt}',to_jsonb(p_now))
         WHERE state IN ('offered','acknowledged','running')
           AND (expires_at <= p_now OR (state='offered' AND acknowledgment_deadline_at <= p_now))
         RETURNING id,request_id
     ), requeued AS (
         UPDATE public.compute_resource_requests request
         SET state='queued',updated_at=p_now,
-            document=jsonb_set(jsonb_set(request.document - 'assignedAt','{state}','"queued"'::jsonb),'{updatedAt}',to_jsonb(p_now::text))
+            -- See sweep_stale_compute_nodes() above for why this must not
+            -- cast p_now to ::text before to_jsonb().
+            document=jsonb_set(jsonb_set(request.document - 'assignedAt','{state}','"queued"'::jsonb),'{updatedAt}',to_jsonb(p_now))
         FROM expired WHERE request.id=expired.request_id AND request.state <> 'cancelled'
         RETURNING request.id
     ) SELECT COALESCE(array_agg(id),'{}'::uuid[]) INTO affected FROM expired;
