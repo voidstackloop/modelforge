@@ -430,9 +430,25 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: |
+            packages/contracts/package-lock.json
             frontend/package-lock.json
             app/package-lock.json
             mastervault-mcp-server/package-lock.json
+
+      # frontend/ and app/ both depend on this via `file:../packages/contracts`.
+      # `npm ci` in either only symlinks packages/contracts itself into their
+      # node_modules — it never installs *that* package's own dependencies
+      # (zod, typescript) into packages/contracts/node_modules, since this
+      # repo uses plain `file:` references, not true npm workspaces. cyclonedx-
+      # npm shells out to `npm ls --all`, which walks into that symlink and
+      # reports it as broken ("missing: typescript, zod, required by
+      # contracts@npm:@modelforge/contracts") whenever this step is skipped —
+      # confirmed by reproducing the exact ELSPROBLEMS/exit-254 failure this
+      # job hit in CI, byte for byte, with packages/contracts/node_modules
+      # absent, and confirming it clears once this step runs.
+      - name: Install @modelforge/contracts dependencies
+        working-directory: packages/contracts
+        run: npm ci
 
       - name: Install frontend dependencies
         working-directory: frontend
