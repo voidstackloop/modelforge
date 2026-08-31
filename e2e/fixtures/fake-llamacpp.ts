@@ -1,4 +1,3 @@
-import * as path from "node:path";
 import type { ElectronApplication } from "@playwright/test";
 
 // llama.cpp runs in-process (node-llama-cpp, no spawned server, no HTTP
@@ -9,14 +8,11 @@ import type { ElectronApplication } from "@playwright/test";
 // process's environment (see that file's own comment on why this is safe —
 // nothing in a real launch ever sets that variable). This fixture's job is
 // just wiring: setting the env var at launch (via LaunchOptions.env), and
-// controlling the fake's next response from the Playwright test process by
-// re-requiring the same compiled module inside the already-running main
-// process via ElectronApplication.evaluate() — Node's require cache
-// guarantees that resolves to the exact same module instance
-// chat-dispatch.ts already loaded, not a second copy.
-
-const APP_DIR = path.resolve(__dirname, "../../app");
-const LLAMACPP_MANAGER_JS = path.join(APP_DIR, "dist", "llamacpp-manager.js");
+// controlling the fake's next response from the Playwright test process via
+// ElectronApplication.evaluate() reading a global llamacpp-manager.ts
+// exposes for exactly this purpose (that callback runs in a bare V8 context
+// with no `require` in scope, so re-require()-ing the compiled module from
+// there — this fixture's old approach — no longer works).
 
 /** Environment for launchApp({ env: FAKE_LLAMACPP_ENV }) to activate the fake
  * module. Combine with settings like `{ preferredRuntime: "llamacpp" }` /
@@ -41,20 +37,14 @@ export interface FakeLlamaCppController {
 export function controlFakeLlamaCpp(app: ElectronApplication): FakeLlamaCppController {
     return {
         async setNextChatTurn(turn: FakeLlamaCppChatTurn): Promise<void> {
-            await app.evaluate(
-                (_electron, args: { managerPath: string; turn: FakeLlamaCppChatTurn }) => {
-                    const manager = require(args.managerPath);
-                    manager.__setFakeLlamaCppNextChatTurnForTests(args.turn);
-                },
-                { managerPath: LLAMACPP_MANAGER_JS, turn }
-            );
+            await app.evaluate((_electron, nextTurn: FakeLlamaCppChatTurn) => {
+                (globalThis as unknown as { __modelforgeFakeLlamaCppTestHooks: { __setFakeLlamaCppNextChatTurnForTests(t: FakeLlamaCppChatTurn): void } }).__modelforgeFakeLlamaCppTestHooks.__setFakeLlamaCppNextChatTurnForTests(nextTurn);
+            }, turn);
         },
         async getChatRequestCount(): Promise<number> {
-            return app.evaluate((_electron, managerPath: string) => {
-                // eslint-disable-next-line @typescript-eslint/no-var-requires
-                const manager = require(managerPath);
-                return manager.__getFakeLlamaCppChatRequestCountForTests();
-            }, LLAMACPP_MANAGER_JS);
+            return app.evaluate(() => {
+                return (globalThis as unknown as { __modelforgeFakeLlamaCppTestHooks: { __getFakeLlamaCppChatRequestCountForTests(): number } }).__modelforgeFakeLlamaCppTestHooks.__getFakeLlamaCppChatRequestCountForTests();
+            });
         },
     };
 }

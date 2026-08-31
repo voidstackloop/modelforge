@@ -121,6 +121,25 @@ export function __getFakeLlamaCppLastContextSizeForTests(): number | "auto" | nu
     return fakeState.lastContextSize;
 }
 
+// e2e/fixtures/fake-llamacpp.ts drives these test hooks from OUTSIDE this
+// process via Playwright's ElectronApplication.evaluate() — that callback
+// runs in a bare V8 execution context with no `require` in scope (Electron/
+// Playwright stopped exposing one; re-require()-ing this compiled file from
+// there throws "require is not defined"), so the hooks are exposed as a
+// global instead. Node's module cache still guarantees this is the exact
+// module instance chat-dispatch.ts already loaded — only *how* the outside
+// test process reaches it changed, not the "same instance" guarantee.
+// Gated the same as the fake module swap itself: absent in every real
+// launch, so this is a complete no-op outside an e2e run.
+if (process.env[FAKE_MODULE_ENV_VAR] === "1") {
+    (globalThis as unknown as { __modelforgeFakeLlamaCppTestHooks?: unknown }).__modelforgeFakeLlamaCppTestHooks = {
+        __setFakeLlamaCppNextChatTurnForTests,
+        __getFakeLlamaCppChatRequestCountForTests,
+        __getFakeLlamaCppContextCreationCountForTests,
+        __getFakeLlamaCppLastContextSizeForTests,
+    };
+}
+
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
