@@ -683,6 +683,8 @@ export interface AppSettings {
   resourceMaxRamMB?: number;
   resourceMaxVramMB?: number;
   resourceCpuThreadCeiling?: number;
+  computeAgentEnabled?: boolean;
+  computeNodeId?: string;
   agentMaxSteps?: number;
   llamaCppMaxCachedModels?: number;
   llamaCppMaxThreads?: number;
@@ -1343,6 +1345,10 @@ export interface ElectronApi {
     stageLocalCases: () => Promise<StagedMigrationResult>;
     activateCaseMigration: (migrationId: string) => Promise<MigrationSession>;
     rollbackCaseMigration: (migrationId: string) => Promise<MigrationSession>;
+  };
+  computeAgent: {
+    getIdentity: () => Promise<{ fingerprint256: string }>;
+    getStatus: () => Promise<{ enabled: boolean; nodeId: string | null; running: boolean }>;
   };
   imaging: {
     listStudies: (caseId: string) => Promise<ImagingStudy[]>;

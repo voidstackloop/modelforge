@@ -573,6 +573,11 @@ export const api = {
         rollbackCaseMigration: (migrationId: string): Promise<MigrationSession> => ipcRenderer.invoke("sharedBackend:rollbackCaseMigration", migrationId),
     },
 
+    computeAgent: {
+        getIdentity: (): Promise<{ fingerprint256: string }> => ipcRenderer.invoke("computeAgent:getIdentity"),
+        getStatus: (): Promise<{ enabled: boolean; nodeId: string | null; running: boolean }> => ipcRenderer.invoke("computeAgent:getStatus"),
+    },
+
     imaging: {
         listStudies: (caseId: string): Promise<ImagingStudy[]> => ipcRenderer.invoke("imaging:listStudies", caseId),
         getStudy: (studyId: string): Promise<ImagingStudyDetail> => ipcRenderer.invoke("imaging:getStudy", studyId),

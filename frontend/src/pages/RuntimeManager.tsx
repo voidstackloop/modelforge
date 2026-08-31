@@ -69,6 +69,9 @@ export default function RuntimeManager() {
   const [resourceTelemetry, setResourceTelemetry] = useState<ResourceTelemetry | null>(null);
   const [resourceSettings, setResourceSettings] = useState<{ mode: "balanced" | "performance" | "efficient" | "manual"; maxRamMB?: number; maxVramMB?: number; cpuThreadCeiling?: number }>({ mode: "balanced" });
   const [resourceSettingsSaving, setResourceSettingsSaving] = useState(false);
+  const [fleetFingerprint, setFleetFingerprint] = useState<string | null>(null);
+  const [fleetStatus, setFleetStatus] = useState<{ enabled: boolean; nodeId: string | null; running: boolean } | null>(null);
+  const [fleetSaving, setFleetSaving] = useState(false);
   const [modelAssessments, setModelAssessments] = useState<GgufAssessment[]>([]);
   const [loadedModelPaths, setLoadedModelPaths] = useState<Set<string>>(new Set());
   const [modelAssessmentsLoading, setModelAssessmentsLoading] = useState(false);
@@ -107,6 +110,27 @@ export default function RuntimeManager() {
       setResourceSettingsSaving(false);
     }
   }, [hasApi, tr, toast]);
+  const refreshFleet = useCallback(async () => {
+    if (!hasApi || !window.api.computeAgent) return;
+    try {
+      const [identity, status] = await Promise.all([window.api.computeAgent.getIdentity(), window.api.computeAgent.getStatus()]);
+      setFleetFingerprint(identity.fingerprint256);
+      setFleetStatus(status);
+    } catch { /* fleet enrollment is opt-in and best-effort to surface */ }
+  }, [hasApi]);
+  const saveFleetSettings = useCallback(async (next: { enabled: boolean; nodeId: string }) => {
+    if (!hasApi) return;
+    setFleetSaving(true);
+    try {
+      await window.api.settings.save({ computeAgentEnabled: next.enabled, computeNodeId: next.nodeId.trim() || undefined });
+      await refreshFleet();
+      toast.success(tr ? "Filo ayarları kaydedildi." : "Fleet settings saved.");
+    } catch (reason) {
+      toast.error((reason as Error).message);
+    } finally {
+      setFleetSaving(false);
+    }
+  }, [hasApi, refreshFleet, tr, toast]);
   const refreshGpuTelemetry = useCallback(async () => { if (!hasApi || !window.api.gpu) return; try { setGpuTelemetry(await window.api.gpu.getTelemetry()); } catch { /* telemetry is best-effort */ } }, [hasApi]);
   const refreshResourceTelemetry = useCallback(async () => { if (!hasApi || !window.api.resource) return; try { setResourceTelemetry(await window.api.resource.getTelemetry()); } catch { /* telemetry is best-effort */ } }, [hasApi]);
   // Item 6/7's "Models" panel: per-installed-model compatibility, reusing
@@ -145,7 +169,7 @@ export default function RuntimeManager() {
     }
   }, [hasApi, refreshGpuTelemetry, toast, tr]);
 
-  useEffect(() => { const timer = window.setTimeout(() => { void refreshStatuses(); void refreshEnvironments(); void refreshModels(); void refreshGpuTelemetry(); }, 0); return () => clearTimeout(timer); }, [refreshStatuses, refreshEnvironments, refreshModels, refreshGpuTelemetry]);
+  useEffect(() => { const timer = window.setTimeout(() => { void refreshStatuses(); void refreshEnvironments(); void refreshModels(); void refreshGpuTelemetry(); void refreshFleet(); }, 0); return () => clearTimeout(timer); }, [refreshStatuses, refreshEnvironments, refreshModels, refreshGpuTelemetry, refreshFleet]);
   useEffect(() => { const timer = window.setInterval(() => void refreshStatuses(), 5_000); const visible = () => { if (document.visibilityState === "visible") void refreshStatuses(); }; document.addEventListener("visibilitychange", visible); return () => { clearInterval(timer); document.removeEventListener("visibilitychange", visible); }; }, [refreshStatuses]);
   // The main process already caches/dedupes/pauses the underlying nvidia-smi
   // / rocm-smi probes (gpu-telemetry.ts) — this just re-reads that shared
@@ -221,7 +245,7 @@ export default function RuntimeManager() {
 
   return <main className="min-h-full bg-background p-4 md:p-6"><div className="mx-auto max-w-7xl space-y-5">
     <header className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><Button variant="ghost" size="icon" onClick={() => navigate(-1)} aria-label={tr ? "Geri" : "Back"}><ArrowLeft className="size-4" /></Button><div><h1 className="text-2xl font-semibold tracking-tight">{tr ? "Çalışma Zamanı Yöneticisi" : "Runtime Manager"}</h1><p className="text-sm text-muted-foreground">{tr ? "Yerel çıkarım süreçleri, ortamlar ve tanılama" : "Local inference processes, environments, and diagnostics"}</p></div></div><Button variant="outline" disabled={hardwareRefreshing} onClick={() => void Promise.all([refreshStatuses(), refreshEnvironments(), refreshModels(), refreshGpuTopology()])}><RefreshCw className={`mr-2 size-4 ${environmentLoading || hardwareRefreshing ? "animate-spin motion-reduce:animate-none" : ""}`} />{tr ? "Yenile" : "Refresh"}</Button></header>
-    <Tabs value={tab} onValueChange={(value) => setTab(String(value))}><TabsList variant="line" className="max-w-full overflow-x-auto"><TabsTrigger value="overview">{tr ? "Genel Bakış" : "Overview"}</TabsTrigger><TabsTrigger value="runtimes">{tr ? "Çalışma Zamanları" : "Runtimes"}</TabsTrigger><TabsTrigger value="workloads">{tr ? "İş yükleri" : "Workloads"}</TabsTrigger><TabsTrigger value="models">{tr ? "Modeller" : "Models"}</TabsTrigger><TabsTrigger value="environments">{tr ? "Ortamlar" : "Environments"}</TabsTrigger><TabsTrigger value="resource-settings">{tr ? "Kaynak ayarları" : "Resource settings"}</TabsTrigger><TabsTrigger value="logs">{tr ? "Günlükler ve tanılama" : "Logs & diagnostics"}</TabsTrigger></TabsList>
+    <Tabs value={tab} onValueChange={(value) => setTab(String(value))}><TabsList variant="line" className="max-w-full overflow-x-auto"><TabsTrigger value="overview">{tr ? "Genel Bakış" : "Overview"}</TabsTrigger><TabsTrigger value="runtimes">{tr ? "Çalışma Zamanları" : "Runtimes"}</TabsTrigger><TabsTrigger value="workloads">{tr ? "İş yükleri" : "Workloads"}</TabsTrigger><TabsTrigger value="models">{tr ? "Modeller" : "Models"}</TabsTrigger><TabsTrigger value="environments">{tr ? "Ortamlar" : "Environments"}</TabsTrigger><TabsTrigger value="resource-settings">{tr ? "Kaynak ayarları" : "Resource settings"}</TabsTrigger><TabsTrigger value="fleet">{tr ? "Filo" : "Fleet"}</TabsTrigger><TabsTrigger value="logs">{tr ? "Günlükler ve tanılama" : "Logs & diagnostics"}</TabsTrigger></TabsList>
       <TabsContent value="overview" className="space-y-5 pt-4">
         <section className="grid overflow-hidden rounded-xl border bg-card sm:grid-cols-2 lg:grid-cols-4"><Metric label={tr ? "Çalışan" : "Running"} value={`${running.length} / ${statuses.length}`} detail={unhealthy.length ? `${unhealthy.length} ${tr ? "sağlıksız" : "unhealthy"}` : tr ? "Tümü sağlıklı" : "All healthy"} /><Metric label={tr ? "Etkin istekler" : "Active requests"} value={String(activeRequests)} detail={running.map((item) => item.model).filter(Boolean).join(", ") || "—"} /><Metric label="RAM / VRAM" value={`${memory(totalRam)} / ${memory(totalVram)}`} detail={accelerator} /><Metric label={tr ? "İşlem gerekli" : "Needs attention"} value={String(repairCount)} detail={`${tr ? "Son denetim" : "Last check"}: ${fmtTime(statuses.map((item) => item.lastHealthCheckAt).filter(Boolean).sort().at(-1) ?? null)}`} /></section>
         <section className="rounded-xl border bg-card"><div className="border-b px-4 py-3"><h2 className="font-medium">{tr ? "Çalışma zamanı özeti" : "Runtime summary"}</h2></div><div className="divide-y">{statuses.map((status) => <button key={status.backend} className="grid w-full gap-2 px-4 py-3 text-left hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[1.2fr_.8fr_1fr_auto] sm:items-center" onClick={() => { setTab("runtimes"); }}><span><span className="font-medium">{RUNTIMES[status.backend].name}</span><span className="block text-xs text-muted-foreground">{status.model || RUNTIMES[status.backend].purpose}</span></span><StatusBadge state={displayState(status)} /><span className="text-xs text-muted-foreground">{status.activeRequests} {tr ? "istek" : "requests"} · {memory(status.ramMB)} RAM</span><span className="text-xs text-muted-foreground">{fmtTime(status.lastHealthCheckAt)}</span></button>)}</div></section>
@@ -232,6 +256,7 @@ export default function RuntimeManager() {
       <TabsContent value="models" className="space-y-4 pt-4"><ModelsPanel assessments={modelAssessments} loadedPaths={loadedModelPaths} loading={modelAssessmentsLoading} tr={tr} /></TabsContent>
       <TabsContent value="environments" className="space-y-3 pt-4"><div className="rounded-xl border bg-card"><div className="border-b px-4 py-3"><h2 className="font-medium">{tr ? "Yönetilen Python ortamları" : "Managed Python environments"}</h2><p className="text-xs text-muted-foreground">{tr ? "Hiçbir kurulum komutu açık onay olmadan çalıştırılmaz." : "No installation command runs without explicit approval."}</p></div><div className="divide-y">{environments.map((environment) => <EnvironmentRow key={environment.family} environment={environment} tr={tr} onPlan={() => setConfirmation({ kind: "environment", environment })} />)}</div></div></TabsContent>
       <TabsContent value="resource-settings" className="space-y-4 pt-4"><ResourceSettingsPanel settings={resourceSettings} saving={resourceSettingsSaving} onSave={(next) => void saveResourceSettings(next)} tr={tr} /></TabsContent>
+      <TabsContent value="fleet" className="space-y-4 pt-4"><FleetAgentPanel fingerprint={fleetFingerprint} status={fleetStatus} saving={fleetSaving} onSave={(next) => void saveFleetSettings(next)} tr={tr} /></TabsContent>
       <TabsContent value="logs" className="space-y-3 pt-4"><section className="overflow-hidden rounded-xl border bg-card"><div className="flex flex-wrap items-center gap-2 border-b p-3"><label className="sr-only" htmlFor="runtime-log-selector">Runtime</label><select id="runtime-log-selector" className="h-8 rounded-lg border bg-background px-2 text-sm" value={logBackend} onChange={(event) => setLogBackend(event.target.value as Backend)}>{Object.values(RUNTIMES).map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.name}</option>)}</select><select aria-label={tr ? "Günlük kaynağı" : "Log source"} className="h-8 rounded-lg border bg-background px-2 text-sm" value={logSource} onChange={(event) => setLogSource(event.target.value)}><option value="all">{tr ? "Tüm kaynaklar" : "All sources"}</option><option value="manager">Manager</option><option value="stdout">stdout</option><option value="stderr">stderr</option></select><div className="relative min-w-48 flex-1"><Search className="absolute left-2.5 top-2 size-4 text-muted-foreground" /><Input className="h-8 pl-8" value={logSearch} onChange={(event) => setLogSearch(event.target.value)} placeholder={tr ? "Günlüklerde ara" : "Search logs"} /></div><label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />{tr ? "Çıktıyı izle" : "Follow output"}</label><Button size="sm" variant="outline" onClick={() => { void navigator.clipboard.writeText(visibleLogs.join("\n")); toast.success(tr ? "Günlükler kopyalandı." : "Logs copied."); }}><Clipboard className="mr-1.5 size-3.5" />{tr ? "Kopyala" : "Copy"}</Button><Button size="sm" variant="outline" onClick={() => window.api.localBackends.exportLogs(logBackend)}><Download className="mr-1.5 size-3.5" />{tr ? "Dışa aktar" : "Export"}</Button><Button size="sm" variant="ghost" onClick={() => setConfirmation({ kind: "clear-logs", backend: logBackend })}><Trash2 className="mr-1.5 size-3.5" />{tr ? "Temizle" : "Clear"}</Button></div><div className="h-[min(60vh,34rem)] overflow-auto bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-200" role="log" aria-live="polite">{visibleLogs.length ? visibleLogs.map((line, index) => <div key={`${index}-${line.slice(0, 30)}`} className={line.includes("[stderr]") ? "text-amber-300" : ""}>{line}</div>) : <div className="flex h-full items-center justify-center text-zinc-500">{tr ? "Bu filtre için günlük yok." : "No logs match this filter."}</div>}<div ref={logEnd} /></div></section></TabsContent>
     </Tabs>
     {!hasApi && <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">{tr ? "Çalışma zamanı yönetimi masaüstü uygulamasında kullanılabilir." : "Runtime management is available in the desktop application."}</div>}
@@ -424,6 +449,51 @@ function ResourceSettingsPanel({ settings, saving, onSave, tr }: { settings: Res
     <div className="flex justify-end gap-2 border-t pt-3">
       <Button variant="outline" disabled={!dirty || saving} onClick={() => setDraft(settings)}>{tr ? "Sıfırla" : "Reset"}</Button>
       <Button disabled={!dirty || saving} onClick={() => onSave(draft)}>{saving ? (tr ? "Kaydediliyor…" : "Saving…") : (tr ? "Kaydet" : "Save")}</Button>
+    </div>
+  </section>;
+}
+
+// Requires an already-connected shared backend (Audit & Privacy's own
+// enrollment panel) — enabling this without one configured saves cleanly
+// (compute-agent.ts's own runCycle() just no-ops each cycle until then)
+// but never actually starts heartbeating, so the copy below says so up
+// front rather than let a user wonder why nothing happens.
+function FleetAgentPanel({ fingerprint, status, saving, onSave, tr }: { fingerprint: string | null; status: { enabled: boolean; nodeId: string | null; running: boolean } | null; saving: boolean; onSave(next: { enabled: boolean; nodeId: string }): void; tr: boolean }) {
+  const [enabled, setEnabled] = useState(status?.enabled ?? false);
+  const [nodeId, setNodeId] = useState(status?.nodeId ?? "");
+  useEffect(() => { setEnabled(status?.enabled ?? false); setNodeId(status?.nodeId ?? ""); }, [status]);
+  const dirty = enabled !== (status?.enabled ?? false) || nodeId !== (status?.nodeId ?? "");
+  const [copied, setCopied] = useState(false);
+
+  return <section className="max-w-2xl space-y-4 overflow-hidden rounded-xl border bg-card p-4">
+    <div>
+      <h2 className="font-medium">{tr ? "Kurumsal işlem filosu" : "Enterprise compute fleet"}</h2>
+      <p className="mt-1 text-xs text-muted-foreground">{tr ? "Bu cihazı, kurumun paylaşılan arka ucuna zaten bağlıysa (Denetim ve Gizlilik) bir işlem havuzuna kaydedin. Yalnızca havuzun taahhüt ettiği kapasiteyi korur — burada hiçbir iş çalıştırılmaz." : "Enroll this device into a compute pool, if it's already connected to your organization's shared backend (Audit & Privacy). This only protects the capacity the fleet has committed — no work is dispatched to run here yet."}</p>
+    </div>
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-muted-foreground">{tr ? "Cihaz parmak izi" : "Device fingerprint"}</p>
+      <div className="flex items-center gap-2">
+        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-lg border bg-background px-3 py-2 font-mono text-[11px]">{fingerprint ?? "…"}</code>
+        <Button variant="outline" size="sm" disabled={!fingerprint} onClick={() => { if (fingerprint) { void navigator.clipboard.writeText(fingerprint); setCopied(true); window.setTimeout(() => setCopied(false), 2000); } }}>
+          <Clipboard className="mr-1.5 size-3.5" />{copied ? (tr ? "Kopyalandı" : "Copied") : (tr ? "Kopyala" : "Copy")}
+        </Button>
+      </div>
+      <p className="text-[11px] text-muted-foreground">{tr ? "Bu cihazı bir işlem havuzuna eklemesi için kuruluşunuzun işlem yöneticisine verin." : "Give this to your organization's compute admin to register this device to a pool."}</p>
+    </div>
+    <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+        {tr ? "Düğüm kimliği (yönetici tarafından verilir)" : "Node ID (given by your admin)"}
+        <Input value={nodeId} onChange={(event) => setNodeId(event.target.value)} placeholder={tr ? "kayıttan sonra buraya yapıştırın" : "paste it here after registration"} />
+      </label>
+      <label className="flex items-end gap-2 pb-0.5 text-sm">
+        <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+        {tr ? "Filo aracısını etkinleştir" : "Enable fleet agent"}
+      </label>
+    </div>
+    {status && <p className="text-[11px] text-muted-foreground">{status.running ? (tr ? "Aracı çalışıyor ve düzenli olarak nabız gönderiyor." : "The agent is running and heartbeating regularly.") : status.enabled ? (tr ? "Etkin ancak henüz çalışmıyor — bir düğüm kimliği gerekiyor olabilir." : "Enabled but not running yet — a node ID may still be needed.") : (tr ? "Şu anda devre dışı." : "Currently disabled.")}</p>}
+    <div className="flex justify-end gap-2 border-t pt-3">
+      <Button variant="outline" disabled={!dirty || saving} onClick={() => { setEnabled(status?.enabled ?? false); setNodeId(status?.nodeId ?? ""); }}>{tr ? "Sıfırla" : "Reset"}</Button>
+      <Button disabled={!dirty || saving} onClick={() => onSave({ enabled, nodeId })}>{saving ? (tr ? "Kaydediliyor…" : "Saving…") : (tr ? "Kaydet" : "Save")}</Button>
     </div>
   </section>;
 }
