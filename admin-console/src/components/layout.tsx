@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import {
     DropdownMenu,
     DropdownMenuContent,
+    DropdownMenuGroup,
     DropdownMenuItem,
     DropdownMenuLabel,
     DropdownMenuSeparator,
@@ -57,14 +58,16 @@ export default function Layout() {
                             }
                         />
                         <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Switch organization</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {me?.memberships.map((m) => (
-                                <DropdownMenuItem key={m.organization.id} onClick={() => navigate(`/organizations/${m.organization.id}/users`)}>
-                                    {m.organization.name}
-                                    {m.organization.id === organizationId && <span className="ml-auto text-xs text-muted-foreground">current</span>}
-                                </DropdownMenuItem>
-                            ))}
+                            <DropdownMenuGroup>
+                                <DropdownMenuLabel>Switch organization</DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+                                {me?.memberships.map((m) => (
+                                    <DropdownMenuItem key={m.organization.id} onClick={() => navigate(`/organizations/${m.organization.id}/users`)}>
+                                        {m.organization.name}
+                                        {m.organization.id === organizationId && <span className="ml-auto text-xs text-muted-foreground">current</span>}
+                                    </DropdownMenuItem>
+                                ))}
+                            </DropdownMenuGroup>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem onClick={() => navigate("/")}>All organizations…</DropdownMenuItem>
                         </DropdownMenuContent>

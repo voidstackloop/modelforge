@@ -43,7 +43,7 @@ export class ImagingStack extends Stack {
         // once the bucket and distribution exist, scoped exactly to the
         // two principals the table calls for — nothing broader.
         const cmk = new kms.Key(this, "ImagingCmk", {
-            description: "CMK for ModelForge imaging object storage (DICOM instances) — see docs/IMAGING.md",
+            description: "CMK for ModelForge imaging object storage (DICOM instances) - see docs/IMAGING.md",
             enableKeyRotation: true,
             removalPolicy: RemovalPolicy.RETAIN,
         });
@@ -56,7 +56,11 @@ export class ImagingStack extends Stack {
             blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
             encryption: s3.BucketEncryption.S3_MANAGED,
             enforceSSL: true,
-            objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+            // CloudFront standard logging (legacy) requires ACLs and CDK
+            // explicitly requires OBJECT_WRITER for a custom log bucket.
+            // This bucket contains access logs only; the PHI-bearing imaging
+            // bucket below remains BUCKET_OWNER_ENFORCED with ACLs disabled.
+            objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
             lifecycleRules: [{ expiration: Duration.days(365) }],
             removalPolicy: RemovalPolicy.RETAIN,
         });
@@ -86,7 +90,7 @@ export class ImagingStack extends Stack {
         });
 
         const distribution = new cloudfront.Distribution(this, "ImagingDistribution", {
-            comment: "ModelForge imaging (DICOM) content delivery — see docs/IMAGING.md",
+            comment: "ModelForge imaging (DICOM) content delivery - see docs/IMAGING.md",
             defaultBehavior: {
                 // withOriginAccessControl(): OAC, not the legacy OAI this
                 // table explicitly rules out — CDK wires the bucket policy
@@ -99,20 +103,14 @@ export class ImagingStack extends Stack {
             },
             logBucket: accessLogBucket,
             logFilePrefix: "cloudfront/",
-            minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
         });
 
-        // KMS grants: exactly the two principals the table names, nothing
-        // broader. The CloudFront OAC service principal is scoped to this
-        // one distribution's ARN — not "any CloudFront distribution in this
-        // account" — via aws:SourceArn, the standard pattern for an
-        // OAC-fronted, KMS-encrypted S3 origin.
-        cmk.grant(
-            new iam.ServicePrincipal("cloudfront.amazonaws.com", {
-                conditions: { StringEquals: { "aws:SourceArn": `arn:${this.partition}:cloudfront::${this.account}:distribution/${distribution.distributionId}` } },
-            }),
-            "kms:Decrypt"
-        );
+        // S3BucketOrigin.withOriginAccessControl() adds the CloudFront KMS
+        // decrypt statement itself. Its source ARN is limited to this AWS
+        // account's distributions but intentionally uses a distribution-ID
+        // wildcard: making the key policy depend on this distribution while
+        // the distribution also depends on the KMS-backed bucket creates a
+        // CloudFormation cycle and makes a first deployment impossible.
 
         // Server task role: s3:PutObject/GetObject/DeleteObject on the
         // bucket prefix, plus the KMS grants above. Explicitly NOT
@@ -121,7 +119,7 @@ export class ImagingStack extends Stack {
         // identity actually runs server/ (see README.md).
         const serverTaskRole = new iam.Role(this, "ImagingServerTaskRole", {
             assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-            description: "Least-privilege role for the server/ process's S3ImagingObjectStore — attach to whatever compute actually runs it (see infra/imaging-cdk/README.md).",
+            description: "Least-privilege role for server S3 imaging access; attach to the compute running server (see infra/imaging-cdk/README.md).",
         });
         bucket.grantPut(serverTaskRole);
         bucket.grantRead(serverTaskRole);

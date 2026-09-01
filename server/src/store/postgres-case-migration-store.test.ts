@@ -78,6 +78,24 @@ describe.skipIf(!DATABASE_URL)("PostgresCaseMigrationStore (integration — requ
         expect(rows.rows[0].n).toBe(1);
     });
 
+    it("start() scopes the fingerprint dedup key per user — two org members with identical local case content (e.g. both empty) get distinct sessions, not the same one", async () => {
+        const otherActor: AuditActor = { externalSubject: "idp|test-actor-2", userId: randomUUID() };
+        const mine = await repo.start({ sourceFingerprint: "identical-content", totalItems: 0 }, ACTOR);
+        const theirs = await repo.start({ sourceFingerprint: "identical-content", totalItems: 0 }, otherActor);
+        expect(theirs.id).not.toBe(mine.id);
+
+        // Regression coverage for the real bug: activating MY session must
+        // never affect the OTHER actor's still-independent session — before
+        // this fix, they were the exact same row, so this validate() would
+        // have failed with "cannot be validated in its current state" once
+        // the shared session moved to "active".
+        await repo.validate(mine.id, ACTOR);
+        const activated = await repo.activate(mine.id, ACTOR);
+        expect(activated.status).toBe("active");
+        const theirsStillStaging = await repo.get(theirs.id);
+        expect(theirsStillStaging?.status).toBe("staging");
+    });
+
     it("upload() is idempotent per item key — replaying the same batch does not duplicate items, but reusing a key with different data is rejected", async () => {
         const session = await repo.start({ sourceFingerprint: "fp-upload", totalItems: 1 }, ACTOR);
         const original = patientCaseFixture("case-1");
@@ -138,7 +156,7 @@ describe.skipIf(!DATABASE_URL)("PostgresCaseMigrationStore (integration — requ
             await repo.rollback(session.id, ACTOR);
 
             const rows = await pool.query(
-                "SELECT action FROM audit_log WHERE organization_id = $1 AND target_id = $2 ORDER BY created_at",
+                "SELECT action FROM audit_log WHERE organization_id = $1 AND target_id = $2 ORDER BY sequence::bigint",
                 [orgId, session.id]
             );
             expect(rows.rows.map((r: { action: string }) => r.action)).toEqual([
