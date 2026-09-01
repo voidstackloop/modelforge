@@ -7,7 +7,7 @@ import { MigrationStateError, type CaseMigrationStore, type TenantCaseMigrationR
 import type { TenantCaseRepository } from "./case-store.js";
 
 interface StagedItem { itemKey: string; patientCase: unknown; hash: string; status: "pending" | "accepted" | "invalid" | "collision"; errors: string[] }
-interface State { session: MigrationSession; items: Map<string, StagedItem>; activated: Map<string, string> }
+interface State { session: MigrationSession; items: Map<string, StagedItem>; activated: Map<string, string>; createdBy: string | undefined }
 const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 export class InMemoryCaseMigrationStore implements CaseMigrationStore {
@@ -24,11 +24,17 @@ export class InMemoryCaseMigrationStore implements CaseMigrationStore {
         const requireState = (id: string): State => { const state = sessions.get(id); if (!state) throw Object.assign(new Error("Migration not found."), { statusCode: 404 }); return state; };
         return {
             start: async (input, actor) => {
-                const existing = [...sessions.values()].find((state) => state.session.sourceFingerprint === input.sourceFingerprint && state.session.status !== "rolled-back");
+                // Scoped by creator as well as content — see the Postgres
+                // store's identical fix and migrations/022_case_migration_fingerprint_scope.sql
+                // for why sourceFingerprint alone is not a safe dedup key
+                // across different users.
+                const existing = [...sessions.values()].find(
+                    (state) => state.session.sourceFingerprint === input.sourceFingerprint && state.createdBy === actor.userId && state.session.status !== "rolled-back"
+                );
                 if (existing) return existing.session;
                 const now = new Date().toISOString();
                 const session: MigrationSession = { id: randomUUID(), organizationId: context.organizationId, status: "staging", sourceFingerprint: input.sourceFingerprint, totalItems: input.totalItems, acceptedItems: 0, createdAt: now, updatedAt: now };
-                sessions.set(session.id, { session, items: new Map(), activated: new Map() });
+                sessions.set(session.id, { session, items: new Map(), activated: new Map(), createdBy: actor.userId });
                 await this.audit.record({ organizationId: context.organizationId, actorUserId: actor.userId, actorExternalSubject: actor.externalSubject, action: "caseMigration.start", targetType: "caseMigration", targetId: session.id });
                 return session;
             },
