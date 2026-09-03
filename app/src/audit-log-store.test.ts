@@ -39,13 +39,32 @@ describe("audit-log-store", () => {
 
     it(
         "caps retained events instead of growing without bound",
-        () => {
+        async () => {
             // The cap is soft (see MAX_EVENTS/TRIM_BATCH in audit-log-store.ts):
             // the file may transiently hold up to MAX_EVENTS + TRIM_BATCH
             // events between trims, so the loop must actually cross that
             // ceiling for this test to mean anything.
             const iterations = auditLogStore.MAX_EVENTS + auditLogStore.TRIM_BATCH + 10;
-            for (let i = 0; i < iterations; i++) auditLogStore.recordEvent("case-viewed", { targetId: String(i) });
+            // Yielding every YIELD_EVERY iterations is load-bearing, not
+            // cosmetic: this loop is a real, synchronous fs read-modify-
+            // write on Windows CI (see the timeout comment below) and a
+            // fully unyielded synchronous stretch past ~60s trips Vitest
+            // 3.x's own internal worker RPC heartbeat — a hardcoded,
+            // `testTimeout`-independent birpc timeout (default 60s,
+            // unconfigurable pre-Vitest-4:
+            // https://github.com/vitest-dev/vitest/issues/8164) — which
+            // fails the whole run with "[vitest-worker]: Timeout calling
+            // 'onTaskUpdate'" even though every assertion here passes.
+            // `setImmediate` (a real macrotask yield, not just `await
+            // Promise.resolve()`) gives the worker's event loop a chance to
+            // service that RPC channel periodically so the heartbeat never
+            // goes quiet for 60s straight, however long the test's total
+            // wall-clock time ends up being.
+            const YIELD_EVERY = 250;
+            for (let i = 0; i < iterations; i++) {
+                auditLogStore.recordEvent("case-viewed", { targetId: String(i) });
+                if (i % YIELD_EVERY === 0) await new Promise((resolve) => setImmediate(resolve));
+            }
             expect(auditLogStore.listEvents().length).toBeLessThanOrEqual(auditLogStore.MAX_EVENTS + auditLogStore.TRIM_BATCH);
         },
         // With the Rust addon built, recordEvent() appends in O(1) both below
@@ -225,9 +244,24 @@ describe("audit-log-store", () => {
     describe("fast-append path: stress and self-healing", () => {
         it.skipIf(!nativeAddonPresent)(
             "stays correct across multiple trim cycles (2x the cap)",
-            () => {
+            async () => {
                 const iterations = auditLogStore.MAX_EVENTS * 2 + 10;
-                for (let i = 0; i < iterations; i++) auditLogStore.recordEvent("case-viewed", { targetId: String(i) });
+                // Same periodic macrotask yield as the "caps retained
+                // events" test above, and for the same reason: a long
+                // unyielded synchronous stretch here can trip Vitest 3.x's
+                // own internal 60s worker RPC heartbeat independently of
+                // this test's own timeout (see that test's comment for the
+                // full explanation and the upstream issue link). Cheap
+                // insurance even when the addon's O(1) path keeps this fast
+                // in practice — `nativeAddonPresent` only checks that the
+                // addon directory exists, not that it actually loaded at
+                // runtime, so a silent fallback to the slow path here would
+                // otherwise hit the exact same failure mode.
+                const YIELD_EVERY = 250;
+                for (let i = 0; i < iterations; i++) {
+                    auditLogStore.recordEvent("case-viewed", { targetId: String(i) });
+                    if (i % YIELD_EVERY === 0) await new Promise((resolve) => setImmediate(resolve));
+                }
                 const events = auditLogStore.listEvents();
                 expect(events.length).toBeLessThanOrEqual(auditLogStore.MAX_EVENTS + auditLogStore.TRIM_BATCH);
 
