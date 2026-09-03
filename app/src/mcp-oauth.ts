@@ -32,7 +32,7 @@ function clientInfoKey(serverId: string): string {
 // a token to one specific server in the first place — a mixed-up token
 // would defeat that even if the resource indicator itself were correct).
 class ModelForgeOAuthProvider implements OAuthClientProvider {
-    constructor(private serverId: string) {}
+    constructor(private serverId: string, private preferredClientId?: string) {}
 
     get redirectUrl(): string {
         return REDIRECT_URI;
@@ -49,6 +49,7 @@ class ModelForgeOAuthProvider implements OAuthClientProvider {
     }
 
     clientInformation(): OAuthClientInformationMixed | undefined {
+        if (this.preferredClientId) return { client_id: this.preferredClientId } as OAuthClientInformationMixed;
         const raw = secretsStore.getSecret(clientInfoKey(this.serverId));
         return raw ? (JSON.parse(raw) as OAuthClientInformationMixed) : undefined;
     }
@@ -89,7 +90,7 @@ class ModelForgeOAuthProvider implements OAuthClientProvider {
 
 export function getOAuthProvider(config: McpServerConfig): OAuthClientProvider | undefined {
     if (config.auth?.type !== "oauth2") return undefined;
-    return new ModelForgeOAuthProvider(config.id);
+    return new ModelForgeOAuthProvider(config.id, config.oauthClientId);
 }
 
 export function hasStoredOAuthTokens(serverId: string): boolean {
@@ -144,7 +145,8 @@ function waitForRedirectCode(): Promise<string> {
  */
 export async function startOAuthFlow(config: McpServerConfig): Promise<void> {
     if (!config.url) throw new Error("This server has no URL configured.");
-    const provider = new ModelForgeOAuthProvider(config.id);
+    const provider = getOAuthProvider(config);
+    if (!provider) throw new Error("This server is not configured for OAuth.");
     const first = await auth(provider, { serverUrl: config.url });
     if (first === "AUTHORIZED") return;
     const code = await waitForRedirectCode();

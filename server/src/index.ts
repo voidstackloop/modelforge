@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { buildApp } from "./app.js";
-import { resolveJwks } from "./auth/oidc-verifier.js";
+import { resolveAuthorizationServerMetadata, resolveJwks } from "./auth/oidc-verifier.js";
+import { buildSmartConfiguration } from "./fhir/smart-configuration.js";
 import { createCacheFactory } from "./cache/create-cache.js";
 import { loadConfig, type AppConfig } from "./config.js";
 import type { AccessGovernanceStore } from "./store/access-governance-store.js";
@@ -22,6 +23,9 @@ import { InMemoryIdempotencyStore } from "./store/in-memory-idempotency-store.js
 import { InMemoryPrincipalStore } from "./store/in-memory-principal-store.js";
 import type { McpRegistryStore } from "./store/mcp-registry-store.js";
 import { InMemoryMcpRegistryStore, PostgresMcpRegistryStore } from "./store/mcp-registry-store.js";
+import type { McpClinicalStore } from "./store/mcp-clinical-store.js";
+import { InMemoryMcpClinicalStore, PostgresMcpClinicalStore } from "./store/mcp-clinical-store.js";
+import { Rs256McpApprovalTicketIssuer } from "./mcp-approval-issuer.js";
 import { runMigrations } from "./store/migrate.js";
 import { PostgresCaseStore } from "./store/postgres-case-store.js";
 import { PostgresCaseMigrationStore } from "./store/postgres-case-migration-store.js";
@@ -39,7 +43,9 @@ import { InMemorySessionStore } from "./store/in-memory-session-store.js";
 import { PostgresSessionStore } from "./store/postgres-session-store.js";
 import type { TenantBackupStore } from "./store/tenant-backup-store.js";
 import { InMemoryTenantBackupStore, PostgresTenantBackupStore } from "./store/tenant-backup-store.js";
-import { PostgresTenantDirectory, StoreTenantDirectory, type TenantDirectory } from "./tenant-context.js";
+import { PostgresTenantDirectory, StoreTenantDirectory, schemaNameForTenant, type TenantDirectory } from "./tenant-context.js";
+import { startMllpServer } from "./hl7/mllp-server.js";
+import { createMllpIngestionHandler } from "./hl7/mllp-handler.js";
 import { randomBytes } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -56,6 +62,13 @@ import { AiInferenceAdmission } from "./ai-gateway/admission.js";
 import type { ComputeControlStore } from "./store/compute-control-store.js";
 import { InMemoryComputeControlStore } from "./store/compute-control-store.js";
 import { PostgresComputeControlStore } from "./store/postgres-compute-control-store.js";
+import type { Hl7IngestionStore } from "./store/hl7-ingestion-store.js";
+import { InMemoryHl7IngestionStore } from "./store/in-memory-hl7-ingestion-store.js";
+import { PostgresHl7IngestionStore } from "./store/postgres-hl7-ingestion-store.js";
+import type { SmartLaunchStore } from "./store/smart-launch-store.js";
+import { InMemorySmartLaunchStore } from "./store/in-memory-smart-launch-store.js";
+import { PostgresSmartLaunchStore } from "./store/postgres-smart-launch-store.js";
+import { loadTokenEncryptionKey } from "./smart-launch/token-crypto.js";
 
 /** How long GET /health waits on its own DB probe before reporting
  * degraded — independent of the pool's own connectionTimeoutMillis/
@@ -83,9 +96,12 @@ interface BuiltStores {
     accessGovernanceStore: AccessGovernanceStore;
     scimTokenStore: ScimTokenStore;
     imagingStore: ImagingStore;
+    hl7IngestionStore: Hl7IngestionStore;
+    smartLaunchStore: SmartLaunchStore;
     aiGatewayStore: AiGatewayStore;
     aiProviderRegistryStore: AiProviderRegistryStore;
     mcpRegistryStore: McpRegistryStore;
+    mcpClinicalStore: McpClinicalStore;
     computeControlStore: ComputeControlStore;
     tenantDirectory: TenantDirectory;
     closeCache: () => Promise<void>;
@@ -134,9 +150,12 @@ async function buildStores(config: AppConfig): Promise<BuiltStores> {
     let accessGovernanceStore: AccessGovernanceStore;
     let scimTokenStore: ScimTokenStore;
     let imagingStore: ImagingStore;
+    let hl7IngestionStore: Hl7IngestionStore;
+    let smartLaunchStore: SmartLaunchStore;
     let aiGatewayStore: AiGatewayStore;
     let aiProviderRegistryStore: AiProviderRegistryStore;
     let mcpRegistryStore: McpRegistryStore;
+    let mcpClinicalStore: McpClinicalStore;
     let computeControlStore: ComputeControlStore;
     let tenantDirectory: TenantDirectory;
     let pool: Pool | undefined;
@@ -162,9 +181,12 @@ async function buildStores(config: AppConfig): Promise<BuiltStores> {
         accessGovernanceStore = new InMemoryAccessGovernanceStore(sharedAuditStore);
         scimTokenStore = new InMemoryScimTokenStore(sharedAuditStore);
         imagingStore = new InMemoryImagingStore(sharedAuditStore);
+        hl7IngestionStore = new InMemoryHl7IngestionStore(sharedAuditStore);
+        smartLaunchStore = new InMemorySmartLaunchStore(sharedAuditStore);
         aiGatewayStore = new InMemoryAiGatewayStore(sharedAuditStore);
         aiProviderRegistryStore = new InMemoryAiProviderRegistryStore(sharedAuditStore);
         mcpRegistryStore = new InMemoryMcpRegistryStore(sharedAuditStore);
+        mcpClinicalStore = new InMemoryMcpClinicalStore(sharedAuditStore);
         computeControlStore = new InMemoryComputeControlStore(sharedAuditStore);
         tenantDirectory = new StoreTenantDirectory(store);
         caseStore = new InMemoryCaseStore(sharedAuditStore);
@@ -230,16 +252,19 @@ async function buildStores(config: AppConfig): Promise<BuiltStores> {
         sessionStore = new PostgresSessionStore(pool);
         scimTokenStore = new PostgresScimTokenStore(pool);
         imagingStore = new PostgresImagingStore(pool);
+        hl7IngestionStore = new PostgresHl7IngestionStore(pool);
+        smartLaunchStore = new PostgresSmartLaunchStore(pool);
         aiGatewayStore = new PostgresAiGatewayStore(pool);
         aiProviderRegistryStore = new PostgresAiProviderRegistryStore(pool);
         mcpRegistryStore = new PostgresMcpRegistryStore(pool);
+        mcpClinicalStore = new PostgresMcpClinicalStore(pool);
         computeControlStore = new PostgresComputeControlStore(pool);
     }
 
     if (!config.cache.enabled) {
         return {
             store, caseStore, caseMigrationStore, idempotencyStore, auditStore, auditLegalHoldStore, tenantBackupStore, sessionStore,
-            principalStore, accessGovernanceStore, scimTokenStore, imagingStore, aiGatewayStore, aiProviderRegistryStore, mcpRegistryStore, computeControlStore, tenantDirectory, closeCache: async () => {}, pool,
+            principalStore, accessGovernanceStore, scimTokenStore, imagingStore, hl7IngestionStore, smartLaunchStore, aiGatewayStore, aiProviderRegistryStore, mcpRegistryStore, mcpClinicalStore, computeControlStore, tenantDirectory, closeCache: async () => {}, pool,
         };
     }
 
@@ -252,7 +277,7 @@ async function buildStores(config: AppConfig): Promise<BuiltStores> {
     const cachingStore = new CachingIamStore(store, factory, { negativeCacheTtlMs: config.cache.negativeTtlMs });
     return {
         store: cachingStore, caseStore, caseMigrationStore, idempotencyStore, auditStore, auditLegalHoldStore, tenantBackupStore, sessionStore,
-        principalStore, accessGovernanceStore, scimTokenStore, imagingStore, aiGatewayStore, aiProviderRegistryStore, mcpRegistryStore, computeControlStore, tenantDirectory, closeCache: close, pool, cachingStore,
+        principalStore, accessGovernanceStore, scimTokenStore, imagingStore, hl7IngestionStore, smartLaunchStore, aiGatewayStore, aiProviderRegistryStore, mcpRegistryStore, mcpClinicalStore, computeControlStore, tenantDirectory, closeCache: close, pool, cachingStore,
     };
 }
 
@@ -292,9 +317,23 @@ async function main(): Promise<void> {
             jwks: await resolveJwks(additional),
         }))
     );
+    // Best-effort, unlike resolveJwks above: SMART on FHIR launch
+    // (routes/fhir.ts's .well-known/smart-configuration) is an additive
+    // capability, not something every existing deployment's auth depends
+    // on — an IdP whose discovery document happens to omit
+    // authorization_endpoint/token_endpoint (or an OIDC_JWKS_URI override
+    // deployment that skips discovery entirely for JWKS) must not be a
+    // startup failure for the whole server. That one route degrades to a
+    // 503 instead — see RouteDeps's own doc comment.
+    let smartConfiguration: ReturnType<typeof buildSmartConfiguration> | undefined;
+    try {
+        smartConfiguration = buildSmartConfiguration(await resolveAuthorizationServerMetadata(config.oidc));
+    } catch (err) {
+        console.warn("SMART on FHIR discovery unavailable — GET /organizations/:id/fhir/r4/.well-known/smart-configuration will 503:", err);
+    }
     const {
         store, caseStore, caseMigrationStore, idempotencyStore, auditStore, auditLegalHoldStore, tenantBackupStore, sessionStore,
-        principalStore, accessGovernanceStore, scimTokenStore, imagingStore, aiGatewayStore, aiProviderRegistryStore, mcpRegistryStore, computeControlStore, tenantDirectory, closeCache, pool, cachingStore,
+        principalStore, accessGovernanceStore, scimTokenStore, imagingStore, hl7IngestionStore, smartLaunchStore, aiGatewayStore, aiProviderRegistryStore, mcpRegistryStore, mcpClinicalStore, computeControlStore, tenantDirectory, closeCache, pool, cachingStore,
     } = await buildStores(config);
     const stopCacheStatsLogging = cachingStore ? logCacheStatsPeriodically(cachingStore) : undefined;
     let imagingObjectStore: ImagingObjectStore;
@@ -344,9 +383,16 @@ async function main(): Promise<void> {
         imagingStorageMode,
         dicomwebMode: config.imaging.pacs ? "pacs-proxy" : "local",
         imagingContentDelivery,
+        hl7IngestionStore,
+        smartLaunchStore,
+        smartLaunchEncryptionKey: config.smartLaunchEncryptionKeyBase64 ? loadTokenEncryptionKey(config.smartLaunchEncryptionKeyBase64) : undefined,
         aiGatewayStore,
         aiProviderRegistryStore,
         mcpRegistryStore,
+        mcpClinicalStore,
+        mcpApprovalTicketIssuer: process.env.MCP_APPROVAL_PRIVATE_KEY_PEM && process.env.MCP_APPROVAL_ISSUER && process.env.MCP_APPROVAL_AUDIENCE
+            ? new Rs256McpApprovalTicketIssuer(process.env.MCP_APPROVAL_PRIVATE_KEY_PEM.replace(/\\n/g, "\n"), process.env.MCP_APPROVAL_ISSUER, process.env.MCP_APPROVAL_AUDIENCE)
+            : undefined,
         computeControlStore,
         computePolicyPublicKeyPem: process.env.COMPUTE_POLICY_PUBLIC_KEY_PEM,
         aiAdmission,
@@ -362,8 +408,43 @@ async function main(): Promise<void> {
         rateLimit: config.rateLimit,
         trustProxy: config.trustProxy,
         adminConsoleOrigin: config.adminConsoleOrigin,
+        smartConfiguration,
     });
     await app.listen({ port: config.port, host: "0.0.0.0" });
+
+    // Opt-in MLLP (HL7 v2 TCP transport) listener — see
+    // config.ts's AppConfig.hl7Mllp and hl7/mllp-server.ts's own doc
+    // comments for the full trust-model reasoning. undefined unless every
+    // one of HL7_MLLP_PORT/HL7_MLLP_ORGANIZATION_ID is explicitly set —
+    // this process never opens an extra TCP listener by accident.
+    let closeMllpServer: (() => Promise<void>) | undefined;
+    if (config.hl7Mllp) {
+        const organization = await tenantDirectory.resolve(config.hl7Mllp.organizationId);
+        if (!organization) {
+            throw new Error(`HL7_MLLP_ORGANIZATION_ID "${config.hl7Mllp.organizationId}" does not resolve to an existing organization.`);
+        }
+        const mllpTenantContext = Object.freeze({
+            organizationId: organization.id,
+            schemaName: organization.tenantSchema ?? schemaNameForTenant(organization.id),
+            issuer: "system:hl7-mllp",
+            subject: "system:hl7-mllp",
+        });
+        const handler = createMllpIngestionHandler({
+            organizationId: organization.id,
+            caseRepo: caseStore.forTenant(mllpTenantContext),
+            ingestionRepo: hl7IngestionStore.forTenant(mllpTenantContext),
+            ackContext: { sendingApplication: "ModelForge", sendingFacility: organization.name },
+            onError: (err) => console.error("HL7 MLLP handler error:", err),
+        });
+        const mllp = await startMllpServer({
+            handler,
+            host: config.hl7Mllp.host,
+            port: config.hl7Mllp.port,
+            onError: (err) => console.error("HL7 MLLP server error:", err),
+        });
+        closeMllpServer = mllp.close;
+        console.log(`HL7 MLLP listener started on ${config.hl7Mllp.host}:${config.hl7Mllp.port} for organization ${organization.id}.`);
+    }
 
     // Crash-safety net for AiInferenceAdmission (server/src/ai-gateway/
     // admission.ts): reclaims any lease whose holder crashed mid-inference
@@ -407,6 +488,7 @@ async function main(): Promise<void> {
         clearInterval(aiAdmissionSweepTimer);
         clearInterval(computeSweepTimer);
         stopCacheStatsLogging?.();
+        await closeMllpServer?.();
         await app.close();
         await closeCache();
         if (pool) await pool.end();

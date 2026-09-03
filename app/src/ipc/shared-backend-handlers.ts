@@ -8,6 +8,9 @@ import { requireString } from "../app-state";
 import * as caseMigration from "../case-migration";
 import * as imagingClient from "../imaging-client";
 import * as clinicalAiClient from "../clinical-ai-client";
+import * as hl7Client from "../hl7-client";
+import * as smartLaunchClient from "../smart-launch-client";
+import { runSmartLaunch } from "../smart-launch-flow";
 import { closeOhifLaunch, createOhifLaunch } from "../ohif-viewer";
 
 // IPC surface for enterprise-mode shared-backend connection management
@@ -142,4 +145,47 @@ export function registerSharedBackendIpc(): void {
     ipcMain.handle("clinicalAi:submit", (_event, input: { caseId: string; request: clinicalAiClient.ClinicalAiSubmitInput }) => { requireString(input?.caseId,"case id");return clinicalAiClient.submitClinicalAiRequest(input.caseId,input.request); });
     ipcMain.handle("clinicalAi:listActivity", (_event, caseId: string) => { requireString(caseId,"case id");return clinicalAiClient.listClinicalAiActivity(caseId); });
     ipcMain.handle("clinicalAi:review", (_event, input: { outputId: string; review: { decision: "accepted"|"rejected"|"corrected"|"escalated"; correctedText?: string; escalationReason?: string } }) => { requireString(input?.outputId,"output id");return clinicalAiClient.reviewClinicalAiOutput(input.outputId,input.review); });
+
+    ipcMain.handle("hl7:listJobs", (_event: IpcMainInvokeEvent, status?: "pending-review" | "applied" | "rejected") => hl7Client.listHl7IngestionJobs(status));
+    ipcMain.handle("hl7:resolveJob", (_event: IpcMainInvokeEvent, input: { jobId: string; decision: hl7Client.Hl7ResolveDecision }) => {
+        requireString(input?.jobId, "ingestion job id");
+        if (input?.decision?.action !== "apply" && input?.decision?.action !== "reject") throw new Error('Resolution decision must have action "apply" or "reject".');
+        if (input.decision.action === "apply") requireString(input.decision.caseId, "case id");
+        else requireString(input.decision.reason, "rejection reason");
+        return hl7Client.resolveHl7IngestionJob(input.jobId, input.decision);
+    });
+
+    ipcMain.handle("smartLaunch:listTrustedIssuers", () => smartLaunchClient.listTrustedIssuers());
+    ipcMain.handle("smartLaunch:upsertTrustedIssuer", (_event: IpcMainInvokeEvent, input: { issuer: string; clientId: string; redirectUris: string[] }) => {
+        requireString(input?.issuer, "issuer");
+        requireString(input?.clientId, "client id");
+        if (!Array.isArray(input?.redirectUris) || input.redirectUris.length === 0) throw new Error("At least one redirect URI is required.");
+        return smartLaunchClient.upsertTrustedIssuer(input);
+    });
+    ipcMain.handle("smartLaunch:deleteTrustedIssuer", (_event: IpcMainInvokeEvent, issuer: string) => {
+        requireString(issuer, "issuer");
+        return smartLaunchClient.deleteTrustedIssuer(issuer);
+    });
+    ipcMain.handle("smartLaunch:listSessions", () => smartLaunchClient.listLaunchSessions());
+    ipcMain.handle("smartLaunch:revokeSession", (_event: IpcMainInvokeEvent, sessionId: string) => {
+        requireString(sessionId, "session id");
+        return smartLaunchClient.revokeLaunchSession(sessionId);
+    });
+    // Opens the system browser and waits on user interaction at the EHR —
+    // same long-running-external-flow shape as sharedBackend:connect/
+    // mcp:startOAuthFlow above, so it catches and returns {error} rather
+    // than rejecting, letting the renderer show an inline error instead of
+    // an unhandled-IPC-rejection for an ordinary "user closed the tab" or
+    // "5-minute timeout" outcome.
+    ipcMain.handle("smartLaunch:start", async (_event: IpcMainInvokeEvent, issuer: string) => {
+        try {
+            requireString(issuer, "issuer");
+            const token = await runSmartLaunch(issuer);
+            return { token };
+        } catch (err) {
+            const error = err as Error;
+            logger.error(`SMART launch failed: ${error.message}`);
+            return { error: error.message };
+        }
+    });
 }

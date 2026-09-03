@@ -1,4 +1,15 @@
-# Clinical AI evaluation harness
+# Clinical AI evaluation
+
+Two complementary pieces, deliberately kept separate: an **offline** harness
+(this file's original scope, below) that gates a candidate model/prompt against
+a fixed synthetic suite before it serves any traffic, and an **online**
+production quality monitor (`server/src/eval-harness/production-monitor.ts`)
+that observes how an already-deployed model is actually behaving, from data
+the gateway itself already records. Neither implements live shadow traffic,
+canary routing, or automatic promotion/rollback — see each section's own
+"not implemented" note for why.
+
+## Offline harness (promotion gate)
 
 The clinical evaluation harness is an offline promotion gate for candidate
 models. It uses versioned, explicitly synthetic fixtures only; it does not read
@@ -34,3 +45,34 @@ approved validation protocol before using any model in a real clinical role.
 The harness does not implement live shadow traffic, canary routing, or automatic
 promotion. A human or CI system may consume the exit code/report, but changing a
 model's catalog validation state remains an explicit administrative action.
+
+## Online production quality monitor
+
+`GET /organizations/:organizationId/ai-provider-models/:modelId/quality-monitor`
+(optional `?since=<ISO timestamp>`) reports aggregate metrics for one provider
+model computed from real production `AiOutput` rows already recorded by the
+gateway — no golden answers, no synthetic cases: output volume, abstention
+rate (of all outputs), and reviewed/acceptance/rejection/correction/escalation
+rates (of *reviewed* outputs only, so a review backlog can never masquerade as
+a quality change — see `production-monitor.ts`'s own doc comment). Gated by
+the same `aiGateway:viewAuditTrail` permission as every other model-level
+catalog read; only aggregate rates cross this route, never patient-identifying
+data.
+
+`GET .../quality-drift?splitAt=<ISO>&baselineSince=<ISO?>` compares two
+disjoint time windows for the same model (`baselineSince` to `splitAt`, and
+`splitAt` onward) and flags a real behavioral shift — abstention rate up,
+acceptance rate down, rejection/escalation rate up — beyond configurable
+thresholds (`DEFAULT_DRIFT_THRESHOLDS` in `production-monitor.ts`). Reports
+`sufficientData: false` (never a false alarm or false reassurance) when either
+window has fewer than `minimumOutputCount` (default 20) outputs.
+
+**Not implemented**: this only observes and reports — it never changes what
+traffic a model receives. No shadow/canary routing, no automatic rollback, no
+alerting integration (Slack/PagerDuty/email) — a caller (human, cron, or an
+external monitoring system) is expected to poll this route and act on what it
+returns. No statistical significance testing beyond the raw count floor above
+(a real deployment wanting p-values/confidence intervals on the rate deltas
+would need to add that on top of this). See
+[docs/CLINICAL_AI_GATEWAY.md](CLINICAL_AI_GATEWAY.md)'s "Remaining work" for
+the still-open shadow/canary/rollback piece this deliberately does not cover.

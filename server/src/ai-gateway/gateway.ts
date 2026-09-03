@@ -17,6 +17,9 @@ import type { AiProviderRegistryStore } from "../store/ai-provider-registry-stor
 import { evaluateGatewayAuthorization, type GatewayAuthorizationDenialReason } from "./policy.js";
 import { scanForUnsafeContent, type ContentScanFinding } from "./content-scanner.js";
 import { minimizeForTask } from "./data-minimization.js";
+import { getSystemPrompt } from "./prompt-registry.js";
+import { rankEligibleProviderModels, type RoutingCandidate } from "./model-router.js";
+import { computeProductionQualitySnapshot } from "../eval-harness/production-monitor.js";
 import { AiAdmissionError, type AiAdmissionDecisionStatus, type AiAdmissionPriority, type AiInferenceAdmission } from "./admission.js";
 import type { AiProviderClient } from "./provider-client.js";
 import { validateModelResponse } from "./response-validation.js";
@@ -80,19 +83,6 @@ import { validateModelResponse } from "./response-validation.js";
  *    architecture survey for this phase).
  */
 
-const SYSTEM_PROMPT = `You are a clinical decision-support assistant. You are NOT a diagnostic device and your output is never a final medical decision. Every response you produce will be shown to a licensed clinician as an unsigned draft for their review — it must never be presented to a patient directly, and it never modifies, signs, or submits any medical record on its own.
-
-Respond using EXACTLY this structure, with no other section headers:
-SUMMARY: <one concise, clinically useful conclusion, or "N/A" if abstaining>
-EVIDENCE:
-- <one bullet per specific supporting fact, referencing only the clinical data provided below>
-UNCERTAINTY: <what is uncertain or missing, if anything>
-FOLLOWUP:
-- <one bullet per recommended next step for the clinician to consider>
-ABSTAIN: <present ONLY if the provided data is insufficient, contradictory, or outside your scope — explain why you cannot safely draw a conclusion>
-
-Never include your reasoning process, chain-of-thought, or private deliberation — only the concise sections above. Never invent facts not present in the clinical data provided. If the data is insufficient, contradictory, or you are not confident, use the ABSTAIN section rather than guessing.`;
-
 /** Default admission-queue priority per clinical purpose of use — item:
  * "priority for active clinician workflows... preemption of background
  * jobs." A caller may override via `SubmitAiRequestInput.admissionPriority`
@@ -139,7 +129,15 @@ export interface SubmitAiRequestInput {
     patientCaseId: string;
     requestedByUserId: string;
     callerRoles: string[];
-    providerModelId: string;
+    /** Omit to auto-route (model-router.ts) across every enabled, eligible
+     * provider model for this tenant, ranked by validation status/hosting
+     * kind/cost, with automatic fallback to the next-ranked candidate on a
+     * retryable failure (admission rejection, provider failure, or an
+     * authorization denial — since eligibility filtering is a pre-check,
+     * not a guarantee, of what evaluateGatewayAuthorization will actually
+     * decide). Supplying an explicit id is unchanged from before this
+     * existed: exactly that one model, no fallback. */
+    providerModelId?: string;
     purposeOfUse: AiRequestEnvelope["purposeOfUse"];
     /** The user's own explicit selection from the pre-flight sharing UI —
      * see data-minimization.ts's own doc comment on why this can only ever
@@ -156,6 +154,11 @@ export interface SubmitAiRequestInput {
     }>;
     admissionPriority?: AiAdmissionPriority;
     maxTokens?: number;
+    /** Pins a specific prompt-registry.ts version instead of
+     * CURRENT_PROMPT_VERSION — the rollback mechanism that version's own
+     * doc comment describes. Unknown values throw (UnknownPromptVersionError),
+     * never silently fall back to current. */
+    promptVersion?: string;
 }
 
 export interface RequestPreview {
@@ -177,6 +180,12 @@ export type GatewaySubmitResult =
     | { outcome: "content-blocked"; findings: ContentScanFinding[] }
     | { outcome: "admission-rejected"; status: AiAdmissionDecisionStatus; reasons: string[] }
     | { outcome: "provider-failed"; message: string }
+    /** Auto-routing only (no providerModelId supplied): no enabled,
+     * validated, safety-nominal provider model was eligible at all — never
+     * returned when the caller pins an explicit providerModelId, which
+     * instead runs the normal authorization-denied/provider-failed paths
+     * against that one model. */
+    | { outcome: "no-eligible-provider-model"; message: string }
     | { outcome: "completed"; request: AiRequestEnvelope; output: AiOutput; citations: AiCitation[] };
 
 export interface ClinicalAiGatewayDeps {
@@ -200,16 +209,56 @@ export class ClinicalAiGateway {
         this.requestTtlMs = deps.requestTtlMs ?? 15 * 60 * 1_000;
     }
 
+    /** Every enabled provider model this tenant has approved settings for,
+     * joined with its global catalog provider row and its real production
+     * quality signal (eval-harness/production-monitor.ts) — the candidate
+     * pool model-router.ts ranks/filters. A model missing either its
+     * provider row (shouldn't happen — providerId is a real FK) or tenant
+     * settings (very possible — most catalog models are never approved by
+     * most tenants) is simply excluded, not an error. Quality is fetched
+     * per candidate (one query each — candidate counts are small, a
+     * handful of approved models per tenant, not worth a batched store
+     * method yet); a model with no output history yet naturally gets an
+     * all-zero snapshot, which model-router.ts's own qualityTier already
+     * treats as neutral, never as ineligible. */
+    private async gatherRoutingCandidates(): Promise<RoutingCandidate[]> {
+        const [providers, models, settingsList] = await Promise.all([
+            this.deps.registry.listProviders(),
+            this.deps.registry.listProviderModels(),
+            this.deps.gatewayRepo.listProviderTenantSettings(),
+        ]);
+        const providerById = new Map(providers.map((p) => [p.id, p]));
+        const settingsByModelId = new Map(settingsList.map((s) => [s.providerModelId, s]));
+        const candidates: RoutingCandidate[] = [];
+        for (const model of models) {
+            const provider = providerById.get(model.providerId);
+            const settings = settingsByModelId.get(model.id);
+            if (!provider || !settings) continue;
+            const snapshot = await computeProductionQualitySnapshot(this.deps.gatewayRepo, model.id);
+            candidates.push({ provider, model, settings, quality: { acceptanceRate: snapshot.acceptanceRate, reviewedCount: snapshot.outputCount - snapshot.unreviewedCount } });
+        }
+        return candidates;
+    }
+
     /** Lifecycle steps 1-2: read-only, no consent/policy/admission side
      * effects at all — exactly what a pre-flight sharing-confirmation UI
-     * calls before the user clicks "share." */
+     * calls before the user clicks "share." When `input.providerModelId`
+     * is omitted, shows what auto-routing would currently pick (the top-
+     * ranked eligible candidate) — informational only; submitRequest re-
+     * ranks independently at submission time and is the only thing that
+     * actually commits to a choice. */
     async previewRequest(input: SubmitAiRequestInput): Promise<RequestPreview | null> {
         const caseRecord = await this.deps.caseRepo.getOne(input.patientCaseId);
         if (!caseRecord) return null;
 
-        const providerModel = await this.deps.registry.getProviderModel(input.providerModelId);
-        const provider = providerModel ? await this.deps.registry.getProvider(providerModel.providerId) : null;
         const minimized = minimizeForTask(caseRecord.patientCase, input.purposeOfUse, input.requestedCategories);
+        let providerModelId = input.providerModelId;
+        if (!providerModelId) {
+            const ranked = rankEligibleProviderModels(await this.gatherRoutingCandidates(), { requiresPhi: minimized.sections.length > 0, callerRoles: input.callerRoles });
+            providerModelId = ranked[0]?.model.id;
+        }
+        const providerModel = providerModelId ? await this.deps.registry.getProviderModel(providerModelId) : null;
+        const provider = providerModel ? await this.deps.registry.getProvider(providerModel.providerId) : null;
         const imaging = input.requestedCategories.includes("imagingStudies") && IMAGING_ALLOWED_PURPOSES.has(input.purposeOfUse) ? input.imagingSelections ?? [] : [];
 
         return {
@@ -225,10 +274,50 @@ export class ClinicalAiGateway {
         };
     }
 
-    /** Lifecycle steps 3-14: the real, side-effecting request lifecycle.
-     * Every early return corresponds to one governance or safety gate
-     * failing closed — none of them proceed to invoke a provider. */
+    /**
+     * Lifecycle steps 3-14, the public entry point. With an explicit
+     * `input.providerModelId`, this is exactly one attempt against exactly
+     * that model — unchanged from before auto-routing existed. Omitting it
+     * ranks every eligible model (model-router.ts) and tries each in
+     * ranked order, falling back to the next candidate on a retryable
+     * outcome (`admission-rejected`, `provider-failed`, or
+     * `authorization-denied` — eligibility filtering is a pre-check, not a
+     * guarantee of what the real authorization gate decides) and stopping
+     * immediately on a non-retryable one (`content-blocked`,
+     * `case-not-found` — neither depends on which model was chosen, so
+     * trying another would just fail identically). Each attempt creates
+     * its own real, immutable `AiRequestEnvelope` (a failed attempt is not
+     * deleted or hidden — it is exactly as auditable as a successful one,
+     * matching this codebase's "never mutate, always a new row" discipline
+     * everywhere else); a caller inspecting request history for a case
+     * will see one row per attempt, not just the winner.
+     */
     async submitRequest(input: SubmitAiRequestInput, actor: AuditActor): Promise<GatewaySubmitResult> {
+        if (input.providerModelId) return this.attemptSubmit({ ...input, providerModelId: input.providerModelId }, actor);
+
+        const caseRecord = await this.deps.caseRepo.getOne(input.patientCaseId);
+        if (!caseRecord) return { outcome: "case-not-found" };
+        const minimized = minimizeForTask(caseRecord.patientCase, input.purposeOfUse, input.requestedCategories);
+        const ranked = rankEligibleProviderModels(await this.gatherRoutingCandidates(), { requiresPhi: minimized.sections.length > 0, callerRoles: input.callerRoles });
+        if (ranked.length === 0) {
+            return { outcome: "no-eligible-provider-model", message: "No enabled, validated, safety-nominal provider model is eligible for this request's purpose/data/role — check ai-provider-tenant-settings and each candidate model's validationStatus/safetyStatus." };
+        }
+
+        let lastResult: GatewaySubmitResult = { outcome: "no-eligible-provider-model", message: "Unreachable — ranked.length > 0 was just checked." };
+        for (const candidate of ranked) {
+            const result = await this.attemptSubmit({ ...input, providerModelId: candidate.model.id }, actor);
+            if (result.outcome === "completed") return result;
+            lastResult = result;
+            if (result.outcome === "content-blocked" || result.outcome === "case-not-found") return result;
+        }
+        return lastResult;
+    }
+
+    /** The single-model attempt every submitRequest call ultimately runs —
+     * see submitRequest's own doc comment for the auto-routing loop around
+     * this. Every early return corresponds to one governance or safety
+     * gate failing closed — none of them proceed to invoke a provider. */
+    private async attemptSubmit(input: SubmitAiRequestInput & { providerModelId: string }, actor: AuditActor): Promise<GatewaySubmitResult> {
         const caseRecord = await this.deps.caseRepo.getOne(input.patientCaseId);
         if (!caseRecord) return { outcome: "case-not-found" };
         const patientCase = caseRecord.patientCase;
@@ -347,7 +436,11 @@ export class ClinicalAiGateway {
         await this.deps.gatewayRepo.updateRequestStatus(request.id, "queued", undefined, actor);
 
         // Step 9: schedule the actual inference call under tenant-aware
-        // admission control.
+        // admission control. Resolved before the lease so an unknown
+        // pinned promptVersion (prompt-registry.ts's UnknownPromptVersionError)
+        // fails fast, before ever acquiring admission capacity or calling a
+        // provider.
+        const prompt = getSystemPrompt(input.promptVersion);
         const priority = input.admissionPriority ?? DEFAULT_ADMISSION_PRIORITY[input.purposeOfUse] ?? "background-summary";
         let invocation;
         try {
@@ -361,7 +454,7 @@ export class ClinicalAiGateway {
                 async () => {
                     await this.deps.gatewayRepo.updateRequestStatus(request.id, "running", undefined, actor);
                     const client = await this.deps.resolveProviderClient(authz.provider, authz.providerModel);
-                    return client.invoke({ systemPrompt: SYSTEM_PROMPT, sections: minimized.sections, purposeOfUse: input.purposeOfUse, maxTokens: input.maxTokens });
+                    return client.invoke({ systemPrompt: prompt.text, sections: minimized.sections, purposeOfUse: input.purposeOfUse, maxTokens: input.maxTokens });
                 }
             );
         } catch (err) {
@@ -394,6 +487,7 @@ export class ClinicalAiGateway {
                 requestId: request.id,
                 providerModelId: authz.providerModel.id,
                 modelVersion: invocation.modelVersion,
+                promptVersion: prompt.version,
                 summary: validated.summary,
                 evidence: validated.evidence,
                 uncertainty: validated.uncertainty,
@@ -401,7 +495,16 @@ export class ClinicalAiGateway {
                 abstained: validated.abstained,
                 abstainReason: validated.abstainReason,
                 outputHash: validated.outputHash,
-                citations: dataScope.resourceRefs.map((ref) => ({ resourceType: ref.resourceType, resourceId: ref.resourceId })),
+                // `locator` for a patientCaseField ref is the category name
+                // encoded in its own resourceId (data-minimization.ts's
+                // `"<category>:<caseId>"`) — a real pointer into the source
+                // ("this citation is the labResults field"), not a re-copied
+                // excerpt, per aiCitationSchema's own doc comment.
+                citations: dataScope.resourceRefs.map((ref) => ({
+                    resourceType: ref.resourceType,
+                    resourceId: ref.resourceId,
+                    locator: ref.resourceType === "patientCaseField" ? ref.resourceId.split(":")[0] : undefined,
+                })),
             },
             actor
         );

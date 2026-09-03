@@ -24,6 +24,14 @@ export const TASK_DATA_CATEGORIES: Record<string, readonly string[]> = {
     "quality-improvement": ["conditions", "medications", "labResults"],
 } satisfies Record<string, readonly string[]>;
 
+/** The scalar (non-array-of-resources) case fields minimizeForTask can
+ * include — the complete set of `resourceType: "patientCaseField"` citation
+ * suffixes routes/ai-gateway.ts's citation re-authorization must recognize.
+ * Exported so that re-verification never drifts from what this function
+ * actually cites; a category added here without a matching read-time check
+ * would silently make its citations undisplayable, not silently unsafe. */
+export const SCALAR_CASE_FIELD_CATEGORIES = ["presentingComplaint", "symptomsTimeline", "vitalSigns", "conditions", "allergies", "medications", "labResults", "imagingAndReports"] as const;
+
 export interface MinimizedSelection {
     /** Plain-text sections, one per included category, ready to compose
      * into a prompt — never the whole PatientCase JSON. */
@@ -33,9 +41,23 @@ export interface MinimizedSelection {
      * flag) — what the request envelope's dataScope and the audit trail
      * both record. */
     includedCategories: string[];
-    /** Resource refs for citation purposes — one per clinical note
-     * actually included, since notes (unlike scalar fields) are individual
-     * cited resources, not a single blob. */
+    /** Resource refs for citation purposes (ai-gateway/gateway.ts's
+     * createOutput turns each of these into an AiCitation) — one per
+     * clinical note actually included (real resource ids), PLUS one
+     * synthetic `patientCaseField` ref per included scalar field category
+     * (`resourceId: "<category>:<caseId>"`). The synthetic ones exist
+     * specifically so evidence provenance covers *every* piece of content
+     * that reached the model, not only clinical notes — before this, a
+     * diagnostic-support request's labResults/vitalSigns/imagingAndReports
+     * sections (the majority of most prompts) produced zero citations at
+     * all, a real provenance gap this closes. Category comes first in
+     * `resourceId`, deliberately, so extracting the fixed, colon-free
+     * category back out at read time is unambiguous even if a caseId
+     * itself happens to contain a colon (case ids are arbitrary caller-
+     * supplied TEXT, not a format this system controls — see
+     * routes/params.ts's own doc comment on that). See
+     * routes/ai-gateway.ts's citation re-authorization loop for the
+     * matching read-time check. */
     resourceRefs: Array<{ resourceType: string; resourceId: string }>;
 }
 
@@ -88,6 +110,7 @@ export function minimizeForTask(patientCase: PatientCase, purposeOfUse: string, 
         if (text) {
             sections.push({ category, text: redactIdentifiers(text).text });
             includedCategories.push(category);
+            resourceRefs.push({ resourceType: "patientCaseField", resourceId: `${category}:${patientCase.id}` });
         }
     }
 

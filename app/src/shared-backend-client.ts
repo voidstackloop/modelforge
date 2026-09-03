@@ -1,6 +1,15 @@
 import { getValidAccessToken, isAllowedRemoteUrl } from "./shared-backend-auth";
 import { getSharedBackendConfig, setSharedBackendConfig } from "./shared-backend-config-store";
 import { migrationPreviewSchema, migrationSessionSchema, type MigrationPreview, type MigrationSession } from "@modelforge/contracts";
+import {
+    mcpApprovalChallengeSchema,
+    mcpApprovalRequestSchema,
+    mcpContextGrantSchema,
+    type McpApprovalChallenge,
+    type McpApprovalRequest,
+    type McpContextGrant,
+} from "@modelforge/contracts";
+import { z } from "zod";
 
 // General-purpose client for the shared backend's non-case-data endpoints
 // (GET /me, POST /organizations) — the pieces a Settings UI needs to let a
@@ -102,6 +111,48 @@ function selectedOrganizationId(): string {
     const id = getSharedBackendConfig()?.organizationId;
     if (!id) throw new SharedBackendClientError("Select an organization before starting a migration.");
     return id;
+}
+
+async function clinicalMcpRequest(path: string, init: RequestInit): Promise<unknown> {
+    const response = await authorizedRequest(path, init);
+    if (!response.ok) {
+        let detail = `HTTP ${response.status}`;
+        try {
+            const body = (await response.json()) as { error?: string; message?: string };
+            detail = body.message ?? body.error ?? detail;
+        } catch { /* non-JSON response */ }
+        throw new SharedBackendClientError(`Clinical MCP control-plane request failed: ${detail}`);
+    }
+    return response.json();
+}
+
+export async function createMcpContextGrant(input: {
+    registryEntryId: string;
+    caseId: string;
+    purpose: "diagnostic-support" | "summarization" | "medication-review" | "documentation-assist" | "research" | "teaching" | "quality-improvement";
+    toolNames: string[];
+    requestedFields: string[];
+}): Promise<McpContextGrant> {
+    const organizationId = selectedOrganizationId();
+    return mcpContextGrantSchema.parse(await clinicalMcpRequest(`/organizations/${organizationId}/mcp-context-grants`, { method: "POST", body: JSON.stringify(input) }));
+}
+
+const preparedApprovalSchema = z.object({ approvalRequest: mcpApprovalRequestSchema, challenge: mcpApprovalChallengeSchema }).strict();
+export async function prepareMcpApproval(input: {
+    registryEntryId: string;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    contextGrantId?: string;
+    caseId?: string;
+}): Promise<{ approvalRequest: McpApprovalRequest; challenge: McpApprovalChallenge }> {
+    const organizationId = selectedOrganizationId();
+    return preparedApprovalSchema.parse(await clinicalMcpRequest(`/organizations/${organizationId}/mcp-approvals/prepare`, { method: "POST", body: JSON.stringify(input) }));
+}
+
+export async function confirmMcpApproval(approvalRequestId: string): Promise<{ approvalRequest: McpApprovalRequest; approvalTicket: string }> {
+    const organizationId = selectedOrganizationId();
+    const schema = z.object({ approvalRequest: mcpApprovalRequestSchema, approvalTicket: z.string().min(1) }).strict();
+    return schema.parse(await clinicalMcpRequest(`/organizations/${organizationId}/mcp-approvals/${encodeURIComponent(approvalRequestId)}/confirm`, { method: "POST" }));
 }
 
 async function migrationRequest(path: string, init?: RequestInit): Promise<unknown> {

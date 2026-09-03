@@ -43,6 +43,34 @@ matrix" below.
   `reasoning`/`chainOfThought` field anywhere. A model that ignores the format doesn't get its
   free-form answer discarded — it becomes the whole `summary`, with `formatCompliant: false`
   recorded as a trust signal, never a fabricated structure.
+- **Prompt versioning, alongside model versioning.** `AiOutput.modelVersion` recorded which
+  provider model produced an output from day one; `AiOutput.promptVersion`
+  (`ai-gateway/prompt-registry.ts`) now does the same for the gateway's own system-prompt text —
+  an append-only, immutable-per-version registry, so "rollback" is just pinning an older version,
+  never editing shipped prompt text in place.
+- **Multi-model routing is opt-in, additive, and never widens authorization.** `providerModelId`
+  on a submit/preview request is now optional. Supplying it is unchanged from before this existed:
+  exactly that one model, no fallback. Omitting it runs `ai-gateway/model-router.ts`'s
+  `rankEligibleProviderModels` (validated-before-canary, quality-before-hosting, local/on-premises-
+  before-cloud, lower-cost first, deterministic tie-break) over every enabled candidate, then
+  `submitRequest` tries each in ranked order — falling back to the next on a retryable outcome
+  (admission rejection, provider failure, or an authorization denial, since eligibility filtering
+  is only a pre-check of what `evaluateGatewayAuthorization` will actually decide), stopping
+  immediately on a non-retryable one (content-blocked, case-not-found). Each attempt is its own
+  real, immutable `AiRequestEnvelope` — a failed attempt is never deleted or hidden. Ranking also
+  factors in real production quality now: a candidate's recent clinician-acceptance rate
+  (`eval-harness/production-monitor.ts`, fetched per candidate in `gatherRoutingCandidates`)
+  outranks hosting/cost preference but never overrides validation status, bucketed
+  (good/fair/poor) rather than by raw rate so statistical noise never reorders two models with
+  indistinguishable real performance, and neutral (never penalized) below `MIN_QUALITY_SAMPLE_SIZE`
+  (20) reviewed outputs so a newly-approved model isn't starved of traffic for lacking history yet.
+  Not implemented: true concurrent-load balancing (this ranks a static snapshot, not current load)
+  and latency-based ranking (no latency telemetry exists anywhere in this codebase yet).
+- **Every included case field is cited, not only clinical notes.** `data-minimization.ts`'s
+  `resourceRefs` originally only produced citations for individually-identified resources
+  (clinical notes); scalar fields (labResults, vitalSigns, etc. — most of most prompts) produced
+  none. A synthetic `patientCaseField` citation now covers those too, with a matching read-time
+  re-authorization branch in `routes/ai-gateway.ts`.
 
 ## Where the code lives
 
@@ -263,7 +291,10 @@ tests remain a deployment gate rather than an implied verification.
 
 - Pixel-aware multimodal imaging inference and validated DICOM SR/SEG output artifacts.
 - Tenant-safe retrieval/RAG, if a vector index is ever added to this codebase.
-- Automated shadow/canary rollout, production drift monitoring, and incident-response workflow.
+- Automated shadow/canary rollout and incident-response workflow. (Production quality/drift
+  *monitoring*, as distinct from automated rollout/rollback, now exists — see
+  `server/src/eval-harness/production-monitor.ts` and docs/CLINICAL_AI_EVALUATION.md's "Online
+  production quality monitor" section.)
 - Domain-level idempotency keys and automatic retry/backoff.
 - A genuinely separate platform-admin authentication path for the global provider catalog.
 - Formal risk-management, usability-engineering, and QMS documentation for any use case that ends

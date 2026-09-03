@@ -11,6 +11,10 @@ const registryEntrySchema = z.object({
     endpoint: z.string().min(1),
     allowedTools: z.union([z.literal("*"), z.array(z.string().min(1))]),
     dataEgressPolicy: z.enum(["none", "metadata-only", "unrestricted"]),
+    integrationProfile: z.enum(["generic", "modelforge-clinical"]).default("generic"),
+    oauthClientId: z.string().min(1).max(512).optional(),
+    catalogVersionConstraint: z.string().optional(),
+    approvalChallengeEndpoint: z.string().url().optional(),
     status: z.enum(["active", "disabled"]),
 }).passthrough();
 
@@ -21,6 +25,10 @@ export interface ManagedMcpPolicy {
     organizationId: string;
     allowedTools: "*" | string[];
     dataEgressPolicy: "none" | "metadata-only" | "unrestricted";
+    integrationProfile: "generic" | "modelforge-clinical";
+    oauthClientId?: string;
+    catalogVersionConstraint?: string;
+    approvalChallengeEndpoint?: string;
 }
 
 export class ManagedMcpPolicyError extends Error {
@@ -86,11 +94,21 @@ export function selectManagedMcpPolicy(
         );
     }
     const entry = matches[0];
+    if (entry.integrationProfile === "modelforge-clinical") {
+        if (!entry.oauthClientId) throw new ManagedMcpPolicyError(`Clinical MCP server "${config.name}" has no institutional OAuth client ID.`);
+        if (config.oauthClientId !== entry.oauthClientId) {
+            throw new ManagedMcpPolicyError(`Clinical MCP server "${config.name}" is not bound to the registry's OAuth client ID. Re-import it from institutional settings.`);
+        }
+    }
     return {
         entryId: entry.id,
         organizationId: entry.organizationId,
         allowedTools: entry.allowedTools,
         dataEgressPolicy: entry.dataEgressPolicy,
+        integrationProfile: entry.integrationProfile,
+        oauthClientId: entry.oauthClientId,
+        catalogVersionConstraint: entry.catalogVersionConstraint,
+        approvalChallengeEndpoint: entry.approvalChallengeEndpoint,
     };
 }
 
@@ -106,6 +124,32 @@ export async function resolveManagedMcpPolicy(config: McpServerConfig): Promise<
         throw new ManagedMcpPolicyError(`Could not verify institutional MCP policy: HTTP ${response.status}.`);
     }
     return selectManagedMcpPolicy(config, organizationId, await response.json());
+}
+
+export async function listManagedClinicalMcpServers(): Promise<McpServerConfig[]> {
+    const backendConfig = getSharedBackendConfig();
+    const organizationId = backendConfig?.organizationId;
+    if (!organizationId) throw new ManagedMcpPolicyError("Connect to the shared backend and select an organization first.");
+    const response = await authorizedRequest(`/organizations/${encodeURIComponent(organizationId)}/mcp-registry?status=active`);
+    if (!response.ok) throw new ManagedMcpPolicyError(`Could not load institutional MCP servers: HTTP ${response.status}.`);
+    const parsed = z.array(registryEntrySchema).safeParse(await response.json());
+    if (!parsed.success) throw new ManagedMcpPolicyError("The institutional MCP registry returned an invalid response.");
+    return parsed.data
+        .filter((entry) => entry.organizationId === organizationId && entry.status === "active" && entry.transport === "http" && entry.integrationProfile === "modelforge-clinical")
+        .map((entry) => {
+            if (!entry.oauthClientId) throw new ManagedMcpPolicyError(`Clinical MCP registry entry "${entry.name}" has no OAuth client ID.`);
+            if (entry.oauthClientId !== backendConfig.clientId) throw new ManagedMcpPolicyError(`Clinical MCP registry entry "${entry.name}" uses a different OAuth client than this desktop connection.`);
+            return ({
+            id: `managed-${entry.id}`,
+            name: entry.name,
+            transport: "http" as const,
+            enabled: true,
+            url: entry.endpoint,
+            auth: { type: "oauth2" as const },
+            oauthClientId: entry.oauthClientId,
+            warningBanner: entry.catalogVersionConstraint ? `Institutional clinical MCP · catalog policy ${entry.catalogVersionConstraint} (metadata only)` : "Institutional clinical MCP",
+            });
+        });
 }
 
 export function filterManagedMcpTools<T extends { name: string }>(policy: ManagedMcpPolicy | null, tools: T[]): T[] {

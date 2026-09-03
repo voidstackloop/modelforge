@@ -51,7 +51,17 @@ describe("managed MCP policy", () => {
             organizationId,
             allowedTools: ["lookup"],
             dataEgressPolicy: "unrestricted",
+            integrationProfile: "generic",
+            oauthClientId: undefined,
+            catalogVersionConstraint: undefined,
+            approvalChallengeEndpoint: undefined,
         });
+    });
+
+    it("requires an exact institutional OAuth client binding for the clinical profile", () => {
+        const clinical = entry({ integrationProfile: "modelforge-clinical", oauthClientId: "desktop-client", approvalChallengeEndpoint: "https://mcp.example.test/approval-challenges" });
+        expect(() => selectManagedMcpPolicy(httpConfig(), organizationId, [clinical])).toThrow(/not bound/);
+        expect(selectManagedMcpPolicy(httpConfig({ oauthClientId: "desktop-client" }), organizationId, [clinical]).oauthClientId).toBe("desktop-client");
     });
 
     it("fails closed for missing, disabled, cross-tenant, ambiguous, or malformed entries", () => {

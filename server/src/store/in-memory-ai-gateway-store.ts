@@ -193,7 +193,7 @@ export class InMemoryAiGatewayStore implements AiGatewayStore {
             async createOutput(input: CreateAiOutputInput, actor) {
                 const id = randomUUID();
                 const output: AiOutput = {
-                    id, requestId: input.requestId, providerModelId: input.providerModelId, modelVersion: input.modelVersion,
+                    id, requestId: input.requestId, providerModelId: input.providerModelId, modelVersion: input.modelVersion, promptVersion: input.promptVersion,
                     generatedAt: new Date().toISOString(), summary: input.summary, evidence: input.evidence,
                     uncertainty: input.uncertainty, followUp: input.followUp, abstained: input.abstained,
                     abstainReason: input.abstainReason, confidence: input.confidence, outputHash: input.outputHash,
@@ -214,6 +214,11 @@ export class InMemoryAiGatewayStore implements AiGatewayStore {
             async listOutputsForRequest(requestId) {
                 const ids = state.outputsByRequest.get(requestId) ?? [];
                 return ids.map((id) => state.outputs.get(id)).filter((o): o is AiOutput => o !== undefined);
+            },
+            async listOutputsForProviderModel(providerModelId, since) {
+                return [...state.outputs.values()]
+                    .filter((o) => o.providerModelId === providerModelId && (!since || o.generatedAt > since))
+                    .sort((a, b) => a.generatedAt.localeCompare(b.generatedAt) || a.id.localeCompare(b.id));
             },
             async listCitationsForOutput(outputId) {
                 return state.citations.get(outputId) ?? [];

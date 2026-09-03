@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { mcpAllowedToolsSchema, mcpDataEgressPolicySchema, mcpTransportSchema } from "../domain/types.js";
+import { mcpAllowedToolsSchema, mcpDataEgressPolicySchema, mcpIntegrationProfileSchema, mcpTransportSchema } from "../domain/types.js";
 import { actorFrom } from "../store/audit-store.js";
 import type { RouteDeps } from "./deps.js";
 import { requireOrgUser, requirePermission } from "./guards.js";
@@ -13,11 +13,37 @@ const createEntryBodySchema = z
         endpoint: z.string().min(1),
         allowedTools: mcpAllowedToolsSchema,
         dataEgressPolicy: mcpDataEgressPolicySchema,
+        integrationProfile: mcpIntegrationProfileSchema.default("generic"),
+        oauthClientId: z.string().min(1).max(512).optional(),
+        catalogVersionConstraint: z.string().min(1).max(200).optional(),
+        approvalChallengeEndpoint: z.string().url().optional(),
         description: z.string().optional(),
     })
-    .strict();
+    .strict()
+    .superRefine((value, context) => {
+        if (value.integrationProfile === "modelforge-clinical" && value.transport !== "http") {
+            context.addIssue({ code: "custom", path: ["transport"], message: "The clinical integration profile requires HTTP transport." });
+        }
+        if (value.integrationProfile === "modelforge-clinical" && !value.oauthClientId) {
+            context.addIssue({ code: "custom", path: ["oauthClientId"], message: "The clinical integration profile requires an OAuth client ID." });
+        }
+        if (value.integrationProfile === "modelforge-clinical" && !value.approvalChallengeEndpoint) {
+            context.addIssue({ code: "custom", path: ["approvalChallengeEndpoint"], message: "The clinical integration profile requires an approval challenge endpoint." });
+        }
+    });
 
-const updateEntryBodySchema = createEntryBodySchema.partial().strict();
+const updateEntryBodySchema = z.object({
+    name: z.string().min(1).optional(),
+    transport: mcpTransportSchema.optional(),
+    endpoint: z.string().min(1).optional(),
+    allowedTools: mcpAllowedToolsSchema.optional(),
+    dataEgressPolicy: mcpDataEgressPolicySchema.optional(),
+    integrationProfile: mcpIntegrationProfileSchema.optional(),
+    oauthClientId: z.string().min(1).max(512).optional(),
+    catalogVersionConstraint: z.string().min(1).max(200).optional(),
+    approvalChallengeEndpoint: z.string().url().optional(),
+    description: z.string().optional(),
+}).strict();
 
 const setStatusBodySchema = z.object({ status: z.enum(["active", "disabled"]) }).strict();
 
@@ -68,8 +94,14 @@ export function registerMcpRegistryRoutes(fastify: FastifyInstance, deps: RouteD
         const caller = await requireOrgUser(deps, request, organizationId);
         await requirePermission(deps.store, caller, "mcpRegistry:manage", `organization:${organizationId}`);
         const body = updateEntryBodySchema.parse(request.body);
+        const current = await deps.mcpRegistryStore.getById(organizationId, entryId);
+        if (!current) return reply.code(404).send({ error: "not_found" });
+        const next = { ...current, ...body };
+        if (next.integrationProfile === "modelforge-clinical" && (next.transport !== "http" || !next.oauthClientId || !next.approvalChallengeEndpoint)) {
+            return reply.code(400).send({ error: "invalid_clinical_registry_entry" });
+        }
         const updated = await deps.mcpRegistryStore.update(organizationId, entryId, body, caller.id, actorFrom(caller));
-        if (!updated) return reply.code(404).send({ error: "not_found" });
+        if (!updated) return reply.code(409).send({ error: "registry_entry_changed" });
         reply.send(updated);
     });
 

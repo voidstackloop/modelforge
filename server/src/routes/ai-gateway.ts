@@ -17,6 +17,8 @@ import {
 } from "./params.js";
 import { withIdempotencyKey } from "./idempotency.js";
 import { ClinicalAiGateway } from "../ai-gateway/gateway.js";
+import { SCALAR_CASE_FIELD_CATEGORIES } from "../ai-gateway/data-minimization.js";
+import { computeProductionQualitySnapshot, detectProductionQualityDrift } from "../eval-harness/production-monitor.js";
 import { clientForDeployment } from "../ai-gateway/provider-client.js";
 
 /**
@@ -54,7 +56,10 @@ const globalCatalogResourceName = (organizationId: string): string => `organizat
 
 const submitRequestBodySchema = z
     .object({
-        providerModelId: z.string().min(1),
+        // Omit to auto-route across every enabled, eligible provider model
+        // for this tenant — see ai-gateway/model-router.ts and
+        // ClinicalAiGateway.submitRequest's own doc comment.
+        providerModelId: z.string().min(1).optional(),
         purposeOfUse: aiPurposeOfUseSchema,
         requestedCategories: z.array(z.string().min(1).max(100)).min(1).max(50),
         selectedDeidentificationJobIds: z.array(z.string().min(1).max(200)).max(10).default([]),
@@ -237,6 +242,8 @@ function statusForDeniedOutcome(outcome: string): number {
             return 503;
         case "provider-failed":
             return 502;
+        case "no-eligible-provider-model":
+            return 503;
         default:
             return 500;
     }
@@ -352,6 +359,20 @@ export function registerAiGatewayRoutes(fastify: FastifyInstance, deps: RouteDep
                     const stored = await deps.imagingStore.forTenant(caller.tenantContext).getStudy(citation.resourceId);
                     if (!stored || stored.study.caseId !== resolved.requestEnvelope.patientCaseId) continue;
                     if (await isPermissionAllowed(deps.store, caller, "imagingStudy:view", `organization:${organizationId}/imagingStudy:${stored.study.id}`)) citations.push(citation);
+                    continue;
+                }
+                // data-minimization.ts's synthetic per-field citation
+                // (`"<category>:<caseId>"`) — no separate permission check
+                // needed beyond the case-level access resolveRequestForCase
+                // already required above (unlike imagingStudy, a case field
+                // is not a separate authorization domain), just re-verified
+                // existence: a known category, still belonging to this same
+                // request's case. Same "re-checked only against the live
+                // resource, not trusted from generation time" posture as
+                // every other branch here.
+                if (citation.resourceType === "patientCaseField") {
+                    const [category, caseId] = [citation.resourceId.split(":")[0], citation.resourceId.slice(citation.resourceId.indexOf(":") + 1)];
+                    if (caseId === resolved.requestEnvelope.patientCaseId && (SCALAR_CASE_FIELD_CATEGORIES as readonly string[]).includes(category)) citations.push(citation);
                 }
             }
             return { output: item, citations, review: await resolved.gatewayRepo.getReviewForOutput(item.id) };
@@ -506,6 +527,30 @@ export function registerAiGatewayRoutes(fastify: FastifyInstance, deps: RouteDep
         const caller = await requireOrgUser(deps, request, organizationId);
         await requirePermission(deps.store, caller, "aiGateway:viewAuditTrail", globalCatalogResourceName(organizationId));
         reply.send({ artifacts: await deps.aiProviderRegistryStore.listModelArtifacts({ providerModelId: modelId }) });
+    });
+
+    // --- Online production quality monitoring (eval-harness/production-
+    // monitor.ts) — the "online" half of the clinical AI evaluation
+    // framework, complementary to the offline golden-dataset harness
+    // (eval-harness/runner.ts, driven by its own CLI, not an HTTP route).
+    // Aggregate rates only, gated the same as every other model-level
+    // catalog read here — no patient-identifying data crosses this route.
+    fastify.get("/organizations/:organizationId/ai-provider-models/:modelId/quality-monitor", { preHandler: deps.authPreHandler }, async (request, reply) => {
+        const { organizationId, modelId } = organizationAiProviderModelParamsSchema.parse(request.params);
+        const caller = await requireOrgUser(deps, request, organizationId);
+        await requirePermission(deps.store, caller, "aiGateway:viewAuditTrail", globalCatalogResourceName(organizationId));
+        const { since } = z.object({ since: z.string().datetime({ offset: true }).optional() }).parse(request.query);
+        const repo = deps.aiGatewayStore.forTenant(caller.tenantContext);
+        reply.send(await computeProductionQualitySnapshot(repo, modelId, since));
+    });
+
+    fastify.get("/organizations/:organizationId/ai-provider-models/:modelId/quality-drift", { preHandler: deps.authPreHandler }, async (request, reply) => {
+        const { organizationId, modelId } = organizationAiProviderModelParamsSchema.parse(request.params);
+        const caller = await requireOrgUser(deps, request, organizationId);
+        await requirePermission(deps.store, caller, "aiGateway:viewAuditTrail", globalCatalogResourceName(organizationId));
+        const { baselineSince, splitAt } = z.object({ baselineSince: z.string().datetime({ offset: true }).optional(), splitAt: z.string().datetime({ offset: true }) }).parse(request.query);
+        const repo = deps.aiGatewayStore.forTenant(caller.tenantContext);
+        reply.send(await detectProductionQualityDrift(repo, modelId, baselineSince, splitAt));
     });
 
     fastify.post("/organizations/:organizationId/ai-provider-models/:modelId/artifacts", { preHandler: deps.authPreHandler }, async (request, reply) => {

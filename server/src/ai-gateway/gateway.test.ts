@@ -112,11 +112,21 @@ describe("ClinicalAiGateway", () => {
             expect(result.output.reviewStatus).toBe("unreviewed");
             expect(result.output.summary).toContain("No interactions found");
             expect(result.output.evidence.length).toBeGreaterThan(0);
-            // data-minimization.ts only produces individually-citable
-            // resourceRefs for clinicalNotes — medications/allergies are
-            // scalar case fields with no per-resource identity to cite, so
-            // an output built purely from them legitimately has none.
-            expect(result.citations).toHaveLength(0);
+            // Model/prompt versioning: every output records which
+            // prompt-registry.ts version generated it, defaulting to
+            // CURRENT_PROMPT_VERSION when the caller doesn't pin one.
+            expect(result.output.promptVersion).toBe("clinical-gateway-prompt-v1");
+            expect(client.lastRequest?.systemPrompt).toContain("ABSTAIN");
+            // data-minimization.ts cites every included scalar field too
+            // (not only clinicalNotes) via a synthetic patientCaseField
+            // ref — evidence provenance must cover everything that
+            // actually reached the model, not just individually-identified
+            // resources. See data-minimization.test.ts's own coverage of
+            // this.
+            expect(result.citations.map((c) => ({ resourceType: c.resourceType, resourceId: c.resourceId, locator: c.locator })).sort((a, b) => a.resourceId.localeCompare(b.resourceId))).toEqual([
+                { resourceType: "patientCaseField", resourceId: "allergies:case-1", locator: "allergies" },
+                { resourceType: "patientCaseField", resourceId: "medications:case-1", locator: "medications" },
+            ]);
 
             // The provider client only ever saw already-minimized sections,
             // never a live handle to the patient case.
@@ -124,6 +134,21 @@ describe("ClinicalAiGateway", () => {
 
             const transformations = await gatewayRepo.listTransformations(result.request.id);
             expect(transformations.map((t) => t.kind).sort()).toEqual(["content-scan", "minimization", "redaction"]);
+        });
+
+        it("pinning an explicit promptVersion uses that prompt's text and records it on the output — the rollback mechanism", async () => {
+            const { gateway, input, client } = await setup();
+            const result = await gateway.submitRequest({ ...input, promptVersion: "clinical-gateway-prompt-v1" }, actor());
+            expect(result.outcome).toBe("completed");
+            if (result.outcome !== "completed") return;
+            expect(result.output.promptVersion).toBe("clinical-gateway-prompt-v1");
+            expect(client.lastRequest?.systemPrompt).toBeTruthy();
+        });
+
+        it("an unknown pinned promptVersion fails before ever calling the provider", async () => {
+            const { gateway, input, client } = await setup();
+            await expect(gateway.submitRequest({ ...input, promptVersion: "does-not-exist" }, actor())).rejects.toThrow(/Unknown prompt version/);
+            expect(client.lastRequest).toBeNull();
         });
 
         it("produces real citations pointing at the exact clinical note when the purpose of use pulls in clinicalNotes", async () => {
@@ -154,6 +179,151 @@ describe("ClinicalAiGateway", () => {
             expect(result.citations).toContainEqual(expect.objectContaining({ resourceType: "imagingStudy", resourceId: "study-1" }));
             const transformations=await gatewayRepo.listTransformations(result.request.id);
             expect(transformations).toContainEqual(expect.objectContaining({ kind: "deidentification", details: expect.objectContaining({ studyCount:1,artifactCount:2,jobIds:["job-1"] }) }));
+        });
+    });
+
+    describe("submitRequest — auto-routing (no providerModelId)", () => {
+        /** Two approved, eligible provider models under one tenant — a
+         * cheap/preferred one and an expensive/fallback one — so ranking
+         * and fallback-on-failure are both actually exercised, unlike the
+         * shared top-level setup() which only ever creates one model. */
+        async function setupTwoModels(options: { preferredFails?: boolean } = {}) {
+            const ctx = tenantContext();
+            const caseStore = new InMemoryCaseStore();
+            const gatewayStore = new InMemoryAiGatewayStore();
+            const registry = new InMemoryAiProviderRegistryStore();
+            const admission = new AiInferenceAdmission({ cpuThreads: 8, ramMB: 16_000, vramBudgetMB: 0 });
+
+            const now = new Date().toISOString();
+            const patientCase = patientCaseFixture("case-1", {
+                consentRecords: [{ id: "consent-scope-1", scope: "ai-assistance", grantedAt: now, method: "in-person" }],
+                medications: { value: ["Lisinopril 10mg daily"], includeInContext: true },
+                allergies: { value: ["Penicillin"], includeInContext: true },
+            });
+            await caseStore.forTenant(ctx).writeOne(patientCase, null, actor(), resourceAttrs(ctx, "case-1"));
+
+            const provider = await registry.createProvider({ name: "Local inference", kind: "local" }, actor());
+            const preferred = await registry.createProviderModel(
+                { providerId: provider.id, modelId: "llama3-cheap", modelVersion: "1.0", intendedUse: "medication review", supportedDataTypes: ["text"], maxContextTokens: 8192, hostingRegion: "local", processingLocation: "local", phiPermitted: true, validationStatus: "validated", costPerInputTokenUsd: 0, costPerOutputTokenUsd: 0 },
+                actor()
+            );
+            const fallback = await registry.createProviderModel(
+                { providerId: provider.id, modelId: "llama3-expensive", modelVersion: "1.0", intendedUse: "medication review", supportedDataTypes: ["text"], maxContextTokens: 8192, hostingRegion: "local", processingLocation: "local", phiPermitted: true, validationStatus: "canary", costPerInputTokenUsd: 1, costPerOutputTokenUsd: 1 },
+                actor()
+            );
+
+            const gatewayRepo = gatewayStore.forTenant(ctx);
+            await gatewayRepo.upsertProviderTenantSettings({ providerModelId: preferred.id, enabled: true, phiAllowed: true, allowedRoles: [], approvedByUserId: "admin-1" }, actor());
+            await gatewayRepo.upsertProviderTenantSettings({ providerModelId: fallback.id, enabled: true, phiAllowed: true, allowedRoles: [], approvedByUserId: "admin-1" }, actor());
+            await gatewayRepo.createConsent({ patientCaseId: "case-1", purpose: "treatment", dataCategories: ["medications", "allergies"], grantedByUserId: "admin-1" }, actor());
+
+            const preferredClient = new TestAiProviderClient(
+                options.preferredFails
+                    ? () => { throw new Error("simulated provider outage"); }
+                    : { rawText: "SUMMARY: From the preferred model.\nEVIDENCE:\n- x.\nFOLLOWUP:\n- y.", modelVersion: "1.0" }
+            );
+            const fallbackClient = new TestAiProviderClient({ rawText: "SUMMARY: From the fallback model.\nEVIDENCE:\n- x.\nFOLLOWUP:\n- y.", modelVersion: "1.0" });
+
+            const caseRepo = caseStore.forTenant(ctx);
+            const gateway = new ClinicalAiGateway({
+                caseRepo,
+                gatewayRepo,
+                registry,
+                admission,
+                resolveProviderClient: (_provider, model) => (model.id === preferred.id ? preferredClient : fallbackClient),
+            });
+
+            const input: SubmitAiRequestInput = {
+                patientCaseId: "case-1",
+                requestedByUserId: "clinician-1",
+                callerRoles: ["clinician"],
+                purposeOfUse: "medication-review",
+                requestedCategories: ["medications", "allergies"],
+            };
+            return { gateway, gatewayRepo, preferred, fallback, preferredClient, fallbackClient, input };
+        }
+
+        it("ranks and auto-selects the cheaper eligible model when providerModelId is omitted", async () => {
+            const { gateway, preferred, input } = await setupTwoModels();
+            const result = await gateway.submitRequest(input, actor());
+            expect(result.outcome).toBe("completed");
+            if (result.outcome !== "completed") return;
+            expect(result.output.summary).toContain("preferred model");
+            expect(result.output.providerModelId).toBe(preferred.id);
+        });
+
+        it("falls back to the next-ranked candidate when the top-ranked one fails, recording BOTH attempts as separate real request envelopes", async () => {
+            const { gateway, gatewayRepo, fallback, input } = await setupTwoModels({ preferredFails: true });
+            const result = await gateway.submitRequest(input, actor());
+            expect(result.outcome).toBe("completed");
+            if (result.outcome !== "completed") return;
+            expect(result.output.summary).toContain("fallback model");
+            expect(result.output.providerModelId).toBe(fallback.id);
+
+            const requests = await gatewayRepo.listRequestsForCase("case-1");
+            expect(requests).toHaveLength(2);
+            expect(requests.map((r) => r.status).sort()).toEqual(["awaiting-review", "failed"]);
+        });
+
+        it("reports no-eligible-provider-model, never a crash, when nothing is enabled — auto-routing only, never returned when a caller pins an explicit id", async () => {
+            const { gateway, gatewayRepo, preferred, fallback, input } = await setupTwoModels();
+            // Disable both approved models after they were created.
+            await gatewayRepo.upsertProviderTenantSettings({ providerModelId: preferred.id, enabled: false, phiAllowed: true, allowedRoles: [], approvedByUserId: "admin-1" }, actor());
+            await gatewayRepo.upsertProviderTenantSettings({ providerModelId: fallback.id, enabled: false, phiAllowed: true, allowedRoles: [], approvedByUserId: "admin-1" }, actor());
+            const result = await gateway.submitRequest(input, actor());
+            expect(result).toMatchObject({ outcome: "no-eligible-provider-model" });
+            expect(await gatewayRepo.listRequestsForCase("case-1")).toHaveLength(0);
+        });
+
+        it("previewRequest shows what auto-routing would currently pick, without creating anything", async () => {
+            const { gateway, gatewayRepo, preferred, input } = await setupTwoModels();
+            const preview = await gateway.previewRequest(input);
+            expect(preview?.model?.id).toBe(preferred.id);
+            expect(await gatewayRepo.listRequestsForCase("case-1")).toHaveLength(0);
+        });
+
+        it("real production quality history sways auto-routing between two otherwise-tied candidates", async () => {
+            // Two candidates identical in every ranking dimension model-
+            // router.ts considers BEFORE quality (validation status,
+            // hosting kind, cost) — isolating quality as the only thing
+            // that can explain a preference between them. A separate,
+            // minimal setup rather than reusing setupTwoModels, which
+            // deliberately gives its two models different validation tiers
+            // for its own fallback test — that would dominate quality here.
+            const ctx = tenantContext();
+            const caseStore = new InMemoryCaseStore();
+            const gatewayStore = new InMemoryAiGatewayStore();
+            const registry = new InMemoryAiProviderRegistryStore();
+            const now = new Date().toISOString();
+            const patientCase = patientCaseFixture("case-1", {
+                consentRecords: [{ id: "consent-scope-1", scope: "ai-assistance", grantedAt: now, method: "in-person" }],
+                medications: { value: ["Lisinopril 10mg daily"], includeInContext: true },
+            });
+            await caseStore.forTenant(ctx).writeOne(patientCase, null, actor(), resourceAttrs(ctx, "case-1"));
+            const provider = await registry.createProvider({ name: "Local inference", kind: "local" }, actor());
+            const modelSpec = { providerId: provider.id, modelVersion: "1.0", intendedUse: "medication review", supportedDataTypes: ["text" as const], maxContextTokens: 8192, hostingRegion: "local", processingLocation: "local", phiPermitted: true, validationStatus: "validated" as const };
+            const tarnished = await registry.createProviderModel({ ...modelSpec, modelId: "llama3-tarnished" }, actor());
+            const clean = await registry.createProviderModel({ ...modelSpec, modelId: "llama3-clean" }, actor());
+
+            const gatewayRepo = gatewayStore.forTenant(ctx);
+            for (const id of [tarnished.id, clean.id]) {
+                await gatewayRepo.upsertProviderTenantSettings({ providerModelId: id, enabled: true, phiAllowed: true, allowedRoles: [], approvedByUserId: "admin-1" }, actor());
+            }
+            await gatewayRepo.createConsent({ patientCaseId: "case-1", purpose: "treatment", dataCategories: ["medications"], grantedByUserId: "admin-1" }, actor());
+
+            // Seed a real, well-sampled bad track record for `tarnished` —
+            // enough rejected reviews to clear MIN_QUALITY_SAMPLE_SIZE.
+            for (let i = 0; i < 20; i++) {
+                const { output } = await gatewayRepo.createOutput(
+                    { requestId: "seed-request", providerModelId: tarnished.id, modelVersion: "1.0", promptVersion: "clinical-gateway-prompt-v1", summary: "seed", evidence: [], followUp: [], abstained: false, outputHash: `${"a".repeat(63)}${i}`, citations: [] },
+                    actor()
+                );
+                await gatewayRepo.createReview({ outputId: output.id, reviewedByUserId: "clinician-1", decision: "rejected" }, actor());
+            }
+
+            const gateway = new ClinicalAiGateway({ caseRepo: caseStore.forTenant(ctx), gatewayRepo, registry, admission: new AiInferenceAdmission({ cpuThreads: 8, ramMB: 16_000, vramBudgetMB: 0 }), resolveProviderClient: () => new TestAiProviderClient() });
+            const preview = await gateway.previewRequest({ patientCaseId: "case-1", requestedByUserId: "clinician-1", callerRoles: ["clinician"], purposeOfUse: "medication-review", requestedCategories: ["medications"] });
+            expect(preview?.model?.id).toBe(clean.id);
         });
     });
 

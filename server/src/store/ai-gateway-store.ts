@@ -55,6 +55,7 @@ export interface CreateAiOutputInput {
     requestId: string;
     providerModelId: string;
     modelVersion: string;
+    promptVersion: string;
     summary: string;
     evidence: string[];
     uncertainty?: string;
@@ -113,6 +114,14 @@ export interface TenantAiGatewayRepository {
     createOutput(input: CreateAiOutputInput, actor: AuditActor): Promise<{ output: AiOutput; citations: AiCitation[] }>;
     getOutput(id: string): Promise<AiOutput | null>;
     listOutputsForRequest(requestId: string): Promise<AiOutput[]>;
+    /** Every output for one provider model across the whole tenant
+     * (not scoped to a single case/request) — backs
+     * eval-harness/production-monitor.ts's online quality snapshot.
+     * `since`, when given, excludes outputs generated at or before that
+     * ISO timestamp (an open lower bound, matching `readChanges`'s own
+     * cursor convention elsewhere in this codebase). Ordered oldest-first,
+     * same as listOutputsForRequest. */
+    listOutputsForProviderModel(providerModelId: string, since?: string): Promise<AiOutput[]>;
     listCitationsForOutput(outputId: string): Promise<AiCitation[]>;
 
     /** Immutable — a review is a new row, never an edit of a prior one; an

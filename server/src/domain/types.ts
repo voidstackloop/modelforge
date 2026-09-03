@@ -383,6 +383,8 @@ export const mcpDataEgressPolicySchema = z.enum(["none", "metadata-only", "unres
 export type McpDataEgressPolicy = z.infer<typeof mcpDataEgressPolicySchema>;
 export const mcpRegistryStatusSchema = z.enum(["active", "disabled"]);
 export type McpRegistryStatus = z.infer<typeof mcpRegistryStatusSchema>;
+export const mcpIntegrationProfileSchema = z.enum(["generic", "modelforge-clinical"]);
+export type McpIntegrationProfile = z.infer<typeof mcpIntegrationProfileSchema>;
 export const mcpAllowedToolsSchema = z.union([z.literal("*"), z.array(z.string().min(1))]);
 export type McpAllowedTools = z.infer<typeof mcpAllowedToolsSchema>;
 export const mcpRegistryEntrySchema = z.object({
@@ -393,6 +395,10 @@ export const mcpRegistryEntrySchema = z.object({
     endpoint: z.string().min(1),
     allowedTools: mcpAllowedToolsSchema,
     dataEgressPolicy: mcpDataEgressPolicySchema,
+    integrationProfile: mcpIntegrationProfileSchema,
+    oauthClientId: z.string().min(1).max(512).optional(),
+    catalogVersionConstraint: z.string().min(1).max(200).optional(),
+    approvalChallengeEndpoint: z.string().url().optional(),
     status: mcpRegistryStatusSchema,
     description: z.string().optional(),
     createdByUserId: z.string().uuid(),

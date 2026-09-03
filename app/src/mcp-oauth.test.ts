@@ -77,6 +77,12 @@ describe("mcp-oauth", () => {
         expect((await provider.clientInformation())?.client_id).toBe("client-abc");
     });
 
+    it("uses the institutional static client id instead of dynamic registration state", async () => {
+        const provider = getOAuthProvider({ ...oauthConfig("oauth-1"), oauthClientId: "institutional-desktop" })!;
+        await provider.saveClientInformation!({ client_id: "stale-dynamic-client", redirect_uris: [String(provider.redirectUrl)] });
+        expect((await provider.clientInformation())?.client_id).toBe("institutional-desktop");
+    });
+
     it("invalidateCredentials('all') clears tokens, verifier, and client info together", async () => {
         const provider = getOAuthProvider(oauthConfig("oauth-1"))!;
         await provider.saveTokens({ access_token: "t", token_type: "Bearer" });

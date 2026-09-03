@@ -19,6 +19,7 @@ import { registerCaseMigrationRoutes } from "./routes/case-migrations.js";
 import { registerGroupRoutes } from "./routes/groups.js";
 import { registerInvitationRoutes } from "./routes/invitations.js";
 import { registerMcpRegistryRoutes } from "./routes/mcp-registry.js";
+import { registerMcpClinicalRoutes } from "./routes/mcp-clinical.js";
 import { registerComputeControlRoutes } from "./routes/compute-control.js";
 import { registerMeRoutes } from "./routes/me.js";
 import { registerOrganizationRoutes } from "./routes/organizations.js";
@@ -32,6 +33,9 @@ import { registerImagingViewerSessionRoutes } from "./routes/imaging-viewer-sess
 import { registerImagingIntegrationRoutes } from "./routes/imaging-integrations.js";
 import { registerImagingDeidentificationRoutes } from "./routes/imaging-deidentification.js";
 import { registerAiGatewayRoutes } from "./routes/ai-gateway.js";
+import { registerFhirRoutes } from "./routes/fhir.js";
+import { registerHl7Routes } from "./routes/hl7.js";
+import { registerSmartLaunchRoutes } from "./routes/smart-launch.js";
 import { registerPolicyVersionRoutes } from "./routes/policy-versions.js";
 import { registerScimRoutes } from "./routes/scim.js";
 import { registerScimTokenRoutes } from "./routes/scim-tokens.js";
@@ -51,6 +55,10 @@ import type { IamStore } from "./store/iam-store.js";
 import type { IdempotencyStore } from "./store/idempotency-store.js";
 import type { McpRegistryStore } from "./store/mcp-registry-store.js";
 import { InMemoryMcpRegistryStore } from "./store/mcp-registry-store.js";
+import type { McpClinicalStore } from "./store/mcp-clinical-store.js";
+import { InMemoryMcpClinicalStore } from "./store/mcp-clinical-store.js";
+import type { McpApprovalTicketIssuer } from "./mcp-approval-issuer.js";
+import { UnconfiguredMcpApprovalTicketIssuer } from "./mcp-approval-issuer.js";
 import type { ComputeControlStore } from "./store/compute-control-store.js";
 import { InMemoryComputeControlStore } from "./store/compute-control-store.js";
 import { ComputeControlPlane } from "./compute/control-plane.js";
@@ -66,8 +74,12 @@ import { OriginStreamContentDelivery } from "./imaging/content-delivery.js";
 import type { ImagingObjectStore } from "./imaging/object-store.js";
 import { LocalFilesystemImagingObjectStore } from "./imaging/object-store.js";
 import type { ImagingStore } from "./store/imaging-store.js";
+import type { Hl7IngestionStore } from "./store/hl7-ingestion-store.js";
+import type { SmartLaunchStore } from "./store/smart-launch-store.js";
+import { InMemorySmartLaunchStore } from "./store/in-memory-smart-launch-store.js";
 import { InMemoryImagingStore } from "./store/in-memory-imaging-store.js";
-import type { AiProvider, AiProviderModel } from "@modelforge/contracts";
+import { InMemoryHl7IngestionStore } from "./store/in-memory-hl7-ingestion-store.js";
+import type { AiProvider, AiProviderModel, FhirSmartConfiguration } from "@modelforge/contracts";
 import type { AiGatewayStore } from "./store/ai-gateway-store.js";
 import { InMemoryAiGatewayStore } from "./store/in-memory-ai-gateway-store.js";
 import type { AiProviderRegistryStore } from "./store/ai-provider-registry-store.js";
@@ -120,6 +132,8 @@ export interface BuildAppOptions {
     accessGovernanceStore?: AccessGovernanceStore;
     scimTokenStore?: ScimTokenStore;
     mcpRegistryStore?: McpRegistryStore;
+    mcpClinicalStore?: McpClinicalStore;
+    mcpApprovalTicketIssuer?: McpApprovalTicketIssuer;
     computeControlStore?: ComputeControlStore;
     /** Ed25519 SPKI PEM used to verify organization-bound compute policy
      * payloads. Omission fails policy creation closed with HTTP 503. */
@@ -130,6 +144,13 @@ export interface BuildAppOptions {
      * intentionally not accepted by default. */
     resolveComputeAgentCertificateFingerprint?: (request: FastifyRequest) => string | undefined;
     imagingStore?: ImagingStore;
+    hl7IngestionStore?: Hl7IngestionStore;
+    smartLaunchStore?: SmartLaunchStore;
+    /** SMART_LAUNCH_ENCRYPTION_KEY, already-decoded. Omitted (every test
+     * in this package) means routes/smart-launch.ts's token-exchange
+     * route 503s rather than encrypting with no real key — see
+     * RouteDeps's own doc comment. */
+    smartLaunchEncryptionKey?: Buffer;
     imagingObjectStore?: ImagingObjectStore;
     createDicomwebAdapter?: (organizationId: string) => DicomwebAdapter;
     imagingStorageMode?: "local-filesystem" | "s3";
@@ -209,6 +230,13 @@ export interface BuildAppOptions {
      * other header, which is the correct default for an API not meant to
      * be called directly from an arbitrary web page. */
     adminConsoleOrigin?: string;
+    /** routes/fhir.ts's `.well-known/smart-configuration` document.
+     * Omitted (every test in this package) means that one route responds
+     * 503 rather than making a live OIDC discovery call — see RouteDeps's
+     * own doc comment. index.ts resolves this once at startup via
+     * auth/oidc-verifier.ts's resolveAuthorizationServerMetadata +
+     * fhir/smart-configuration.ts's buildSmartConfiguration. */
+    smartConfiguration?: FhirSmartConfiguration;
 }
 
 /**
@@ -339,6 +367,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
             accessGovernanceStore: options.accessGovernanceStore ?? new InMemoryAccessGovernanceStore(options.auditStore),
             scimTokenStore: options.scimTokenStore ?? new InMemoryScimTokenStore(options.auditStore),
             mcpRegistryStore: options.mcpRegistryStore ?? new InMemoryMcpRegistryStore(options.auditStore),
+            mcpClinicalStore: options.mcpClinicalStore ?? new InMemoryMcpClinicalStore(options.auditStore),
+            mcpApprovalTicketIssuer: options.mcpApprovalTicketIssuer ?? new UnconfiguredMcpApprovalTicketIssuer(),
             computeControlStore,
             computeControlPlane: new ComputeControlPlane(computeControlStore),
             verifyComputePolicySignature: createComputePolicySignatureVerifier(options.computePolicyPublicKeyPem),
@@ -348,6 +378,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
                 return socket.getPeerCertificate()?.fingerprint256;
             }),
             imagingStore: options.imagingStore ?? new InMemoryImagingStore(options.auditStore),
+            hl7IngestionStore: options.hl7IngestionStore ?? new InMemoryHl7IngestionStore(options.auditStore),
+            smartLaunchStore: options.smartLaunchStore ?? new InMemorySmartLaunchStore(options.auditStore),
+            smartLaunchEncryptionKey: options.smartLaunchEncryptionKey,
             imagingObjectStore: options.imagingObjectStore ?? getDefaultImagingObjectStore(),
             createDicomwebAdapter:
                 options.createDicomwebAdapter ??
@@ -364,6 +397,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
             breakGlassGrantDurationMs: options.breakGlassGrantDurationMs ?? DEFAULT_BREAK_GLASS_GRANT_DURATION_MS,
             tenantDirectory: options.tenantDirectory ?? new StoreTenantDirectory(options.store),
             authPreHandler,
+            smartConfiguration: options.smartConfiguration,
         };
 
         // Raw-binary content types for DICOM upload (routes/imaging-ingestion.ts).
@@ -378,6 +412,18 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         // above) via its own per-route `bodyLimit` — this parser has no
         // size opinion of its own.
         instance.addContentTypeParser(["application/dicom", "application/octet-stream"], { parseAs: "buffer" }, (_request, payload, done) => {
+            done(null, payload);
+        });
+
+        // Raw-text content type for an inbound HL7 v2 message
+        // (routes/hl7.ts's POST .../inbound/oru-r01/parse) — HL7 v2 is
+        // plain text (ER7/"pipe-and-hat"), never JSON, so Fastify's default
+        // application/json parser doesn't apply; this hands the route the
+        // raw string exactly as received, same "no opinion on size, the
+        // route sets its own bodyLimit if it needs one" posture as the
+        // DICOM parser above (a real HL7 v2 message is always small, so
+        // this route doesn't override the app-wide 1 MiB default).
+        instance.addContentTypeParser("application/hl7-v2", { parseAs: "string" }, (_request, payload, done) => {
             done(null, payload);
         });
 
@@ -461,6 +507,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         registerSessionRoutes(instance, deps);
         registerScimTokenRoutes(instance, deps);
         registerMcpRegistryRoutes(instance, deps);
+        registerMcpClinicalRoutes(instance, deps);
         registerComputeControlRoutes(instance, deps);
         registerImagingStudyRoutes(instance, deps);
         registerImagingReportRoutes(instance, deps);
@@ -470,6 +517,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         registerImagingDeidentificationRoutes(instance, deps);
         registerImagingIngestionRoutes(instance, deps);
         registerAiGatewayRoutes(instance, deps);
+        registerFhirRoutes(instance, deps);
+        registerHl7Routes(instance, deps);
+        registerSmartLaunchRoutes(instance, deps);
         // DICOMweb routes are bearer-token (viewer-session) authenticated,
         // not OIDC — see that file's own requireViewerSession, the same
         // "not deps.authPreHandler" pattern routes/scim.ts already

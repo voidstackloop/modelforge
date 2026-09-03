@@ -29,6 +29,8 @@ import type { CreateImagingShareInput, ImagingStudyDetail } from "./imaging-clie
 import type { ImagingIngestionJob, ImagingShareGrant, ImagingStudy } from "@modelforge/contracts";
 import type { AiConsent, AiReview } from "@modelforge/contracts";
 import type { ClinicalAiImagingOption, ClinicalAiModelOption, ClinicalAiRequestDetail, ClinicalAiSubmitInput } from "./clinical-ai-client";
+import type { Hl7ResolveDecision } from "./hl7-client";
+import type { Hl7IngestionJob, SmartLaunchToken, SmartTrustedIssuer } from "@modelforge/contracts";
 
 export interface ToolExecuteResult {
     result?: unknown;
@@ -379,8 +381,8 @@ export const api = {
 
     agent: {
         pickWorkspace: (): Promise<string | null> => ipcRenderer.invoke("agent:pickWorkspace"),
-        executeTool: (workspaceRoot: string, name: string, args: Record<string, unknown>): Promise<ToolExecuteResult> =>
-            ipcRenderer.invoke("tools:execute", { workspaceRoot, name, args }),
+        executeTool: (workspaceRoot: string, name: string, args: Record<string, unknown>, clinicalContext?: { patientCaseId?: string; humanApproved?: boolean }): Promise<ToolExecuteResult> =>
+            ipcRenderer.invoke("tools:execute", { workspaceRoot, name, args, clinicalContext }),
         // Only meaningfully different from executeTool for MCP tools — a
         // requestId lets main thread progress notifications back on a push
         // channel and lets the caller cancel mid-call. Built-in tools ignore
@@ -391,14 +393,15 @@ export const api = {
             workspaceRoot: string,
             name: string,
             args: Record<string, unknown>,
-            onProgress: (progress: { progress: number; total?: number; message?: string }) => void
+            onProgress: (progress: { progress: number; total?: number; message?: string }) => void,
+            clinicalContext?: { patientCaseId?: string; humanApproved?: boolean }
         ): { requestId: string; promise: Promise<ToolExecuteResult> } => {
             const requestId = randomId();
             const channel = `mcp:toolProgress:${requestId}`;
             const listener = (_event: unknown, progress: { progress: number; total?: number; message?: string }) => onProgress(progress);
             ipcRenderer.on(channel, listener);
             const promise = ipcRenderer
-                .invoke("tools:execute", { workspaceRoot, name, args, requestId })
+                .invoke("tools:execute", { workspaceRoot, name, args, requestId, clinicalContext })
                 .finally(() => ipcRenderer.removeListener(channel, listener));
             return { requestId, promise };
         },
@@ -604,6 +607,7 @@ export const api = {
     },
 
     mcp: {
+        listManagedClinicalServers: (): Promise<{ servers?: McpServerConfig[]; error?: string }> => ipcRenderer.invoke("mcp:listManagedClinicalServers"),
         connect: (config: McpServerConfig): Promise<McpConnectResult> => ipcRenderer.invoke("mcp:connect", config),
         disconnect: (id: string): Promise<void> => ipcRenderer.invoke("mcp:disconnect", id),
         status: (): Promise<Record<string, McpServerStatus>> => ipcRenderer.invoke("mcp:status"),
@@ -614,6 +618,21 @@ export const api = {
             ipcRenderer.invoke("mcp:startOAuthFlow", config),
         hasOAuthTokens: (serverId: string): Promise<boolean> => ipcRenderer.invoke("mcp:hasOAuthTokens", serverId),
         clearOAuthCredentials: (serverId: string): Promise<void> => ipcRenderer.invoke("mcp:clearOAuthCredentials", serverId),
+    },
+
+    hl7: {
+        listJobs: (status?: Hl7IngestionJob["status"]): Promise<Hl7IngestionJob[]> => ipcRenderer.invoke("hl7:listJobs", status),
+        resolveJob: (jobId: string, decision: Hl7ResolveDecision): Promise<Hl7IngestionJob> => ipcRenderer.invoke("hl7:resolveJob", { jobId, decision }),
+    },
+
+    smartLaunch: {
+        listTrustedIssuers: (): Promise<SmartTrustedIssuer[]> => ipcRenderer.invoke("smartLaunch:listTrustedIssuers"),
+        upsertTrustedIssuer: (input: { issuer: string; clientId: string; redirectUris: string[] }): Promise<SmartTrustedIssuer> =>
+            ipcRenderer.invoke("smartLaunch:upsertTrustedIssuer", input),
+        deleteTrustedIssuer: (issuer: string): Promise<void> => ipcRenderer.invoke("smartLaunch:deleteTrustedIssuer", issuer),
+        listSessions: (): Promise<SmartLaunchToken[]> => ipcRenderer.invoke("smartLaunch:listSessions"),
+        revokeSession: (sessionId: string): Promise<void> => ipcRenderer.invoke("smartLaunch:revokeSession", sessionId),
+        start: (issuer: string): Promise<{ token?: SmartLaunchToken; error?: string }> => ipcRenderer.invoke("smartLaunch:start", issuer),
     },
 
     screen: {

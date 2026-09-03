@@ -347,6 +347,13 @@ export const aiOutputSchema = z
         modelVersion: z.string().min(1).max(100),
         generatedAt: timestampSchema,
         summary: z.string().min(1).max(20_000),
+        // The gateway's own system-prompt version (server/src/ai-gateway/
+        // prompt-registry.ts), NOT the provider's modelVersion above — two
+        // independent axes of "what produced this output." Required, not
+        // optional: every output has always been generated from some
+        // prompt text, this just makes which one an explicit, queryable
+        // fact instead of an unrecorded implementation detail.
+        promptVersion: z.string().min(1).max(100),
         evidence: z.array(z.string().max(2_000)).default([]),
         uncertainty: z.string().max(4_000).optional(),
         followUp: z.array(z.string().max(2_000)).default([]),

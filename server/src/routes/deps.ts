@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { AiProvider, AiProviderModel } from "@modelforge/contracts";
+import type { AiProvider, AiProviderModel, FhirSmartConfiguration } from "@modelforge/contracts";
 import type { AiInferenceAdmission } from "../ai-gateway/admission.js";
 import type { AiProviderClient } from "../ai-gateway/provider-client.js";
 import type { AccessGovernanceStore } from "../store/access-governance-store.js";
@@ -12,10 +12,14 @@ import type { CaseMigrationStore } from "../store/case-migration-store.js";
 import type { IamStore } from "../store/iam-store.js";
 import type { IdempotencyStore } from "../store/idempotency-store.js";
 import type { McpRegistryStore } from "../store/mcp-registry-store.js";
+import type { McpClinicalStore } from "../store/mcp-clinical-store.js";
+import type { McpApprovalTicketIssuer } from "../mcp-approval-issuer.js";
 import type { DicomwebAdapter } from "../imaging/dicomweb-adapter.js";
 import type { ImagingContentDelivery } from "../imaging/content-delivery.js";
 import type { ImagingObjectStore } from "../imaging/object-store.js";
 import type { ImagingStore } from "../store/imaging-store.js";
+import type { Hl7IngestionStore } from "../store/hl7-ingestion-store.js";
+import type { SmartLaunchStore } from "../store/smart-launch-store.js";
 import type { PrincipalStore } from "../store/principal-store.js";
 import type { ScimTokenStore } from "../store/scim-token-store.js";
 import type { SessionStore } from "../store/session-store.js";
@@ -42,6 +46,8 @@ export interface RouteDeps {
     aiGatewayStore: AiGatewayStore;
     aiProviderRegistryStore: AiProviderRegistryStore;
     mcpRegistryStore: McpRegistryStore;
+    mcpClinicalStore: McpClinicalStore;
+    mcpApprovalTicketIssuer: McpApprovalTicketIssuer;
     computeControlStore: ComputeControlStore;
     computeControlPlane: ComputeControlPlane;
     verifyComputePolicySignature: ComputePolicySignatureVerifier;
@@ -70,4 +76,25 @@ export interface RouteDeps {
     breakGlassGrantDurationMs: number;
     tenantDirectory: TenantDirectory;
     authPreHandler: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /** routes/fhir.ts's `.well-known/smart-configuration` document —
+     * resolved once at startup (index.ts) via OIDC discovery against the
+     * configured issuer (auth/oidc-verifier.ts's
+     * resolveAuthorizationServerMetadata). Undefined in test/dev builds
+     * that construct RouteDeps without live discovery (e.g. every
+     * app.test.ts-style app.inject() suite, which uses a synthetic
+     * non-resolvable issuer) — the route itself handles that case with a
+     * 503, never a crash. */
+    smartConfiguration: FhirSmartConfiguration | undefined;
+    hl7IngestionStore: Hl7IngestionStore;
+    smartLaunchStore: SmartLaunchStore;
+    /** SMART_LAUNCH_ENCRYPTION_KEY, decoded — undefined when unset, in
+     * which case routes/smart-launch.ts's own token-exchange route fails
+     * closed with 503 rather than encrypting with no real key. Unlike
+     * hl7Mllp (a whole listener that simply doesn't start), the SMART
+     * launch routes are always registered — this flag is checked per
+     * request instead, so configuring/listing trusted issuers and viewing
+     * one's own session list still works even before an operator sets
+     * this, and only the step that would actually need to encrypt a new
+     * token is blocked. */
+    smartLaunchEncryptionKey: Buffer | undefined;
 }

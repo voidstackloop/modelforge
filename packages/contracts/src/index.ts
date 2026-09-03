@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { mcpOperationProvenanceSchema } from "./mcp-clinical.js";
 
 // This package is the only runtime source of truth for clinical payloads
 // crossing the Electron/server boundary. Keep storage-only metadata in
@@ -255,6 +256,7 @@ export const chatMessageSchema = z
         toolName: z.string().max(500).optional(),
         pinned: z.boolean().optional(),
         isVerification: z.boolean().optional(),
+        mcpOperation: mcpOperationProvenanceSchema.optional(),
     })
     .strict();
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
@@ -345,7 +347,21 @@ export * from "./imaging.js";
 // AiConsent is "exactly which purpose, which data categories, since when,
 // until when."
 export * from "./ai-gateway.js";
+export * from "./mcp-clinical.js";
 
 // Enterprise CPU/GPU control plane — PHI-free inventory, policy, request,
 // and lease contracts shared by the server scheduler and managed node agent.
 export * from "./compute.js";
+
+// FHIR R4 read facade (server/src/routes/fhir.ts) — a dedicated domain, kept
+// in its own module. See fhir.ts's own top doc comment for scope.
+export * from "./fhir.js";
+
+// HL7 v2 inbound ingestion (server/src/hl7/) — a dedicated domain, kept in
+// its own module. See hl7.ts's own top doc comment for scope.
+export * from "./hl7.js";
+
+// SMART App Launch client role (server/src/smart-launch/) — a dedicated
+// domain, kept in its own module. See smart-launch.ts's own top doc
+// comment for scope.
+export * from "./smart-launch.js";

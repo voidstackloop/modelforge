@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import type { McpAllowedTools, McpDataEgressPolicy, McpRegistryEntry, McpRegistryStatus, McpTransport } from "../domain/types.js";
+import type { McpAllowedTools, McpDataEgressPolicy, McpIntegrationProfile, McpRegistryEntry, McpRegistryStatus, McpTransport } from "../domain/types.js";
 import { type AuditActor, type AuditStore, InMemoryAuditStore, insertAuditEntry } from "./audit-store.js";
 
 /**
@@ -46,6 +46,10 @@ export interface CreateMcpRegistryEntryInput {
     endpoint: string;
     allowedTools: McpAllowedTools;
     dataEgressPolicy: McpDataEgressPolicy;
+    integrationProfile?: McpIntegrationProfile;
+    oauthClientId?: string;
+    catalogVersionConstraint?: string;
+    approvalChallengeEndpoint?: string;
     description?: string;
 }
 
@@ -74,6 +78,7 @@ export class InMemoryMcpRegistryStore implements McpRegistryStore {
             createdAt: now,
             updatedAt: now,
             ...input,
+            integrationProfile: input.integrationProfile ?? "generic",
         };
         this.entries.set(entry.id, entry);
         await this.auditStore.record({
@@ -127,6 +132,10 @@ interface McpRegistryRow {
     endpoint: string;
     allowed_tools: McpAllowedTools;
     data_egress_policy: McpDataEgressPolicy;
+    integration_profile: McpIntegrationProfile;
+    oauth_client_id: string | null;
+    catalog_version_constraint: string | null;
+    approval_challenge_endpoint: string | null;
     status: McpRegistryStatus;
     description: string | null;
     created_by_user_id: string;
@@ -144,6 +153,10 @@ function mapRow(row: McpRegistryRow): McpRegistryEntry {
         endpoint: row.endpoint,
         allowedTools: row.allowed_tools,
         dataEgressPolicy: row.data_egress_policy,
+        integrationProfile: row.integration_profile,
+        oauthClientId: row.oauth_client_id ?? undefined,
+        catalogVersionConstraint: row.catalog_version_constraint ?? undefined,
+        approvalChallengeEndpoint: row.approval_challenge_endpoint ?? undefined,
         status: row.status,
         description: row.description ?? undefined,
         createdByUserId: row.created_by_user_id,
@@ -177,9 +190,9 @@ export class PostgresMcpRegistryStore implements McpRegistryStore {
             const id = randomUUID();
             const now = new Date();
             const result = await client.query<McpRegistryRow>(
-                `INSERT INTO mcp_registry_entries (id, organization_id, name, transport, endpoint, allowed_tools, data_egress_policy, status, description, created_by_user_id, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, $10) RETURNING *`,
-                [id, organizationId, input.name, input.transport, input.endpoint, JSON.stringify(input.allowedTools), input.dataEgressPolicy, input.description ?? null, createdByUserId, now]
+                `INSERT INTO mcp_registry_entries (id, organization_id, name, transport, endpoint, allowed_tools, data_egress_policy, integration_profile, oauth_client_id, catalog_version_constraint, approval_challenge_endpoint, status, description, created_by_user_id, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $12, $13, $14, $14) RETURNING *`,
+                [id, organizationId, input.name, input.transport, input.endpoint, JSON.stringify(input.allowedTools), input.dataEgressPolicy, input.integrationProfile ?? "generic", input.oauthClientId ?? null, input.catalogVersionConstraint ?? null, input.approvalChallengeEndpoint ?? null, input.description ?? null, createdByUserId, now]
             );
             await insertAuditEntry(client, {
                 organizationId, actorUserId: actor.userId, actorExternalSubject: actor.externalSubject,
@@ -219,13 +232,17 @@ export class PostgresMcpRegistryStore implements McpRegistryStore {
                 endpoint: partial.endpoint ?? current.endpoint,
                 allowedTools: partial.allowedTools ?? current.allowedTools,
                 dataEgressPolicy: partial.dataEgressPolicy ?? current.dataEgressPolicy,
+                integrationProfile: partial.integrationProfile ?? current.integrationProfile,
+                oauthClientId: partial.oauthClientId ?? current.oauthClientId,
+                catalogVersionConstraint: partial.catalogVersionConstraint ?? current.catalogVersionConstraint,
+                approvalChallengeEndpoint: partial.approvalChallengeEndpoint ?? current.approvalChallengeEndpoint,
                 description: partial.description ?? current.description,
             };
             const updatedAt = new Date();
             const result = await client.query<McpRegistryRow>(
-                `UPDATE mcp_registry_entries SET name=$3, transport=$4, endpoint=$5, allowed_tools=$6, data_egress_policy=$7, description=$8, updated_by_user_id=$9, updated_at=$10
+                `UPDATE mcp_registry_entries SET name=$3, transport=$4, endpoint=$5, allowed_tools=$6, data_egress_policy=$7, integration_profile=$8, oauth_client_id=$9, catalog_version_constraint=$10, approval_challenge_endpoint=$11, description=$12, updated_by_user_id=$13, updated_at=$14
                  WHERE organization_id=$1 AND id=$2 RETURNING *`,
-                [organizationId, id, merged.name, merged.transport, merged.endpoint, JSON.stringify(merged.allowedTools), merged.dataEgressPolicy, merged.description ?? null, updatedByUserId, updatedAt]
+                [organizationId, id, merged.name, merged.transport, merged.endpoint, JSON.stringify(merged.allowedTools), merged.dataEgressPolicy, merged.integrationProfile, merged.oauthClientId ?? null, merged.catalogVersionConstraint ?? null, merged.approvalChallengeEndpoint ?? null, merged.description ?? null, updatedByUserId, updatedAt]
             );
             await insertAuditEntry(client, {
                 organizationId, actorUserId: actor.userId, actorExternalSubject: actor.externalSubject,
