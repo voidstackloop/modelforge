@@ -11,6 +11,8 @@ import PatientCaseDetail from "./pages/PatientCaseDetail";
 import EvidenceLibrary from "./pages/EvidenceLibrary";
 import KnowledgeGraph from "./pages/KnowledgeGraph";
 import AuditPrivacy from "./pages/AuditPrivacy";
+import Hl7Inbox from "./pages/Hl7Inbox";
+import ExternalEhr from "./pages/ExternalEhr";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ToastProvider } from "@/components/toast";
 import { SessionsProvider } from "@/lib/sessions-context";
@@ -33,6 +35,8 @@ const router = createHashRouter([
       { path: "evidence", element: <EvidenceLibrary /> },
       { path: "knowledge-graph", element: <KnowledgeGraph /> },
       { path: "audit", element: <AuditPrivacy /> },
+      { path: "hl7-inbox", element: <Hl7Inbox /> },
+      { path: "external-ehr", element: <ExternalEhr /> },
     ],
   },
 ]);

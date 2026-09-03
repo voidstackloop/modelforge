@@ -135,7 +135,7 @@ describe("InMemoryAiGatewayStore", () => {
         it("creates an output with citations, separate from the output row itself", async () => {
             const { repo, request } = await setup();
             const { output, citations } = await repo.createOutput({
-                requestId: request.id, providerModelId: "model-1", modelVersion: "1.0",
+                requestId: request.id, providerModelId: "model-1", modelVersion: "1.0", promptVersion: "clinical-gateway-prompt-v1",
                 summary: "No acute findings.", evidence: ["Note dated 2026-01-01 mentions stable vitals."],
                 followUp: ["Recheck in 2 weeks."], abstained: false, outputHash: "b".repeat(64),
                 citations: [{ resourceType: "clinicalNote", resourceId: "note-1", locator: "line 4" }],
@@ -149,7 +149,7 @@ describe("InMemoryAiGatewayStore", () => {
         it("an output that abstains carries abstainReason and no fabricated confidence", async () => {
             const { repo, request } = await setup();
             const { output } = await repo.createOutput({
-                requestId: request.id, providerModelId: "model-1", modelVersion: "1.0",
+                requestId: request.id, providerModelId: "model-1", modelVersion: "1.0", promptVersion: "clinical-gateway-prompt-v1",
                 summary: "Insufficient data to draw a conclusion.", evidence: [], followUp: [],
                 abstained: true, abstainReason: "Contradictory lab values across two source documents.",
                 outputHash: "c".repeat(64), citations: [],
@@ -161,7 +161,7 @@ describe("InMemoryAiGatewayStore", () => {
         it("a review is immutable — a second review attempt on the same output throws rather than overwriting", async () => {
             const { repo, request } = await setup();
             const { output } = await repo.createOutput({
-                requestId: request.id, providerModelId: "model-1", modelVersion: "1.0",
+                requestId: request.id, providerModelId: "model-1", modelVersion: "1.0", promptVersion: "clinical-gateway-prompt-v1",
                 summary: "x", evidence: [], followUp: [], abstained: false, outputHash: "d".repeat(64), citations: [],
             }, actor());
             await repo.createReview({ outputId: output.id, reviewedByUserId: "clinician-1", decision: "accepted" }, actor());
@@ -171,7 +171,7 @@ describe("InMemoryAiGatewayStore", () => {
         it("accepting a review updates the output's own reviewStatus flag", async () => {
             const { repo, request } = await setup();
             const { output } = await repo.createOutput({
-                requestId: request.id, providerModelId: "model-1", modelVersion: "1.0",
+                requestId: request.id, providerModelId: "model-1", modelVersion: "1.0", promptVersion: "clinical-gateway-prompt-v1",
                 summary: "x", evidence: [], followUp: [], abstained: false, outputHash: "e".repeat(64), citations: [],
             }, actor());
             await repo.createReview({ outputId: output.id, reviewedByUserId: "clinician-1", decision: "corrected", correctedText: "Actually, recheck in 1 week." }, actor());

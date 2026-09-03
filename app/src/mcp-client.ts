@@ -14,6 +14,8 @@ import {
     resolveManagedMcpPolicy,
     type ManagedMcpPolicy,
 } from "./managed-mcp-policy";
+import { modelVisibleClinicalSchema, prepareClinicalMcpArguments, type ClinicalMcpExecutionContext } from "./clinical-mcp-broker";
+import { mcpOperationResponseSchema, type McpOperationResponse } from "@modelforge/contracts";
 
 export interface McpServerConfig {
     id: string;
@@ -39,6 +41,10 @@ export interface McpServerConfig {
     // pre-filled here, since RFC 9728/8414 discovery means this app doesn't
     // need to know the authorization server URL up front.
     auth?: { type: "none" | "oauth2" };
+    /** Static institutional public-client identifier. Clinical managed
+     * servers use the same client as the shared backend so context grants
+     * and approval tickets stay bound to one OAuth azp/client_id. */
+    oauthClientId?: string;
     // A hard denylist enforced in code (filtered out of both the tool list
     // and callMcpTool itself, not just hidden in the UI) — for servers like
     // DICOM MCP whose upstream tool catalog includes operations this app
@@ -71,6 +77,7 @@ interface Connection {
     client: Client;
     transport: Transport;
     tools: McpToolInfo[];
+    managedPolicy: ManagedMcpPolicy | null;
     // Populated for the HTTP transport, which exposes the version the SDK
     // negotiated during connect(); the stdio transport validates the same
     // negotiation internally (Client.connect() throws if the server's
@@ -140,7 +147,7 @@ async function connectStdio(config: McpServerConfig, managedPolicy: ManagedMcpPo
         const list = await client.listTools();
         const tools = filterManagedMcpTools(managedPolicy, filterBlockedTools(config, list.tools as McpToolInfo[]));
         for (const tool of tools) precompileToolSchema(config.id, tool.name, tool.inputSchema);
-        return { config, client, transport, tools, resourceLeaseId: lease.leaseId };
+        return { config, client, transport, tools, managedPolicy, resourceLeaseId: lease.leaseId };
     } catch (err) {
         mainResourceOrchestrator.release(lease.leaseId);
         throw err;
@@ -181,6 +188,7 @@ async function connectHttp(config: McpServerConfig, managedPolicy: ManagedMcpPol
         client,
         transport,
         tools,
+        managedPolicy,
         protocolVersion: transport.protocolVersion,
     };
 }
@@ -235,7 +243,9 @@ export function getConnectedTools(): ToolDefinition[] {
             result.push({
                 name: qualifiedName(conn.config.id, tool.name),
                 description: `[MCP: ${conn.config.name}] ${tool.description ?? tool.name}`,
-                parameters: (tool.inputSchema as unknown as ToolDefinition["parameters"]) ?? {
+                parameters: ((conn.managedPolicy?.integrationProfile === "modelforge-clinical"
+                    ? modelVisibleClinicalSchema(tool.inputSchema, tool.name)
+                    : tool.inputSchema) as unknown as ToolDefinition["parameters"]) ?? {
                     type: "object",
                     properties: {},
                 },
@@ -271,7 +281,8 @@ export interface McpStructuredToolResult {
     /** Which server/tool/when produced this — so a caller (audit logging, a
      * future UI) doesn't have to re-derive provenance the qualified tool
      * name already implies but doesn't timestamp. */
-    provenance: { serverId: string; serverName: string; toolName: string; timestamp: string };
+    provenance: { serverId: string; serverName: string; toolName: string; timestamp: string; registryEntryId?: string };
+    clinicalOperation?: McpOperationResponse;
 }
 
 // MCP tool results are `{ content: [...], structuredContent?, isError? }`.
@@ -313,12 +324,14 @@ function buildStructuredResult(
         }
     }
     const flatText = content.length > 0 ? textParts.join("\n") : JSON.stringify(result ?? null, null, 2);
+    const clinicalOperation = mcpOperationResponseSchema.safeParse(r?.structuredContent);
     return {
         text: r?.isError ? `Error: ${flatText}` : flatText,
         structuredContent: r?.structuredContent,
         resourceLinks: resourceLinks.length > 0 ? resourceLinks : undefined,
         isError: r?.isError ?? false,
         provenance: { serverId, serverName, toolName, timestamp: new Date().toISOString() },
+        clinicalOperation: clinicalOperation.success ? clinicalOperation.data : undefined,
     };
 }
 
@@ -348,6 +361,7 @@ export interface McpToolCallOptions {
     /** Requires the server to actually send progress notifications; most
      * won't for a fast call, so this may simply never fire. */
     onProgress?: (progress: McpToolCallProgress) => void;
+    clinicalContext?: ClinicalMcpExecutionContext;
 }
 
 /** Full structured result — used where structuredContent/resource links/
@@ -366,7 +380,6 @@ export async function callMcpToolStructured(
     // central allowlist must fail closed for an already-open connection.
     const managedPolicy = await resolveManagedMcpPolicy(conn.config);
     enforceManagedMcpToolCall(managedPolicy, toolName, args);
-
     // Defense in depth: filterBlockedTools() already keeps a blocked name out
     // of conn.tools (so it's never offered to the model or shown in the
     // approval card), but this call site is checked independently rather
@@ -376,18 +389,24 @@ export async function callMcpToolStructured(
         throw new Error(`"${toolName}" is blocked on server "${conn.config.name}" and cannot be called.`);
     }
 
-    const problems = validateArgs(serverId, toolName, args);
+    const callArgs = managedPolicy?.integrationProfile === "modelforge-clinical"
+        ? await prepareClinicalMcpArguments(managedPolicy, toolName, args, options?.clinicalContext)
+        : args;
+
+    const problems = validateArgs(serverId, toolName, callArgs);
     if (problems.length > 0) {
         throw new Error(`Invalid arguments for "${toolName}": ${problems.join("; ")}`);
     }
 
-    const result = await conn.client.callTool({ name: toolName, arguments: args }, undefined, {
+    const result = await conn.client.callTool({ name: toolName, arguments: callArgs }, undefined, {
         signal: options?.signal,
         onprogress: options?.onProgress
             ? (p) => options.onProgress!({ progress: p.progress, total: p.total, message: p.message })
             : undefined,
     });
-    return buildStructuredResult(serverId, conn.config.name, toolName, result);
+    const structured = buildStructuredResult(serverId, conn.config.name, toolName, result);
+    if (managedPolicy?.integrationProfile === "modelforge-clinical") structured.provenance.registryEntryId = managedPolicy.entryId;
+    return structured;
 }
 
 export async function callMcpTool(qualified: string, args: Record<string, unknown>, options?: McpToolCallOptions): Promise<string> {

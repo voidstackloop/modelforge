@@ -129,6 +129,29 @@ export function decodeUnverifiedIssuer(token: string): string | undefined {
  * Fetched and cached once per process by `createRemoteJWKSet` internally —
  * not re-fetched on every request.
  */
+/**
+ * Fetches `{issuer}/.well-known/openid-configuration` — the one piece of
+ * discovery-document plumbing resolveJwks() and
+ * resolveAuthorizationServerMetadata() (below) both need, factored out so
+ * there is exactly one place that owns the URL construction, timeout, and
+ * error-message shape for "OIDC discovery failed."
+ */
+async function fetchOidcDiscoveryDocument(issuer: string, discoveryTimeoutMs: number): Promise<Record<string, unknown>> {
+    const base = issuer.endsWith("/") ? issuer.slice(0, -1) : issuer;
+    const discoveryUrl = `${base}/.well-known/openid-configuration`;
+    let response: Response;
+    try {
+        response = await fetch(discoveryUrl, { signal: AbortSignal.timeout(discoveryTimeoutMs) });
+    } catch (err) {
+        const reason = err instanceof Error && err.name === "TimeoutError" ? `timed out after ${discoveryTimeoutMs}ms` : String(err);
+        throw new Error(`OIDC discovery failed for issuer "${issuer}" (${discoveryUrl}): ${reason}`);
+    }
+    if (!response.ok) {
+        throw new Error(`OIDC discovery failed for issuer "${issuer}" (${discoveryUrl}): HTTP ${response.status} ${response.statusText}`);
+    }
+    return (await response.json()) as Record<string, unknown>;
+}
+
 export async function resolveJwks(
     config: { issuer: string; jwksUri?: string },
     // Overridable only so oidc-verifier.test.ts can exercise the timeout
@@ -138,21 +161,41 @@ export async function resolveJwks(
 ): Promise<JWTVerifyGetKey> {
     if (config.jwksUri) return createRemoteJWKSet(new URL(config.jwksUri));
 
-    const base = config.issuer.endsWith("/") ? config.issuer.slice(0, -1) : config.issuer;
-    const discoveryUrl = `${base}/.well-known/openid-configuration`;
-    let response: Response;
-    try {
-        response = await fetch(discoveryUrl, { signal: AbortSignal.timeout(discoveryTimeoutMs) });
-    } catch (err) {
-        const reason = err instanceof Error && err.name === "TimeoutError" ? `timed out after ${discoveryTimeoutMs}ms` : String(err);
-        throw new Error(`OIDC discovery failed for issuer "${config.issuer}" (${discoveryUrl}): ${reason}`);
-    }
-    if (!response.ok) {
-        throw new Error(`OIDC discovery failed for issuer "${config.issuer}" (${discoveryUrl}): HTTP ${response.status} ${response.statusText}`);
-    }
-    const discovery = (await response.json()) as { jwks_uri?: unknown };
+    const discovery = await fetchOidcDiscoveryDocument(config.issuer, discoveryTimeoutMs);
     if (typeof discovery.jwks_uri !== "string" || discovery.jwks_uri.length === 0) {
-        throw new Error(`OIDC discovery document at ${discoveryUrl} has no usable "jwks_uri".`);
+        throw new Error(`OIDC discovery document for issuer "${config.issuer}" has no usable "jwks_uri".`);
     }
     return createRemoteJWKSet(new URL(discovery.jwks_uri));
+}
+
+export interface AuthorizationServerMetadata {
+    issuer: string;
+    authorizationEndpoint: string;
+    tokenEndpoint: string;
+}
+
+/**
+ * Resolves the external IdP's own `authorization_endpoint`/`token_endpoint`
+ * — used only to populate this server's `.well-known/smart-configuration`
+ * (server/src/fhir/smart-configuration.ts). This server never issues
+ * tokens itself (see this file's own top doc comment); it only ever
+ * *republishes* the real authorization server's endpoints so a SMART
+ * client knows where to actually send a user to authorize. Resolved once
+ * at startup (index.ts), same "fail loudly if unreachable" posture as
+ * resolveJwks — an IdP a SMART launch depends on but this process can't
+ * reach at boot should be a startup failure, not a 500 on first request.
+ */
+export async function resolveAuthorizationServerMetadata(
+    config: { issuer: string },
+    discoveryTimeoutMs: number = DISCOVERY_TIMEOUT_MS
+): Promise<AuthorizationServerMetadata> {
+    const discovery = await fetchOidcDiscoveryDocument(config.issuer, discoveryTimeoutMs);
+    const { authorization_endpoint: authorizationEndpoint, token_endpoint: tokenEndpoint } = discovery;
+    if (typeof authorizationEndpoint !== "string" || authorizationEndpoint.length === 0) {
+        throw new Error(`OIDC discovery document for issuer "${config.issuer}" has no usable "authorization_endpoint".`);
+    }
+    if (typeof tokenEndpoint !== "string" || tokenEndpoint.length === 0) {
+        throw new Error(`OIDC discovery document for issuer "${config.issuer}" has no usable "token_endpoint".`);
+    }
+    return { issuer: config.issuer, authorizationEndpoint, tokenEndpoint };
 }

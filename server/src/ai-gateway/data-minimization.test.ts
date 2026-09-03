@@ -57,6 +57,23 @@ describe("minimizeForTask", () => {
         expect(result.sections.find((s) => s.text.includes("Follow-up"))!.text).toContain("[REDACTED_PHONE]");
     });
 
+    it("cites every included scalar field, not only clinical notes — evidence provenance must cover what actually reached the model", () => {
+        const patientCase = patientCaseFixture("case-42", {
+            presentingComplaint: { value: "Chest pain", includeInContext: true },
+            labResults: { value: [{ id: "l1", name: "Troponin", value: "0.01" }], includeInContext: true },
+            vitalSigns: { value: "BP 140/90", includeInContext: true },
+        });
+        const result = minimizeForTask(patientCase, "diagnostic-support", ["presentingComplaint", "labResults", "vitalSigns"]);
+        expect(result.resourceRefs).toEqual(
+            expect.arrayContaining([
+                { resourceType: "patientCaseField", resourceId: "presentingComplaint:case-42" },
+                { resourceType: "patientCaseField", resourceId: "labResults:case-42" },
+                { resourceType: "patientCaseField", resourceId: "vitalSigns:case-42" },
+            ])
+        );
+        expect(result.resourceRefs).toHaveLength(3);
+    });
+
     it("an unrecognized purposeOfUse resolves to an empty allowlist rather than falling back to 'everything'", () => {
         const patientCase = patientCaseFixture("case-1", { medications: { value: ["x"], includeInContext: true } });
         const result = minimizeForTask(patientCase, "not-a-real-purpose", ["medications"]);

@@ -146,6 +146,18 @@ describe("ClinicalAiGateway: end-to-end route security", () => {
         const getResponse = await app.inject({ method: "GET", url: `/organizations/${orgId}/ai-requests/${submitBody.request.id}`, headers });
         expect(getResponse.statusCode).toBe(200);
         expect(getResponse.json().outputs).toHaveLength(1);
+        // Evidence provenance: both requested categories are scalar case
+        // fields (not clinical notes), so before data-minimization.ts's
+        // synthetic patientCaseField refs this would have had zero
+        // citations despite both fields having actually reached the model.
+        const citations = getResponse.json().outputs[0].citations;
+        expect(citations).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ resourceType: "patientCaseField", resourceId: `medications:${caseId}`, locator: "medications" }),
+                expect.objectContaining({ resourceType: "patientCaseField", resourceId: `allergies:${caseId}`, locator: "allergies" }),
+            ])
+        );
+        expect(citations).toHaveLength(2);
 
         const reviewResponse = await app.inject({
             method: "POST",
@@ -157,6 +169,47 @@ describe("ClinicalAiGateway: end-to-end route security", () => {
 
         const secondReview = await app.inject({ method: "POST", url: `/organizations/${orgId}/ai-outputs/${submitBody.output.id}/review`, headers, payload: { decision: "rejected" } });
         expect(secondReview.statusCode).toBe(409);
+    });
+
+    it("quality-monitor and quality-drift report real aggregate metrics from completed requests, gated by aiGateway:viewAuditTrail", async () => {
+        const { orgId, headers, caseId, modelId } = await fullySetUp("quality-monitor");
+        const payload = { providerModelId: modelId, purposeOfUse: "medication-review", requestedCategories: ["medications", "allergies"] };
+        const submit = await app.inject({ method: "POST", url: `/organizations/${orgId}/cases/${caseId}/ai-requests`, headers, payload });
+        expect(submit.statusCode).toBe(201);
+
+        const snapshot = await app.inject({ method: "GET", url: `/organizations/${orgId}/ai-provider-models/${modelId}/quality-monitor`, headers });
+        expect(snapshot.statusCode).toBe(200);
+        expect(snapshot.json()).toMatchObject({ providerModelId: modelId, outputCount: 1, unreviewedCount: 1, reviewedRate: 0 });
+
+        const drift = await app.inject({ method: "GET", url: `/organizations/${orgId}/ai-provider-models/${modelId}/quality-drift?splitAt=${encodeURIComponent(new Date(0).toISOString())}`, headers });
+        expect(drift.statusCode).toBe(200);
+        expect(drift.json()).toMatchObject({ sufficientData: false, drifted: false, alerts: [] });
+
+        await app.inject({ method: "POST", url: `/organizations/${orgId}/users`, headers, payload: { externalSubject: "idp|no-audit-rights", displayName: "No Rights" } });
+        const unprivilegedToken = await tokenFor("idp|no-audit-rights");
+        const forbidden = await app.inject({ method: "GET", url: `/organizations/${orgId}/ai-provider-models/${modelId}/quality-monitor`, headers: { authorization: `Bearer ${unprivilegedToken}` } });
+        expect(forbidden.statusCode).toBe(403);
+    });
+
+    it("omitting providerModelId auto-routes to the tenant's one eligible model — the route-level wiring for model-router.ts", async () => {
+        const { orgId, headers, caseId } = await fullySetUp("auto-route");
+        const submitResponse = await app.inject({
+            method: "POST",
+            url: `/organizations/${orgId}/cases/${caseId}/ai-requests`,
+            headers,
+            payload: { purposeOfUse: "medication-review", requestedCategories: ["medications", "allergies"] },
+        });
+        expect(submitResponse.statusCode).toBe(201);
+        expect(submitResponse.json().outcome).toBe("completed");
+
+        const previewResponse = await app.inject({
+            method: "POST",
+            url: `/organizations/${orgId}/cases/${caseId}/ai-requests/preview`,
+            headers,
+            payload: { purposeOfUse: "medication-review", requestedCategories: ["medications", "allergies"] },
+        });
+        expect(previewResponse.statusCode).toBe(200);
+        expect(previewResponse.json().model?.modelId).toBe("llama3");
     });
 
     it("registers immutable llama.cpp artifacts and keeps deployments disabled until verification", async () => {

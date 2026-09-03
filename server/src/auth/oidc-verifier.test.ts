@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { SignJWT, exportJWK, generateKeyPair, createLocalJWKSet, type JWTVerifyGetKey, type CryptoKey, type JWK } from "jose";
-import { verifyAccessToken, resolveJwks, decodeUnverifiedIssuer, TokenVerificationError } from "./oidc-verifier.js";
+import { verifyAccessToken, resolveJwks, resolveAuthorizationServerMetadata, decodeUnverifiedIssuer, TokenVerificationError } from "./oidc-verifier.js";
 
 const ISSUER = "https://idp.example-hospital.test/realms/clinical";
 const AUDIENCE = "modelforge-iam-server";
@@ -226,6 +226,69 @@ describe("oidc-verifier", () => {
             );
 
             await expect(resolveJwks({ issuer: ISSUER })).resolves.toBeDefined();
+        });
+    });
+
+    describe("resolveAuthorizationServerMetadata (SMART on FHIR discovery)", () => {
+        afterEach(() => {
+            vi.unstubAllGlobals();
+        });
+
+        it("resolves the external IdP's authorization_endpoint/token_endpoint from its discovery document", async () => {
+            vi.stubGlobal(
+                "fetch",
+                vi.fn(async () =>
+                    new Response(
+                        JSON.stringify({
+                            issuer: ISSUER,
+                            authorization_endpoint: "https://idp.example-hospital.test/protocol/openid-connect/auth",
+                            token_endpoint: "https://idp.example-hospital.test/protocol/openid-connect/token",
+                        }),
+                        { status: 200 }
+                    )
+                )
+            );
+
+            await expect(resolveAuthorizationServerMetadata({ issuer: ISSUER })).resolves.toEqual({
+                issuer: ISSUER,
+                authorizationEndpoint: "https://idp.example-hospital.test/protocol/openid-connect/auth",
+                tokenEndpoint: "https://idp.example-hospital.test/protocol/openid-connect/token",
+            });
+        });
+
+        it("rejects with a clear error when the discovery document has no authorization_endpoint", async () => {
+            vi.stubGlobal(
+                "fetch",
+                vi.fn(async () => new Response(JSON.stringify({ token_endpoint: "https://idp.example-hospital.test/token" }), { status: 200 }))
+            );
+
+            await expect(resolveAuthorizationServerMetadata({ issuer: ISSUER })).rejects.toThrow(/no usable "authorization_endpoint"/);
+        });
+
+        it("rejects with a clear error when the discovery document has no token_endpoint", async () => {
+            vi.stubGlobal(
+                "fetch",
+                vi.fn(async () => new Response(JSON.stringify({ authorization_endpoint: "https://idp.example-hospital.test/auth" }), { status: 200 }))
+            );
+
+            await expect(resolveAuthorizationServerMetadata({ issuer: ISSUER })).rejects.toThrow(/no usable "token_endpoint"/);
+        });
+
+        it("rejects with a clear error, not a hang, on discovery timeout — same posture as resolveJwks", async () => {
+            vi.stubGlobal(
+                "fetch",
+                vi.fn((_url: string, init?: { signal?: AbortSignal }) => {
+                    return new Promise((_resolve, reject) => {
+                        init?.signal?.addEventListener("abort", () => {
+                            const err = new Error("This operation was aborted");
+                            err.name = "TimeoutError";
+                            reject(err);
+                        });
+                    });
+                })
+            );
+
+            await expect(resolveAuthorizationServerMetadata({ issuer: ISSUER }, 50)).rejects.toThrow(/timed out after 50ms/);
         });
     });
 });

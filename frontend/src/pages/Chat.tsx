@@ -1409,13 +1409,13 @@ export default function Chat() {
     // ever touching the workspace bridge): records the result and, once
     // nothing else from this turn is still pending, hands control back to
     // the model.
-    function resolveToolCall(call: ToolCall, resultText: string) {
+    function resolveToolCall(call: ToolCall, resultText: string, mcpOperation?: ChatMessage["mcpOperation"]) {
         setPendingToolCalls((prev) => {
             const remaining = prev.filter((c) => c.id !== call.id);
             setMessages((m) => {
                 const next: ChatMessage[] = [
                     ...m,
-                    { role: "tool", content: resultText, toolCallId: call.id, toolName: call.name },
+                    { role: "tool", content: resultText, toolCallId: call.id, toolName: call.name, mcpOperation },
                 ];
                 if (remaining.length === 0) continueAfterTools(next);
                 return next;
@@ -1442,6 +1442,7 @@ export default function Chat() {
         const startedAt = Date.now();
 
         let resultText: string;
+        let mcpOperation: ChatMessage["mcpOperation"];
         if (!approve) {
             resultText = "The user denied this tool call.";
         } else if (!agentWorkspace) {
@@ -1454,18 +1455,39 @@ export default function Chat() {
                 agentWorkspace,
                 call.name,
                 call.arguments,
-                (progress) => setExecutingCall((cur) => (cur?.callId === call.id ? { ...cur, progress } : cur))
+                (progress) => setExecutingCall((cur) => (cur?.callId === call.id ? { ...cur, progress } : cur)),
+                { patientCaseId: attachedCaseId ?? undefined, humanApproved: approve && !autoApproved }
             );
             setExecutingCall({ callId: call.id, requestId });
             const res = await promise;
             setExecutingCall((cur) => (cur?.callId === call.id ? null : cur));
+            const structured = res.result as {
+                clinicalOperation?: { operationId: string; operationDigest: string; policySnapshot: NonNullable<ChatMessage["mcpOperation"]>["policySnapshot"]; result?: unknown };
+                provenance?: { registryEntryId?: string; serverName?: string; toolName?: string };
+            } | undefined;
+            if (structured?.clinicalOperation && structured.provenance?.registryEntryId && structured.provenance.serverName && structured.provenance.toolName) {
+                const review = structured.clinicalOperation.result as { reviewId?: unknown; decision?: unknown } | undefined;
+                mcpOperation = {
+                    registryEntryId: structured.provenance.registryEntryId,
+                    serverName: structured.provenance.serverName,
+                    toolName: structured.provenance.toolName,
+                    operationId: structured.clinicalOperation.operationId,
+                    operationDigest: structured.clinicalOperation.operationDigest,
+                    policySnapshot: structured.clinicalOperation.policySnapshot,
+                    reviewId: typeof review?.reviewId === "string" ? review.reviewId : undefined,
+                    reviewDecision: review?.decision === "approved" || review?.decision === "rejected" || review?.decision === "needs_revision" ? review.decision : undefined,
+                };
+            }
             resultText = res.error
                 ? `Error: ${res.error}`
                 : typeof res.result === "string"
                   ? res.result
                   : JSON.stringify(res.result, null, 2);
         } else {
-            const res = await window.api.agent.executeTool(agentWorkspace, call.name, call.arguments);
+            const res = await window.api.agent.executeTool(agentWorkspace, call.name, call.arguments, {
+                patientCaseId: attachedCaseId ?? undefined,
+                humanApproved: approve && !autoApproved,
+            });
             resultText = res.error
                 ? `Error: ${res.error}`
                 : typeof res.result === "string"
@@ -1490,7 +1512,7 @@ export default function Chat() {
             });
         }
 
-        resolveToolCall(call, resultText);
+        resolveToolCall(call, resultText, mcpOperation);
     }
 
     function cancelExecutingTool() {

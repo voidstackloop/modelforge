@@ -1,3 +1,5 @@
+import type { McpOperationProvenance } from "@modelforge/contracts";
+
 export interface UsageInfo {
     promptTokens?: number;
     completionTokens?: number;
@@ -53,6 +55,7 @@ export interface ChatMessage {
     // Set on the synthetic message the verification loop appends — a UI
     // affordance like `pinned`, never sent to a provider.
     isVerification?: boolean;
+    mcpOperation?: McpOperationProvenance;
 }
 
 export interface ChatChunk {

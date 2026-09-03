@@ -137,6 +137,10 @@ export const ACTION_CATALOG: readonly ActionCatalogEntry[] = [
     // doc comment for the enforcement scope boundary.
     { action: "mcpRegistry:list", description: "List the organization's registered MCP servers and their allowlisted tools/egress policy." },
     { action: "mcpRegistry:manage", description: "Create, update, or enable/disable an entry in the organization's MCP server registry." },
+    { action: "mcpClinical:use", description: "Issue a short-lived patient-context grant and invoke approved clinical MCP tools." },
+    { action: "mcpClinical:approve", description: "Confirm an operation-bound approval for a controlled clinical MCP write." },
+    { action: "mcpClinical:introspect", description: "Workload-only permission to resolve short-lived clinical MCP context grants." },
+    { action: "mcpClinical:recordReview", description: "Workload-only permission to persist a clinician's MCP review decision." },
 
     // Hybrid CPU/GPU control plane (routes/compute-control.ts).
     { action: "compute:list", description: "Read compute nodes, pools, policies, requests, leases, and PHI-free capacity summaries." },
@@ -146,6 +150,24 @@ export const ACTION_CATALOG: readonly ActionCatalogEntry[] = [
     { action: "compute:manageCritical", description: "Perform high-impact compute operations including quarantine and hard quota changes; intended for step-up or break-glass policies." },
     { action: "compute:submit", description: "Submit and cancel organization compute workloads." },
     { action: "compute:agent", description: "Send node heartbeats and acknowledge, renew, or release fenced leases from an enrolled node agent." },
+
+    // HL7 v2 (routes/hl7.ts, server/src/hl7/). See docs/HL7_V2_INTEGRATION.md.
+    // Outbound generation (ORU^R01) reuses imagingStudy:view/diagnosticReport:view,
+    // the same data it's a wire-format re-shaping of — this action gates only
+    // inbound parsing, a stateless format conversion with no case/patient
+    // resource of its own to reuse an existing action from.
+    { action: "hl7:parseInbound", description: "Parse an inbound HL7 v2 message into structured data. Parsing only — no case or patient record is looked up, matched, or written." },
+    { action: "hl7:ingest", description: "Ingest an inbound HL7 v2 message: match it against patient cases and, for an unambiguous match, apply it (merge ORU observations, record an ADT visit event)." },
+    { action: "hl7:reviewIngestion", description: "List HL7 v2 ingestion jobs and resolve one flagged pending-review (ambiguous or no patient match) by choosing a case or rejecting it." },
+
+    // SMART App Launch client role (routes/smart-launch.ts, server/src/smart-launch/).
+    // See docs/SMART_LAUNCH.md. A launch always requires an already-
+    // authenticated caller — these actions gate the two distinct concerns:
+    // configuring which EHRs this org trusts at all (an admin action) vs.
+    // any org member actually using that trust to launch/hold a session
+    // for themselves.
+    { action: "smartLaunch:manage", description: "Add, list, or remove this organization's trusted EHR issuers for SMART App Launch (client_id, allowed redirect URIs)." },
+    { action: "smartLaunch:use", description: "Start a SMART App Launch against a trusted issuer, complete its callback, and list/revoke one's own resulting launch sessions." },
 ] as const;
 
 const ACTION_STRINGS = new Set(ACTION_CATALOG.map((entry) => entry.action));

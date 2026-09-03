@@ -47,6 +47,16 @@ export interface ChatMessage {
   // distinguishes it from a real tool result so the UI can render it as a
   // pass/fail checklist card instead of a generic tool-output box.
   isVerification?: boolean;
+  mcpOperation?: {
+    registryEntryId: string;
+    serverName: string;
+    toolName: string;
+    operationId: string;
+    operationDigest: string;
+    policySnapshot: { registryVersion: string; rbacVersion: string; egressPolicyVersion: string; killSwitchVersion: string; toolPolicyVersion: string };
+    reviewId?: string;
+    reviewDecision?: "approved" | "rejected" | "needs_revision";
+  };
   // RAG chunks that were retrieved and folded into this message's prompt
   // content, kept separately so the UI can render them as source citations
   // instead of just the flattened text that went to the model.
@@ -203,6 +213,7 @@ export interface McpServerConfig {
   headers?: Record<string, string>;
   trustProfile?: { autoApprovedTools: string[] };
   auth?: { type: "none" | "oauth2" };
+  oauthClientId?: string;
   blockedTools?: string[];
   warningBanner?: string;
 }
@@ -885,6 +896,10 @@ export type ImagingStudy = SharedImagingStudy;
 export type ImagingIngestionJob = SharedImagingIngestionJob;
 export type ImagingShareGrant = SharedImagingShareGrant;
 export type ViewerSession = SharedViewerSession;
+export type Hl7IngestionJob = SharedHl7IngestionJob;
+export type Hl7ResolveDecision = { action: "apply"; caseId: string } | { action: "reject"; reason: string };
+export type SmartTrustedIssuer = SharedSmartTrustedIssuer;
+export type SmartLaunchToken = SharedSmartLaunchToken;
 
 export interface CreateImagingShareInput {
   mode: "internal" | "cross-organization" | "external-portal";
@@ -1230,13 +1245,15 @@ export interface ElectronApi {
     executeTool: (
       workspaceRoot: string,
       name: string,
-      args: Record<string, unknown>
+      args: Record<string, unknown>,
+      clinicalContext?: { patientCaseId?: string; humanApproved?: boolean }
     ) => Promise<{ result?: unknown; error?: string }>;
     executeToolWithProgress: (
       workspaceRoot: string,
       name: string,
       args: Record<string, unknown>,
-      onProgress: (progress: { progress: number; total?: number; message?: string }) => void
+      onProgress: (progress: { progress: number; total?: number; message?: string }) => void,
+      clinicalContext?: { patientCaseId?: string; humanApproved?: boolean }
     ) => { requestId: string; promise: Promise<{ result?: unknown; error?: string }> };
     rollbackLastWrite: (workspaceRoot: string) => Promise<RollbackResult | null>;
     detectScripts: (workspaceRoot: string) => Promise<ProjectScripts>;
@@ -1373,6 +1390,7 @@ export interface ElectronApi {
     review: (outputId: string, review: { decision: SharedAiReview["decision"]; correctedText?: string; escalationReason?: string }) => Promise<SharedAiReview>;
   };
   mcp: {
+    listManagedClinicalServers: () => Promise<{ servers?: McpServerConfig[]; error?: string }>;
     connect: (
       config: McpServerConfig
     ) => Promise<{ tools?: { name: string; description?: string; inputSchema?: Record<string, unknown> }[]; error?: string }>;
@@ -1384,6 +1402,18 @@ export interface ElectronApi {
     startOAuthFlow: (config: McpServerConfig) => Promise<{ authorized: boolean; error?: string }>;
     hasOAuthTokens: (serverId: string) => Promise<boolean>;
     clearOAuthCredentials: (serverId: string) => Promise<void>;
+  };
+  hl7: {
+    listJobs: (status?: Hl7IngestionJob["status"]) => Promise<Hl7IngestionJob[]>;
+    resolveJob: (jobId: string, decision: Hl7ResolveDecision) => Promise<Hl7IngestionJob>;
+  };
+  smartLaunch: {
+    listTrustedIssuers: () => Promise<SmartTrustedIssuer[]>;
+    upsertTrustedIssuer: (input: { issuer: string; clientId: string; redirectUris: string[] }) => Promise<SmartTrustedIssuer>;
+    deleteTrustedIssuer: (issuer: string) => Promise<void>;
+    listSessions: () => Promise<SmartLaunchToken[]>;
+    revokeSession: (sessionId: string) => Promise<void>;
+    start: (issuer: string) => Promise<{ token?: SmartLaunchToken; error?: string }>;
   };
   screen: {
     listSources: () => Promise<ScreenSourceInfo[]>;
@@ -1434,4 +1464,7 @@ import type {
   AiCitation as SharedAiCitation,
   AiReview as SharedAiReview,
   DeidentificationJob as SharedDeidentificationJob,
+  Hl7IngestionJob as SharedHl7IngestionJob,
+  SmartTrustedIssuer as SharedSmartTrustedIssuer,
+  SmartLaunchToken as SharedSmartLaunchToken,
 } from "@modelforge/contracts";

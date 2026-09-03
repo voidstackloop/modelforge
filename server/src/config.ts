@@ -75,6 +75,16 @@ export interface AppConfig {
      * /health's own posture: both are deliberately metadata-only/PHI-free
      * (see metrics.ts and docs/OBSERVABILITY.md). */
     metricsToken?: string;
+    /** SMART_LAUNCH_ENCRYPTION_KEY, optional — base64 for exactly 32
+     * bytes, same shape as IMAGING_ENCRYPTION_KEY below. Encrypts an
+     * external EHR's access/refresh token at rest
+     * (smart-launch/token-crypto.ts) before routes/smart-launch.ts's
+     * token-exchange route ever writes one to the store. Unset means that
+     * one route 503s rather than encrypting with no real key — every
+     * other SMART launch route (configuring trusted issuers, listing
+     * one's own sessions) works regardless, since none of them touch a
+     * secret. */
+    smartLaunchEncryptionKeyBase64?: string;
     imaging: {
         localRoot?: string;
         encryptionKeyBase64?: string;
@@ -179,6 +189,33 @@ export interface AppConfig {
          * explicit clinical/product ownership. Confirm the real value with
          * that ownership before relying on this in production. */
         grantDurationMs: number;
+    };
+    /** Opt-in MLLP (HL7 v2 TCP transport) listener — see
+     * hl7/mllp-server.ts's own top doc comment for the full trust-model
+     * reasoning this config exists to enforce. undefined (the default —
+     * every environment before this existed) means no MLLP listener starts
+     * at all; index.ts never binds a socket unless every one of these is
+     * explicitly set. */
+    hl7Mllp?: {
+        /** HL7_MLLP_PORT. Required together with organizationId below. */
+        port: number;
+        /** HL7_MLLP_HOST, default "127.0.0.1". A non-loopback bind is
+         * accepted (this config layer doesn't forbid it — some deployments
+         * genuinely run this process inside an already-isolated private
+         * network segment where loopback-only would be wrong) but is
+         * never the default: an operator must type a real, intentional
+         * value to widen it, matching TRUST_PROXY/ADMIN_CONSOLE_ORIGIN's
+         * own "never guess at the deployment topology" posture above. */
+        host: string;
+        /** HL7_MLLP_ORGANIZATION_ID. This listener serves exactly one
+         * tenant — see mllp-server.ts's own doc comment on why MLLP has no
+         * per-message identity to route by. A deployment integrating with
+         * more than one hospital's lab feed needs more than one listener
+         * (a future generalization, not attempted here since no such
+         * deployment exists yet — same "not generalized past what's
+         * actually needed" reasoning as adminConsoleOrigin's single-origin
+         * limitation above). */
+        organizationId: string;
     };
 }
 
@@ -413,6 +450,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         const decoded = Buffer.from(env.IMAGING_ENCRYPTION_KEY, "base64");
         if (decoded.length !== 32) throw new ConfigError("IMAGING_ENCRYPTION_KEY must be base64 for exactly 32 bytes.");
     }
+    if (env.SMART_LAUNCH_ENCRYPTION_KEY) {
+        const decoded = Buffer.from(env.SMART_LAUNCH_ENCRYPTION_KEY, "base64");
+        if (decoded.length !== 32) throw new ConfigError("SMART_LAUNCH_ENCRYPTION_KEY must be base64 for exactly 32 bytes.");
+    }
     const cloudFrontValues = [env.IMAGING_CLOUDFRONT_DOMAIN, env.IMAGING_CLOUDFRONT_KEY_PAIR_ID, env.IMAGING_CLOUDFRONT_PRIVATE_KEY];
     if (cloudFrontValues.some(Boolean)) {
         if (!cloudFrontValues.every(Boolean)) {
@@ -432,6 +473,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
             throw new ConfigError("IMAGING_CLOUDFRONT_PRIVATE_KEY must be a base64-encoded PEM private key.");
         }
     }
+    const mllpValues = [env.HL7_MLLP_PORT, env.HL7_MLLP_ORGANIZATION_ID];
+    if (mllpValues.some(Boolean) && !mllpValues.every(Boolean)) {
+        throw new ConfigError("HL7_MLLP_PORT and HL7_MLLP_ORGANIZATION_ID must be configured together.");
+    }
+    if (env.HL7_MLLP_ORGANIZATION_ID && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(env.HL7_MLLP_ORGANIZATION_ID)) {
+        throw new ConfigError("HL7_MLLP_ORGANIZATION_ID must be the organization's UUID.");
+    }
 
     return {
         port: parseBoundedIntEnv("PORT", env.PORT, { default: 4000, min: 1, max: 65_535 }),
@@ -445,6 +493,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         runtimeDatabaseUrl: env.RUNTIME_DATABASE_URL,
         adminConsoleOrigin: env.ADMIN_CONSOLE_ORIGIN,
         metricsToken: env.METRICS_TOKEN,
+        smartLaunchEncryptionKeyBase64: env.SMART_LAUNCH_ENCRYPTION_KEY,
         imaging: {
             localRoot: env.IMAGING_LOCAL_ROOT,
             encryptionKeyBase64: env.IMAGING_ENCRYPTION_KEY,
@@ -490,5 +539,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
                 max: 86_400_000, // 24 hours
             }),
         },
+        hl7Mllp: env.HL7_MLLP_PORT
+            ? {
+                  port: parseBoundedIntEnv("HL7_MLLP_PORT", env.HL7_MLLP_PORT, { default: 2575, min: 1, max: 65_535 }),
+                  host: env.HL7_MLLP_HOST || "127.0.0.1",
+                  organizationId: env.HL7_MLLP_ORGANIZATION_ID!,
+              }
+            : undefined,
     };
 }

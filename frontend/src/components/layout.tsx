@@ -29,6 +29,8 @@ import {
     BookOpen,
     Share2,
     ShieldCheck,
+    Inbox,
+    ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -881,6 +883,8 @@ export default function Layout() {
                     <SidebarNavLink to="/evidence" icon={<BookOpen className="size-4" />} label={t.evidenceLibrary} collapsed={collapsed} disabled={!hasApi} />
                     <SidebarNavLink to="/knowledge-graph" icon={<Share2 className="size-4" />} label={t.knowledgeGraph} collapsed={collapsed} disabled={!hasApi} />
                     <SidebarNavLink to="/audit" icon={<ShieldCheck className="size-4" />} label={t.auditPrivacy} collapsed={collapsed} disabled={!hasApi} />
+                    <SidebarNavLink to="/hl7-inbox" icon={<Inbox className="size-4" />} label={t.hl7Inbox} collapsed={collapsed} disabled={!hasApi} />
+                    <SidebarNavLink to="/external-ehr" icon={<ExternalLink className="size-4" />} label={t.externalEhr} collapsed={collapsed} disabled={!hasApi} />
 
                     {!collapsed && <SectionHeader title={t.navWorkspaceGroup} className="mb-0 px-2 pb-1 pt-3" />}
                     <SidebarNavLink to="/compare" icon={<Scale className="size-4" />} label={t.compareModels} collapsed={collapsed} disabled={!hasApi} />

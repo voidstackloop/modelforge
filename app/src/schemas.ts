@@ -53,6 +53,7 @@ export const mcpServerConfigSchema = z.object({
     headers: z.record(z.string(), z.string()).optional(),
     trustProfile: z.object({ autoApprovedTools: z.array(z.string()) }).optional(),
     auth: z.object({ type: z.enum(["none", "oauth2"]) }).optional(),
+    oauthClientId: z.string().min(1).max(512).optional(),
     blockedTools: z.array(z.string()).optional(),
     warningBanner: z.string().optional(),
 });

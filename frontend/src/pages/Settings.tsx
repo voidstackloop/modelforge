@@ -975,6 +975,21 @@ export default function Settings() {
         }
     }
 
+    async function importManagedClinicalServers() {
+        if (!settings) return;
+        const result = await window.api.mcp.listManagedClinicalServers();
+        if (result.error) {
+            toast.error(result.error);
+            return;
+        }
+        const discovered = result.servers ?? [];
+        const discoveredIds = new Set(discovered.map((server) => server.id));
+        const next = [...(settings.mcpServers ?? []).filter((server) => !discoveredIds.has(server.id)), ...discovered];
+        const updated = await window.api.settings.save({ mcpServers: next });
+        setSettings(updated);
+        toast.success(discovered.length > 0 ? `${discovered.length} institutional clinical MCP server(s) added.` : "No active institutional clinical MCP servers were found.");
+    }
+
     async function removeMcpServer(id: string) {
         if (!settings) return;
         await window.api.mcp.disconnect(id);
@@ -2274,6 +2289,9 @@ export default function Settings() {
                                                 className="w-fit gap-1.5"
                                             >
                                                 <Plus className="size-3.5" /> {t.addMcpServer}
+                                            </Button>
+                                            <Button size="sm" variant="outline" onClick={importManagedClinicalServers} className="w-fit gap-1.5">
+                                                <Plug className="size-3.5" /> Add institutional clinical MCP
                                             </Button>
                                             <div className="flex flex-col gap-1.5">
                                                 {MCP_SERVER_PRESETS.map((preset) => (

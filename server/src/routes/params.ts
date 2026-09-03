@@ -54,3 +54,21 @@ export const organizationAiInferenceDeploymentParamsSchema = z.object({ organiza
 
 // mcp_registry_entries.id is a real Postgres UUID column (migrations/020_mcp_registry.sql).
 export const organizationMcpRegistryEntryParamsSchema = z.object({ organizationId: uuid, entryId: uuid });
+export const organizationMcpApprovalParamsSchema = z.object({ organizationId: uuid, approvalRequestId: uuid });
+export const organizationHl7JobParamsSchema = z.object({ organizationId: uuid, jobId: z.string().min(1) });
+
+// SMART App Launch (routes/smart-launch.ts): `state` is a server-generated
+// random token (smart-launch/pkce.ts's generateState) that also doubles as
+// the launch session's own store id; `sessionId` is a completed token's
+// randomUUID() id. Neither is a UUID-format check at this boundary — same
+// "server-generated TEXT id" reasoning as every other non-UUID id above.
+export const organizationSmartLaunchStateParamsSchema = z.object({ organizationId: uuid, state: z.string().min(1) });
+export const organizationSmartLaunchSessionParamsSchema = z.object({ organizationId: uuid, sessionId: z.string().min(1) });
+
+// FHIR R4 read facade (routes/fhir.ts). caseId/studyId/reportId: same
+// "server-generated TEXT id, not enforced as UUID at this boundary"
+// reasoning as their non-FHIR counterparts above — these params.parse the
+// same underlying ids, just reached via a different URL shape.
+export const organizationFhirCaseParamsSchema = z.object({ organizationId: uuid, caseId: z.string().min(1) });
+export const organizationFhirStudyParamsSchema = z.object({ organizationId: uuid, studyId: z.string().min(1) });
+export const organizationFhirReportParamsSchema = z.object({ organizationId: uuid, reportId: z.string().min(1) });

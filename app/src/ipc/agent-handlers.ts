@@ -20,7 +20,13 @@ export function registerAgentIpc(): void {
         "tools:execute",
         async (
             event: IpcMainInvokeEvent,
-            { workspaceRoot, name, args, requestId }: { workspaceRoot: string; name: string; args: unknown; requestId?: string }
+            { workspaceRoot, name, args, requestId, clinicalContext }: {
+                workspaceRoot: string;
+                name: string;
+                args: unknown;
+                requestId?: string;
+                clinicalContext?: { patientCaseId?: string; humanApproved?: boolean };
+            }
         ) => {
             requireString(workspaceRoot, "workspace root");
             requireString(name, "tool name");
@@ -46,9 +52,10 @@ export function registerAgentIpc(): void {
                     const controller = requestId ? new AbortController() : undefined;
                     if (requestId && controller) activeMcpToolRequests.set(requestId, controller);
                     try {
-                        result = await mcpClient.callMcpTool(name, validatedArgs, {
+                        result = await mcpClient.callMcpToolStructured(name, validatedArgs, {
                             signal: controller?.signal,
                             onProgress: requestId ? (p) => event.sender.send(`mcp:toolProgress:${requestId}`, p) : undefined,
+                            clinicalContext,
                         });
                     } finally {
                         if (requestId) activeMcpToolRequests.delete(requestId);

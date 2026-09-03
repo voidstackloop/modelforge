@@ -5,8 +5,13 @@ import * as mcpOAuth from "../mcp-oauth";
 import { mcpServerConfigSchema, parseOrThrow } from "../schemas";
 import { requireString, getMainWindow, activeMcpToolRequests } from "../app-state";
 import { buildMastervaultServerConfig, isMastervaultBuiltinAvailable } from "../mastervault-builtin";
+import { listManagedClinicalMcpServers } from "../managed-mcp-policy";
 
 export function registerMcpIpc(): void {
+    ipcMain.handle("mcp:listManagedClinicalServers", async () => {
+        try { return { servers: await listManagedClinicalMcpServers() }; }
+        catch (error) { return { error: (error as Error).message }; }
+    });
     ipcMain.handle("mcp:isMastervaultBuiltinAvailable", () => isMastervaultBuiltinAvailable());
 
     // Convenience one-click add for the built-in MasterVault server: prompts

@@ -392,4 +392,38 @@ describe("loadConfig", () => {
             ).toThrow(/base64-encoded PEM/);
         });
     });
+
+    describe("HL7_MLLP_*", () => {
+        const ORG_ID = "11111111-1111-4111-8111-111111111111";
+
+        it("is undefined when unset — no MLLP listener starts by default", () => {
+            expect(loadConfig(baseEnv()).hl7Mllp).toBeUndefined();
+        });
+
+        it("rejects HL7_MLLP_PORT without HL7_MLLP_ORGANIZATION_ID", () => {
+            expect(() => loadConfig(baseEnv({ HL7_MLLP_PORT: "2575" }))).toThrow(/must be configured together/);
+        });
+
+        it("rejects HL7_MLLP_ORGANIZATION_ID without HL7_MLLP_PORT", () => {
+            expect(() => loadConfig(baseEnv({ HL7_MLLP_ORGANIZATION_ID: ORG_ID }))).toThrow(/must be configured together/);
+        });
+
+        it("rejects a non-UUID organization id", () => {
+            expect(() => loadConfig(baseEnv({ HL7_MLLP_PORT: "2575", HL7_MLLP_ORGANIZATION_ID: "not-a-uuid" }))).toThrow(/must be the organization's UUID/);
+        });
+
+        it("accepts a valid configuration, defaulting host to loopback", () => {
+            const config = loadConfig(baseEnv({ HL7_MLLP_PORT: "2575", HL7_MLLP_ORGANIZATION_ID: ORG_ID }));
+            expect(config.hl7Mllp).toEqual({ port: 2575, host: "127.0.0.1", organizationId: ORG_ID });
+        });
+
+        it("honors an explicit HL7_MLLP_HOST override", () => {
+            const config = loadConfig(baseEnv({ HL7_MLLP_PORT: "2575", HL7_MLLP_ORGANIZATION_ID: ORG_ID, HL7_MLLP_HOST: "0.0.0.0" }));
+            expect(config.hl7Mllp?.host).toBe("0.0.0.0");
+        });
+
+        it("rejects a port outside the valid TCP range", () => {
+            expect(() => loadConfig(baseEnv({ HL7_MLLP_PORT: "70000", HL7_MLLP_ORGANIZATION_ID: ORG_ID }))).toThrow(ConfigError);
+        });
+    });
 });

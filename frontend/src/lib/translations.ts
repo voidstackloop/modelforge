@@ -253,6 +253,8 @@ export interface Dictionary {
     evidenceLibrary: string;
     knowledgeGraph: string;
     auditPrivacy: string;
+    hl7Inbox: string;
+    externalEhr: string;
     navClinicalGroup: string;
     localProcessing: string;
     remoteProcessing: string;
@@ -695,6 +697,8 @@ export const en: Dictionary = {
     evidenceLibrary: "Evidence Library",
     knowledgeGraph: "Knowledge Graph",
     auditPrivacy: "Audit & Privacy",
+    hl7Inbox: "HL7 Inbox",
+    externalEhr: "External EHR",
     navClinicalGroup: "Clinical",
     localProcessing: "Local — stays on this device",
     remoteProcessing: "Remote — sent to a cloud provider",
@@ -1148,6 +1152,8 @@ export const tr: Dictionary = {
     evidenceLibrary: "Kanıt Kütüphanesi",
     knowledgeGraph: "Bilgi Grafiği",
     auditPrivacy: "Denetim ve Gizlilik",
+    hl7Inbox: "HL7 Gelen Kutusu",
+    externalEhr: "Harici EHR",
     navClinicalGroup: "Klinik",
     localProcessing: "Yerel — bu cihazda kalır",
     remoteProcessing: "Uzak — bir bulut sağlayıcısına gönderilir",
