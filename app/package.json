@@ -102,10 +102,10 @@
     "@types/pidusage": "^2.0.5",
     "concurrently": "^10.0.3",
     "cross-env": "^10.1.0",
-    "electron": "^43.1.1",
+    "electron": "^44.0.0",
     "electron-builder": "^26.15.3",
     "typescript": "^7.0.2",
-    "vitest": "^3.2.4",
+    "vitest": "^4.1.11",
     "wait-on": "^9.0.10"
   },
   "dependencies": {
